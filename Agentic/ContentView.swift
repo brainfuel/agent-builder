@@ -2435,6 +2435,49 @@ private struct CoordinatorOrchestrator {
         )
     }
 
+    private func collectDescendantNodes(
+        under coordinatorID: UUID,
+        nodeByID: [UUID: OrchestrationNode],
+        outgoingByParentID: [UUID: [OrchestrationEdge]]
+    ) -> [OrchestrationNode] {
+        var ordered: [OrchestrationNode] = []
+        var visited: Set<UUID> = [coordinatorID]
+        var queue: [UUID] = [coordinatorID]
+        var head = 0
+
+        while head < queue.count {
+            let currentID = queue[head]
+            head += 1
+
+            let children = (outgoingByParentID[currentID] ?? [])
+                .map(\.childID)
+                .sorted { lhs, rhs in
+                    let left = nodeByID[lhs]?.name ?? lhs.uuidString
+                    let right = nodeByID[rhs]?.name ?? rhs.uuidString
+                    if left == right { return lhs.uuidString < rhs.uuidString }
+                    return left.localizedCaseInsensitiveCompare(right) == .orderedAscending
+                }
+
+            for childID in children {
+                guard !visited.contains(childID) else { continue }
+                visited.insert(childID)
+                queue.append(childID)
+                if let child = nodeByID[childID] {
+                    ordered.append(child)
+                }
+            }
+        }
+
+        // Safety fallback for malformed/disconnected structures.
+        if ordered.isEmpty {
+            return nodeByID.values
+                .filter { $0.id != coordinatorID }
+                .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        }
+
+        return ordered
+    }
+
     func execute(plan: CoordinatorPlan, using client: MCPClient) async -> CoordinatorRun {
         let startedAt = Date()
         var results: [CoordinatorTaskResult] = []
@@ -2464,6 +2507,7 @@ private struct CoordinatorOrchestrator {
         return CoordinatorRun(
             runID: "RUN-\(UUID().uuidString.prefix(8))",
             planID: plan.planID,
+            mode: .liveMCP,
             results: results,
             startedAt: startedAt,
             finishedAt: Date()
