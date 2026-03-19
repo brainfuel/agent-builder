@@ -1,4 +1,5 @@
 import SwiftUI
+import SwiftData
 
 struct ContentView: View {
     private let cardSize = CGSize(width: 264, height: 88)
@@ -7,7 +8,11 @@ struct ContentView: View {
     private let maxZoom: CGFloat = 1.5
     private let zoomStep: CGFloat = 0.1
     private let savedStructuresDefaultsKey = "agentic.savedStructures.v1"
+    private let activeGraphKey = "active"
 
+    @Environment(\.modelContext) private var modelContext
+    @Environment(\.undoManager) private var undoManager
+    @Query private var graphDocuments: [GraphDocument]
     @State private var nodes = OrgNode.sample
     @State private var links = NodeLink.sample
     @State private var selectedNodeID: OrgNode.ID?
@@ -16,6 +21,16 @@ struct ContentView: View {
     @State private var savedStructures: [SavedHierarchy] = []
     @State private var isShowingSaveStructurePrompt = false
     @State private var saveStructureName = ""
+    @State private var suppressStoreSync = false
+    @State private var lastPersistedFingerprint = ""
+    @State private var selectedLinkID: UUID?
+    @State private var linkingFromNodeID: UUID?
+    @State private var linkingPointer: CGPoint?
+    @State private var linkHoverTargetNodeID: UUID?
+    @State private var orchestrationGoal = "Prepare a safe v1 launch plan"
+    @State private var latestCoordinatorPlan: CoordinatorPlan?
+    @State private var latestCoordinatorRun: CoordinatorRun?
+    @State private var isExecutingCoordinator = false
 
     private var visibleNodes: [OrgNode] {
         guard !searchText.isEmpty else { return nodes }
@@ -42,6 +57,8 @@ struct ContentView: View {
         VStack(spacing: 0) {
             header
             Divider()
+            orchestrationBar
+            Divider()
             HStack(spacing: 0) {
                 chartCanvas
                 if selectedIndex != nil {
@@ -56,7 +73,15 @@ struct ContentView: View {
         .animation(.easeInOut(duration: 0.18), value: selectedNodeID)
         .onAppear {
             loadSavedHierarchies()
-            relayoutHierarchy()
+            modelContext.undoManager = undoManager
+            ensureActiveGraphDocument()
+            syncGraphFromStore()
+            DispatchQueue.main.async {
+                syncGraphFromStore()
+            }
+        }
+        .onChange(of: semanticFingerprint) { _, newValue in
+            persistGraphIfNeeded(for: newValue)
         }
         .alert("Save Structure", isPresented: $isShowingSaveStructurePrompt) {
             TextField("Structure name", text: $saveStructureName)
@@ -166,22 +191,88 @@ struct ContentView: View {
                 }
                 .buttonStyle(.bordered)
 
-                Button(role: .destructive) {
-                    deleteSelectedNode()
+                Button {
+                    undo()
                 } label: {
-                    Label("Delete Node", systemImage: "trash")
+                    Label("Undo", systemImage: "arrow.uturn.backward")
                         .font(.headline)
                         .padding(.horizontal, 16)
                         .padding(.vertical, 12)
                 }
                 .buttonStyle(.bordered)
-                .disabled(selectedNodeID == nil)
+                .disabled(!(undoManager?.canUndo ?? false))
+                .keyboardShortcut("z", modifiers: [.command])
+
+                Button {
+                    redo()
+                } label: {
+                    Label("Redo", systemImage: "arrow.uturn.forward")
+                        .font(.headline)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 12)
+                }
+                .buttonStyle(.bordered)
+                .disabled(!(undoManager?.canRedo ?? false))
+                .keyboardShortcut("Z", modifiers: [.command, .shift])
+
+                Button(role: .destructive) {
+                    deleteCurrentSelection()
+                } label: {
+                    Label(selectedLinkID == nil ? "Delete Node" : "Delete Link", systemImage: "trash")
+                        .font(.headline)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 12)
+                }
+                .buttonStyle(.bordered)
+                .disabled(selectedNodeID == nil && selectedLinkID == nil)
                 .keyboardShortcut(.delete, modifiers: [])
             }
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 18)
         .background(Color(uiColor: .systemBackground))
+    }
+
+    private var orchestrationBar: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Label("Coordinator Goal", systemImage: "point.3.filled.connected.trianglepath.dotted")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+
+                TextField("Describe what the coordinator should delegate...", text: $orchestrationGoal)
+                    .textFieldStyle(.roundedBorder)
+                    .lineLimit(1)
+
+                Button {
+                    runCoordinatorPipeline()
+                } label: {
+                    if isExecutingCoordinator {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Text("Run Plan")
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(isExecutingCoordinator || nodes.isEmpty)
+            }
+
+            if let latestCoordinatorPlan {
+                Text("Planned \(latestCoordinatorPlan.packets.count) task packets from coordinator \(latestCoordinatorPlan.coordinatorName).")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
+            if let latestCoordinatorRun {
+                Text("Last run: \(latestCoordinatorRun.succeededCount)/\(latestCoordinatorRun.results.count) tasks succeeded.")
+                    .font(.footnote)
+                    .foregroundStyle(latestCoordinatorRun.succeededCount == latestCoordinatorRun.results.count ? .green : .orange)
+            }
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 12)
+        .background(Color(uiColor: .secondarySystemBackground))
     }
 
     private var inspectorPanel: some View {
@@ -210,21 +301,64 @@ struct ContentView: View {
                     ConnectionLayer(
                         nodes: visibleNodes,
                         links: visibleLinks,
-                        cardSize: cardSize
+                        cardSize: cardSize,
+                        selectedLinkID: selectedLinkID,
+                        draft: linkDraft
                     )
                     .frame(width: canvasSize.width, height: canvasSize.height)
 
                     ForEach(visibleNodes) { node in
-                        NodeCard(node: node, isSelected: node.id == selectedNodeID)
+                        NodeCard(
+                            node: node,
+                            isSelected: node.id == selectedNodeID,
+                            isLinkTargeted: node.id == linkHoverTargetNodeID
+                        )
                             .frame(width: cardSize.width, height: cardSize.height)
                             .position(node.position)
                             .animation(.spring(response: 0.5, dampingFraction: 0.82), value: node.position.x)
                             .animation(.spring(response: 0.5, dampingFraction: 0.82), value: node.position.y)
                             .onTapGesture {
+                                clearLinkDragState()
+                                selectedLinkID = nil
                                 selectedNodeID = (selectedNodeID == node.id) ? nil : node.id
                             }
                     }
+
+                    if
+                        let selectedNodeID,
+                        let selectedNode = visibleNodes.first(where: { $0.id == selectedNodeID })
+                    {
+                        LinkHandle(isActive: linkingFromNodeID == selectedNodeID)
+                            .position(
+                                x: selectedNode.position.x,
+                                y: selectedNode.position.y + (cardSize.height / 2) + 18
+                            )
+                            .gesture(
+                                DragGesture(minimumDistance: 0, coordinateSpace: .named("chart-canvas"))
+                                    .onChanged { value in
+                                        updateLinkDrag(
+                                            sourceID: selectedNodeID,
+                                            pointer: value.location,
+                                            candidateNodes: visibleNodes
+                                        )
+                                    }
+                                    .onEnded { _ in
+                                        completeLinkDrag(candidateNodes: visibleNodes)
+                                    }
+                            )
+                    }
                 }
+                .coordinateSpace(name: "chart-canvas")
+                .simultaneousGesture(
+                    SpatialTapGesture(coordinateSpace: .named("chart-canvas"))
+                        .onEnded { value in
+                            handleCanvasTap(
+                                at: value.location,
+                                visibleNodes: visibleNodes,
+                                visibleLinks: visibleLinks
+                            )
+                        }
+                )
                 .padding(24)
                 .scaleEffect(zoom, anchor: .topLeading)
                 .frame(
@@ -285,6 +419,287 @@ struct ContentView: View {
     private var selectedIndex: Int? {
         guard let selectedNodeID else { return nil }
         return nodes.firstIndex(where: { $0.id == selectedNodeID })
+    }
+
+    private var linkDraft: LinkDraft? {
+        guard let sourceID = linkingFromNodeID, let pointer = linkingPointer else { return nil }
+        return LinkDraft(
+            sourceID: sourceID,
+            currentPoint: pointer,
+            hoveredTargetID: linkHoverTargetNodeID
+        )
+    }
+
+    private var orchestrationGraph: OrchestrationGraph {
+        let graphNodes = nodes.map { node in
+            OrchestrationNode(
+                id: node.id,
+                name: node.name,
+                title: node.title,
+                type: node.type == .agent ? .agent : .human,
+                provider: node.provider.rawValue,
+                roleDescription: node.roleDescription,
+                securityAccess: Set(node.securityAccess.map(\.rawValue))
+            )
+        }
+        let graphEdges = links.map { link in
+            OrchestrationEdge(parentID: link.fromID, childID: link.toID)
+        }
+        return OrchestrationGraph(nodes: graphNodes, edges: graphEdges)
+    }
+
+    private func runCoordinatorPipeline() {
+        guard !nodes.isEmpty else { return }
+        let normalizedGoal = orchestrationGoal.trimmingCharacters(in: .whitespacesAndNewlines)
+        let planner = CoordinatorOrchestrator()
+        let plan = planner.plan(
+            goal: normalizedGoal.isEmpty
+                ? "Execute coordinator objective"
+                : normalizedGoal,
+            graph: orchestrationGraph
+        )
+        latestCoordinatorPlan = plan
+        latestCoordinatorRun = nil
+
+        isExecutingCoordinator = true
+        let orchestrator = CoordinatorOrchestrator()
+        let client = MockMCPClient()
+
+        Task {
+            let run = await orchestrator.execute(plan: plan, using: client)
+            await MainActor.run {
+                latestCoordinatorRun = run
+                isExecutingCoordinator = false
+            }
+        }
+    }
+
+    private func handleCanvasTap(at point: CGPoint, visibleNodes: [OrgNode], visibleLinks: [NodeLink]) {
+        guard linkingFromNodeID == nil else { return }
+
+        if node(at: point, in: visibleNodes) != nil {
+            return
+        }
+
+        if let hitLinkID = nearestLinkID(to: point, nodes: visibleNodes, links: visibleLinks) {
+            selectedLinkID = (selectedLinkID == hitLinkID) ? nil : hitLinkID
+            selectedNodeID = nil
+        } else {
+            selectedLinkID = nil
+        }
+    }
+
+    private func updateLinkDrag(sourceID: UUID, pointer: CGPoint, candidateNodes: [OrgNode]) {
+        if linkingFromNodeID == nil {
+            linkingFromNodeID = sourceID
+            selectedNodeID = sourceID
+            selectedLinkID = nil
+        }
+
+        linkingPointer = pointer
+        linkHoverTargetNodeID = node(at: pointer, in: candidateNodes, excluding: sourceID)?.id
+    }
+
+    private func completeLinkDrag(candidateNodes: [OrgNode]) {
+        defer { clearLinkDragState() }
+        guard
+            let sourceID = linkingFromNodeID,
+            let targetID = linkHoverTargetNodeID,
+            candidateNodes.contains(where: { $0.id == targetID }),
+            sourceID != targetID
+        else { return }
+
+        performSemanticMutation {
+            if let existing = links.first(where: { $0.fromID == sourceID && $0.toID == targetID }) {
+                selectedLinkID = existing.id
+                selectedNodeID = nil
+                return
+            }
+
+            // Structural constraint: only one parent per child.
+            let prunedParents = links.filter { !($0.toID == targetID && $0.fromID != sourceID) }
+            guard !wouldCreateCycle(from: sourceID, to: targetID, links: prunedParents) else {
+                return
+            }
+
+            let inheritedTone =
+                links.first(where: { $0.fromID == sourceID })?.tone
+                ?? links.first(where: { $0.toID == sourceID })?.tone
+                ?? .blue
+
+            let created = NodeLink(fromID: sourceID, toID: targetID, tone: inheritedTone)
+            links = prunedParents.filter { !($0.fromID == sourceID && $0.toID == targetID) }
+            links.append(created)
+            selectedLinkID = created.id
+            selectedNodeID = nil
+            relayoutHierarchy()
+        }
+    }
+
+    private func clearLinkDragState() {
+        linkingFromNodeID = nil
+        linkingPointer = nil
+        linkHoverTargetNodeID = nil
+    }
+
+    private func node(at point: CGPoint, in list: [OrgNode], excluding excludedID: UUID? = nil) -> OrgNode? {
+        for node in list {
+            if node.id == excludedID { continue }
+            let rect = CGRect(
+                x: node.position.x - (cardSize.width / 2),
+                y: node.position.y - (cardSize.height / 2),
+                width: cardSize.width,
+                height: cardSize.height
+            )
+            if rect.contains(point) {
+                return node
+            }
+        }
+        return nil
+    }
+
+    private func nearestLinkID(to point: CGPoint, nodes: [OrgNode], links: [NodeLink]) -> UUID? {
+        let geometries = buildLinkGeometries(nodes: nodes, links: links, cardSize: cardSize)
+        let threshold: CGFloat = 16
+
+        var nearest: (id: UUID, distance: CGFloat)?
+        for geometry in geometries {
+            let distance = minimumDistance(from: point, toPolyline: geometry.points)
+            if distance > threshold { continue }
+            if let current = nearest {
+                if distance < current.distance {
+                    nearest = (geometry.link.id, distance)
+                }
+            } else {
+                nearest = (geometry.link.id, distance)
+            }
+        }
+
+        return nearest?.id
+    }
+
+    private func minimumDistance(from point: CGPoint, toPolyline points: [CGPoint]) -> CGFloat {
+        guard points.count > 1 else { return .greatestFiniteMagnitude }
+        var minimum = CGFloat.greatestFiniteMagnitude
+        for index in 0..<(points.count - 1) {
+            let value = distance(from: point, toSegmentStart: points[index], end: points[index + 1])
+            minimum = min(minimum, value)
+        }
+        return minimum
+    }
+
+    private func distance(from point: CGPoint, toSegmentStart start: CGPoint, end: CGPoint) -> CGFloat {
+        let dx = end.x - start.x
+        let dy = end.y - start.y
+        if abs(dx) < 0.0001 && abs(dy) < 0.0001 {
+            let px = point.x - start.x
+            let py = point.y - start.y
+            return sqrt(px * px + py * py)
+        }
+
+        let t = max(0, min(1, ((point.x - start.x) * dx + (point.y - start.y) * dy) / (dx * dx + dy * dy)))
+        let projection = CGPoint(x: start.x + t * dx, y: start.y + t * dy)
+        let px = point.x - projection.x
+        let py = point.y - projection.y
+        return sqrt(px * px + py * py)
+    }
+
+    private func wouldCreateCycle(from parentID: UUID, to childID: UUID, links: [NodeLink]) -> Bool {
+        if parentID == childID { return true }
+        let candidate = links + [NodeLink(fromID: parentID, toID: childID, tone: .blue)]
+        return pathExists(from: childID, to: parentID, links: candidate)
+    }
+
+    private func pathExists(from startID: UUID, to targetID: UUID, links: [NodeLink]) -> Bool {
+        if startID == targetID { return true }
+
+        let adjacency = Dictionary(grouping: links, by: \.fromID)
+        var visited: Set<UUID> = []
+        var queue: [UUID] = [startID]
+        var index = 0
+
+        while index < queue.count {
+            let current = queue[index]
+            index += 1
+
+            if current == targetID { return true }
+            if visited.contains(current) { continue }
+            visited.insert(current)
+
+            for link in adjacency[current] ?? [] {
+                if !visited.contains(link.toID) {
+                    queue.append(link.toID)
+                }
+            }
+        }
+
+        return false
+    }
+
+    private func normalizeStructuralLinks(nodes: [OrgNode], links: [NodeLink]) -> [NodeLink] {
+        let validNodeIDs = Set(nodes.map(\.id))
+        var result: [NodeLink] = []
+        var parentByChildID: [UUID: UUID] = [:]
+        var seenPair: Set<String> = []
+
+        for link in links {
+            guard validNodeIDs.contains(link.fromID), validNodeIDs.contains(link.toID), link.fromID != link.toID else {
+                continue
+            }
+
+            let key = "\(link.fromID.uuidString)->\(link.toID.uuidString)"
+            guard !seenPair.contains(key) else { continue }
+            seenPair.insert(key)
+
+            if parentByChildID[link.toID] != nil {
+                continue
+            }
+
+            if wouldCreateCycle(from: link.fromID, to: link.toID, links: result) {
+                continue
+            }
+
+            parentByChildID[link.toID] = link.fromID
+            result.append(link)
+        }
+
+        return result
+    }
+
+    private var semanticFingerprint: String {
+        let nodePart = nodes
+            .sorted { $0.id.uuidString < $1.id.uuidString }
+            .map { node in
+                let roles = node.selectedRoles.map(\.rawValue).sorted().joined(separator: ",")
+                let access = node.securityAccess.map(\.rawValue).sorted().joined(separator: ",")
+                return [
+                    node.id.uuidString,
+                    node.name,
+                    node.title,
+                    node.department,
+                    node.type.rawValue,
+                    node.provider.rawValue,
+                    node.roleDescription,
+                    roles,
+                    access
+                ].joined(separator: "§")
+            }
+            .joined(separator: "|")
+
+        let linkPart = links
+            .sorted { lhs, rhs in
+                if lhs.fromID == rhs.fromID {
+                    if lhs.toID == rhs.toID {
+                        return lhs.tone.rawValue < rhs.tone.rawValue
+                    }
+                    return lhs.toID.uuidString < rhs.toID.uuidString
+                }
+                return lhs.fromID.uuidString < rhs.fromID.uuidString
+            }
+            .map { "\($0.fromID.uuidString)->\($0.toID.uuidString):\($0.tone.rawValue)" }
+            .joined(separator: "|")
+
+        return nodePart + "###" + linkPart
     }
 
     private func addNode(type: NodeType) {
@@ -356,20 +771,23 @@ struct ContentView: View {
             position: newPosition
         )
 
-        nodes.append(newNode)
+        performSemanticMutation {
+            nodes.append(newNode)
 
-        if let parentIDForNewNode {
-            links.append(
-                NodeLink(
-                    fromID: parentIDForNewNode,
-                    toID: newNodeID,
-                    tone: parentLinkToneForNewNode
+            if let parentIDForNewNode {
+                links.append(
+                    NodeLink(
+                        fromID: parentIDForNewNode,
+                        toID: newNodeID,
+                        tone: parentLinkToneForNewNode
+                    )
                 )
-            )
-        }
+            }
 
-        stabilizeLayout(afterAddingAtY: newPosition.y, parentID: parentIDForNewNode)
-        selectedNodeID = newNode.id
+            stabilizeLayout(afterAddingAtY: newPosition.y, parentID: parentIDForNewNode)
+            selectedLinkID = nil
+            selectedNodeID = newNode.id
+        }
     }
 
     private func nextChildPosition(
@@ -409,13 +827,32 @@ struct ContentView: View {
         guard let selected = selectedNodeID else { return }
 
         let nodeToDelete = selected
-        nodes.removeAll { $0.id == nodeToDelete }
-        links.removeAll { $0.fromID == nodeToDelete || $0.toID == nodeToDelete }
-        selectedNodeID = nil
+        performSemanticMutation {
+            nodes.removeAll { $0.id == nodeToDelete }
+            links.removeAll { $0.fromID == nodeToDelete || $0.toID == nodeToDelete }
+            selectedNodeID = nil
 
-        withAnimation(.spring(response: 0.6, dampingFraction: 0.85)) {
+            withAnimation(.spring(response: 0.6, dampingFraction: 0.85)) {
+                relayoutHierarchy()
+            }
+        }
+    }
+
+    private func deleteSelectedLink() {
+        guard let selectedLinkID else { return }
+        performSemanticMutation {
+            links.removeAll { $0.id == selectedLinkID }
+            self.selectedLinkID = nil
             relayoutHierarchy()
         }
+    }
+
+    private func deleteCurrentSelection() {
+        if selectedLinkID != nil {
+            deleteSelectedLink()
+            return
+        }
+        deleteSelectedNode()
     }
 
     private func suggestedSaveName() -> String {
@@ -479,6 +916,12 @@ struct ContentView: View {
     }
 
     private func applyStructureSnapshot(_ snapshot: HierarchySnapshot) {
+        performSemanticMutation {
+            setGraph(from: snapshot, resetViewState: true)
+        }
+    }
+
+    private func setGraph(from snapshot: HierarchySnapshot, resetViewState: Bool) {
         let restoredNodes = snapshot.nodes.map { entry in
             OrgNode(
                 id: entry.id,
@@ -499,13 +942,99 @@ struct ContentView: View {
         }
 
         guard !restoredNodes.isEmpty else { return }
+        let normalizedLinks = normalizeStructuralLinks(nodes: restoredNodes, links: restoredLinks)
 
+        let previouslySelected = selectedNodeID
         selectedNodeID = nil
-        searchText = ""
-        zoom = 1.0
+        selectedLinkID = nil
+        clearLinkDragState()
+        if resetViewState {
+            searchText = ""
+            zoom = 1.0
+        }
         nodes = restoredNodes
-        links = restoredLinks
+        links = normalizedLinks
         relayoutHierarchy()
+
+        if let previouslySelected, nodes.contains(where: { $0.id == previouslySelected }) {
+            selectedNodeID = previouslySelected
+        }
+    }
+
+    private func performSemanticMutation(_ mutation: () -> Void) {
+        suppressStoreSync = true
+        mutation()
+        suppressStoreSync = false
+        persistGraphIfNeeded(for: semanticFingerprint)
+    }
+
+    private func undo() {
+        guard let undoManager else { return }
+        undoManager.undo()
+        DispatchQueue.main.async {
+            syncGraphFromStore()
+        }
+    }
+
+    private func redo() {
+        guard let undoManager else { return }
+        undoManager.redo()
+        DispatchQueue.main.async {
+            syncGraphFromStore()
+        }
+    }
+
+    private var activeGraphDocument: GraphDocument? {
+        if let exact = graphDocuments.first(where: { $0.key == activeGraphKey }) {
+            return exact
+        }
+        return graphDocuments.first
+    }
+
+    private func ensureActiveGraphDocument() {
+        if activeGraphDocument != nil { return }
+        guard let data = try? JSONEncoder().encode(makeHierarchySnapshot(nodes: OrgNode.sample, links: NodeLink.sample)) else {
+            return
+        }
+
+        let document = GraphDocument(
+            key: activeGraphKey,
+            snapshotData: data,
+            updatedAt: Date()
+        )
+        modelContext.insert(document)
+        try? modelContext.save()
+    }
+
+    private func syncGraphFromStore() {
+        guard
+            let document = activeGraphDocument,
+            let snapshot = try? JSONDecoder().decode(HierarchySnapshot.self, from: document.snapshotData)
+        else {
+            relayoutHierarchy()
+            lastPersistedFingerprint = semanticFingerprint
+            return
+        }
+
+        suppressStoreSync = true
+        setGraph(from: snapshot, resetViewState: false)
+        suppressStoreSync = false
+        lastPersistedFingerprint = semanticFingerprint
+    }
+
+    private func persistGraphIfNeeded(for newFingerprint: String) {
+        guard !suppressStoreSync else { return }
+        guard newFingerprint != lastPersistedFingerprint else { return }
+        ensureActiveGraphDocument()
+        guard
+            let document = activeGraphDocument,
+            let data = try? JSONEncoder().encode(captureStructureSnapshot())
+        else { return }
+
+        document.snapshotData = data
+        document.updatedAt = Date()
+        try? modelContext.save()
+        lastPersistedFingerprint = newFingerprint
     }
 
     private func stabilizeLayout(afterAddingAtY rowY: CGFloat, parentID: UUID?) {
@@ -805,140 +1334,188 @@ private struct ConnectionLayer: View {
     let nodes: [OrgNode]
     let links: [NodeLink]
     let cardSize: CGSize
-
-    private var nodeMap: [UUID: OrgNode] {
-        Dictionary(uniqueKeysWithValues: nodes.map { ($0.id, $0) })
-    }
-
-    private var primaryParentByChildID: [UUID: UUID] {
-        let currentXByID = Dictionary(uniqueKeysWithValues: nodes.map { ($0.id, $0.position.x) })
-        return computePrimaryParentByChild(
-            nodeIDs: Set(nodes.map(\.id)),
-            links: links,
-            currentXByID: currentXByID
-        )
-    }
-
-    private var primaryLinks: [NodeLink] {
-        let primary = primaryParentByChildID
-        return links.filter { primary[$0.toID] == $0.fromID }
-    }
-
-    private var secondaryLinks: [NodeLink] {
-        let primary = primaryParentByChildID
-        return links.filter { primary[$0.toID] != $0.fromID }
-    }
-
-    private var laneOffsetByParentID: [UUID: CGFloat] {
-        let parentIDs = Set(primaryLinks.map(\.fromID))
-        let parentNodes = nodes.filter { parentIDs.contains($0.id) }
-        var grouped: [Int: [OrgNode]] = [:]
-        let levelStep: CGFloat = 14
-
-        for parent in parentNodes {
-            let levelKey = Int((parent.position.y / 10).rounded())
-            grouped[levelKey, default: []].append(parent)
-        }
-
-        var offsets: [UUID: CGFloat] = [:]
-        for (_, parentsAtLevel) in grouped {
-            let sorted = parentsAtLevel.sorted { $0.position.x < $1.position.x }
-            let midpoint = CGFloat(sorted.count - 1) / 2
-
-            for (index, parent) in sorted.enumerated() {
-                let laneIndex = CGFloat(index) - midpoint
-                offsets[parent.id] = laneIndex * levelStep
-            }
-        }
-
-        return offsets
-    }
+    let selectedLinkID: UUID?
+    let draft: LinkDraft?
 
     var body: some View {
         Canvas { context, _ in
-            let linksByParentID = Dictionary(grouping: primaryLinks, by: \.fromID)
+            let geometries = buildLinkGeometries(nodes: nodes, links: links, cardSize: cardSize)
 
-            for (parentID, parentLinks) in linksByParentID {
-                guard
-                    let parent = nodeMap[parentID]
-                else { continue }
-
-                let children = parentLinks
-                    .compactMap { link -> (node: OrgNode, color: Color)? in
-                        guard let child = nodeMap[link.toID] else { return nil }
-                        return (child, link.color)
-                    }
-                    .sorted { $0.node.position.x < $1.node.position.x }
-
-                guard !children.isEmpty else { continue }
-
-                let parentBottomY = parent.position.y + (cardSize.height / 2) - 4
-                let childTopYs = children.map { $0.node.position.y - (cardSize.height / 2) + 4 }
-                let childTopMinY = childTopYs.min() ?? parentBottomY + 40
-                let baseLaneY = parentBottomY + 52 + (laneOffsetByParentID[parentID] ?? 0)
-                let laneY = min(max(parentBottomY + 14, baseLaneY), childTopMinY - 16)
-                let color = children.first?.color ?? .blue
-
-                let childXs = children.map { $0.node.position.x }
-                let minChildX = childXs.min() ?? parent.position.x
-                let maxChildX = childXs.max() ?? parent.position.x
-
+            for geometry in geometries {
                 var path = Path()
-                path.move(to: CGPoint(x: parent.position.x, y: parentBottomY))
-                path.addLine(to: CGPoint(x: parent.position.x, y: laneY))
-
-                if children.count > 1 || abs(parent.position.x - minChildX) > 1 {
-                    path.addLine(to: CGPoint(x: minChildX, y: laneY))
+                guard let first = geometry.points.first else { continue }
+                path.move(to: first)
+                for point in geometry.points.dropFirst() {
+                    path.addLine(to: point)
                 }
 
-                if children.count > 1 || abs(maxChildX - minChildX) > 1 {
-                    path.move(to: CGPoint(x: minChildX, y: laneY))
-                    path.addLine(to: CGPoint(x: maxChildX, y: laneY))
-                }
-
-                for child in children {
-                    let childTopY = child.node.position.y - (cardSize.height / 2) + 4
-                    path.move(to: CGPoint(x: child.node.position.x, y: laneY))
-                    path.addLine(to: CGPoint(x: child.node.position.x, y: childTopY))
-                }
-
-                context.stroke(
-                    path,
-                    with: .color(color),
-                    style: StrokeStyle(lineWidth: 2.2, lineCap: .round, lineJoin: .round)
+                let isSelected = geometry.link.id == selectedLinkID
+                let strokeStyle = StrokeStyle(
+                    lineWidth: isSelected ? 3.8 : (geometry.isSecondary ? 1.8 : 2.2),
+                    lineCap: .round,
+                    lineJoin: .round,
+                    dash: geometry.isSecondary ? [6, 4] : []
                 )
+                let strokeColor = isSelected ? Color.red : geometry.link.color.opacity(geometry.isSecondary ? 0.9 : 1)
+                context.stroke(path, with: .color(strokeColor), style: strokeStyle)
             }
 
-            for (index, link) in secondaryLinks.enumerated() {
-                guard
-                    let from = nodeMap[link.fromID],
-                    let to = nodeMap[link.toID]
-                else { continue }
-
+            if
+                let draft,
+                let source = nodes.first(where: { $0.id == draft.sourceID })
+            {
                 let start = CGPoint(
-                    x: from.position.x,
-                    y: from.position.y + (cardSize.height / 2) - 4
+                    x: source.position.x,
+                    y: source.position.y + (cardSize.height / 2) - 4
                 )
-                let end = CGPoint(
-                    x: to.position.x,
-                    y: to.position.y - (cardSize.height / 2) + 4
-                )
-                let detourY = max(start.y, end.y) + 70 + CGFloat(index % 4) * 14
 
-                var path = Path()
-                path.move(to: start)
-                path.addLine(to: CGPoint(x: start.x, y: detourY))
-                path.addLine(to: CGPoint(x: end.x, y: detourY))
-                path.addLine(to: end)
+                var previewPath = Path()
+                previewPath.move(to: start)
+                previewPath.addLine(to: draft.currentPoint)
 
                 context.stroke(
-                    path,
-                    with: .color(link.color.opacity(0.9)),
-                    style: StrokeStyle(lineWidth: 1.8, lineCap: .round, lineJoin: .round, dash: [6, 4])
+                    previewPath,
+                    with: .color(draft.hoveredTargetID == nil ? Color.blue : Color.green),
+                    style: StrokeStyle(lineWidth: 2.4, lineCap: .round, lineJoin: .round, dash: [5, 4])
                 )
             }
         }
     }
+}
+
+private struct LinkHandle: View {
+    let isActive: Bool
+
+    var body: some View {
+        Circle()
+            .fill(isActive ? Color.green : Color.blue)
+            .overlay(
+                Image(systemName: "arrow.up.right")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.white)
+            )
+            .frame(width: 24, height: 24)
+            .shadow(color: .black.opacity(0.18), radius: 6, y: 2)
+    }
+}
+
+private struct LinkDraft {
+    let sourceID: UUID
+    let currentPoint: CGPoint
+    let hoveredTargetID: UUID?
+}
+
+private struct LinkGeometry {
+    let link: NodeLink
+    let points: [CGPoint]
+    let isSecondary: Bool
+}
+
+private func buildLinkGeometries(
+    nodes: [OrgNode],
+    links: [NodeLink],
+    cardSize: CGSize
+) -> [LinkGeometry] {
+    let nodeMap = Dictionary(uniqueKeysWithValues: nodes.map { ($0.id, $0) })
+    let currentXByID = Dictionary(uniqueKeysWithValues: nodes.map { ($0.id, $0.position.x) })
+    let primaryParentByChildID = computePrimaryParentByChild(
+        nodeIDs: Set(nodes.map(\.id)),
+        links: links,
+        currentXByID: currentXByID
+    )
+
+    let primaryLinks = links.filter { primaryParentByChildID[$0.toID] == $0.fromID }
+    let secondaryLinks = links.filter { primaryParentByChildID[$0.toID] != $0.fromID }
+
+    let parentIDs = Set(primaryLinks.map(\.fromID))
+    let parentNodes = nodes.filter { parentIDs.contains($0.id) }
+    var groupedParents: [Int: [OrgNode]] = [:]
+    for parent in parentNodes {
+        let levelKey = Int((parent.position.y / 10).rounded())
+        groupedParents[levelKey, default: []].append(parent)
+    }
+
+    var laneOffsetByParentID: [UUID: CGFloat] = [:]
+    let levelStep: CGFloat = 14
+    for (_, parentsAtLevel) in groupedParents {
+        let sorted = parentsAtLevel.sorted { $0.position.x < $1.position.x }
+        let midpoint = CGFloat(sorted.count - 1) / 2
+        for (index, parent) in sorted.enumerated() {
+            laneOffsetByParentID[parent.id] = (CGFloat(index) - midpoint) * levelStep
+        }
+    }
+
+    let groupedPrimary = Dictionary(grouping: primaryLinks, by: \.fromID)
+    var laneYByParentID: [UUID: CGFloat] = [:]
+    for (parentID, parentLinks) in groupedPrimary {
+        guard let parent = nodeMap[parentID] else { continue }
+        let children = parentLinks.compactMap { link in nodeMap[link.toID] }
+        guard !children.isEmpty else { continue }
+
+        let parentBottomY = parent.position.y + (cardSize.height / 2) - 4
+        let childTopYs = children.map { $0.position.y - (cardSize.height / 2) + 4 }
+        let childTopMinY = childTopYs.min() ?? parentBottomY + 40
+        let baseLaneY = parentBottomY + 52 + (laneOffsetByParentID[parentID] ?? 0)
+        laneYByParentID[parentID] = min(max(parentBottomY + 14, baseLaneY), childTopMinY - 16)
+    }
+
+    var result: [LinkGeometry] = []
+
+    for link in primaryLinks {
+        guard
+            let parent = nodeMap[link.fromID],
+            let child = nodeMap[link.toID]
+        else { continue }
+
+        let start = CGPoint(
+            x: parent.position.x,
+            y: parent.position.y + (cardSize.height / 2) - 4
+        )
+        let end = CGPoint(
+            x: child.position.x,
+            y: child.position.y - (cardSize.height / 2) + 4
+        )
+        let laneY = laneYByParentID[link.fromID] ?? ((start.y + end.y) / 2)
+        result.append(
+            LinkGeometry(
+                link: link,
+                points: [start, CGPoint(x: start.x, y: laneY), CGPoint(x: end.x, y: laneY), end],
+                isSecondary: false
+            )
+        )
+    }
+
+    let sortedSecondary = secondaryLinks.sorted { lhs, rhs in
+        if lhs.fromID == rhs.fromID {
+            return lhs.toID.uuidString < rhs.toID.uuidString
+        }
+        return lhs.fromID.uuidString < rhs.fromID.uuidString
+    }
+    for (index, link) in sortedSecondary.enumerated() {
+        guard
+            let from = nodeMap[link.fromID],
+            let to = nodeMap[link.toID]
+        else { continue }
+
+        let start = CGPoint(
+            x: from.position.x,
+            y: from.position.y + (cardSize.height / 2) - 4
+        )
+        let end = CGPoint(
+            x: to.position.x,
+            y: to.position.y - (cardSize.height / 2) + 4
+        )
+        let detourY = max(start.y, end.y) + 70 + CGFloat(index % 4) * 14
+        result.append(
+            LinkGeometry(
+                link: link,
+                points: [start, CGPoint(x: start.x, y: detourY), CGPoint(x: end.x, y: detourY), end],
+                isSecondary: true
+            )
+        )
+    }
+
+    return result
 }
 
 private struct DotGridBackground: View {
@@ -968,6 +1545,7 @@ private struct DotGridBackground: View {
 private struct NodeCard: View {
     let node: OrgNode
     let isSelected: Bool
+    let isLinkTargeted: Bool
 
     var body: some View {
         HStack(spacing: 12) {
@@ -1006,8 +1584,8 @@ private struct NodeCard: View {
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .stroke(
-                    isSelected ? Color.orange : Color.black.opacity(0.08),
-                    lineWidth: isSelected ? 2 : 1
+                    isSelected ? Color.orange : (isLinkTargeted ? Color.green : Color.black.opacity(0.08)),
+                    lineWidth: isSelected || isLinkTargeted ? 2 : 1
                 )
         )
         .shadow(color: .black.opacity(0.08), radius: 10, y: 2)
@@ -1267,11 +1845,6 @@ private struct NodeLink: Identifiable {
             fromID: UUID(uuidString: "B4D2B27C-0C57-494C-89CA-61B8BE0064F7")!,
             toID: UUID(uuidString: "731E68C0-1D97-4FCA-9EED-EA5C8D13661D")!,
             tone: .orange
-        ),
-        NodeLink(
-            fromID: UUID(uuidString: "6246D613-DBB4-4D30-8168-08D0A1ED2BB3")!,
-            toID: UUID(uuidString: "731E68C0-1D97-4FCA-9EED-EA5C8D13661D")!,
-            tone: .orange
         )
     ]
 }
@@ -1407,8 +1980,7 @@ private enum PresetHierarchyTemplate: String, CaseIterable, Identifiable {
             NodeLink(fromID: coordinatorID, toID: researchID, tone: .blue),
             NodeLink(fromID: plannerID, toID: buildID, tone: .orange),
             NodeLink(fromID: plannerID, toID: qualityID, tone: .orange),
-            NodeLink(fromID: buildID, toID: releaseID, tone: .teal),
-            NodeLink(fromID: qualityID, toID: releaseID, tone: .orange)
+            NodeLink(fromID: buildID, toID: releaseID, tone: .teal)
         ]
 
         return makeHierarchySnapshot(nodes: nodes, links: links)
@@ -1436,11 +2008,215 @@ private enum PresetHierarchyTemplate: String, CaseIterable, Identifiable {
             NodeLink(fromID: triageID, toID: remediationID, tone: .orange),
             NodeLink(fromID: triageID, toID: commsID, tone: .orange),
             NodeLink(fromID: triageID, toID: forensicsID, tone: .orange),
-            NodeLink(fromID: remediationID, toID: approverID, tone: .teal),
-            NodeLink(fromID: forensicsID, toID: approverID, tone: .green)
+            NodeLink(fromID: remediationID, toID: approverID, tone: .teal)
         ]
 
         return makeHierarchySnapshot(nodes: nodes, links: links)
+    }
+}
+
+private enum OrchestrationNodeKind: String, Codable {
+    case human
+    case agent
+}
+
+private struct OrchestrationNode: Identifiable, Codable {
+    let id: UUID
+    let name: String
+    let title: String
+    let type: OrchestrationNodeKind
+    let provider: String
+    let roleDescription: String
+    let securityAccess: Set<String>
+}
+
+private struct OrchestrationEdge: Codable {
+    let parentID: UUID
+    let childID: UUID
+}
+
+private struct OrchestrationGraph: Codable {
+    let nodes: [OrchestrationNode]
+    let edges: [OrchestrationEdge]
+}
+
+private struct CoordinatorTaskPacket: Identifiable, Codable {
+    let id: String
+    let parentTaskID: String
+    let assignedNodeID: UUID
+    let assignedNodeName: String
+    let objective: String
+    let requiredOutputSchema: String
+    let allowedPermissions: [String]
+}
+
+private struct CoordinatorPlan: Codable {
+    let planID: String
+    let coordinatorID: UUID
+    let coordinatorName: String
+    let goal: String
+    let packets: [CoordinatorTaskPacket]
+    let createdAt: Date
+}
+
+private struct MCPTaskRequest: Codable {
+    let packetID: String
+    let objective: String
+    let schema: String
+    let roleContext: String
+}
+
+private struct MCPTaskResponse: Codable {
+    let summary: String
+    let confidence: Double
+    let completed: Bool
+}
+
+private struct CoordinatorTaskResult: Identifiable, Codable {
+    let id: String
+    let packetID: String
+    let assignedNodeName: String
+    let summary: String
+    let confidence: Double
+    let completed: Bool
+    let finishedAt: Date
+}
+
+private struct CoordinatorRun: Codable {
+    let runID: String
+    let planID: String
+    let results: [CoordinatorTaskResult]
+    let startedAt: Date
+    let finishedAt: Date
+
+    var succeededCount: Int {
+        results.filter(\.completed).count
+    }
+}
+
+private protocol MCPClient {
+    func execute(_ request: MCPTaskRequest) async -> MCPTaskResponse
+}
+
+private struct MockMCPClient: MCPClient {
+    func execute(_ request: MCPTaskRequest) async -> MCPTaskResponse {
+        try? await Task.sleep(nanoseconds: 120_000_000)
+        let normalizedObjective = request.objective.trimmingCharacters(in: .whitespacesAndNewlines)
+        let summary = "Completed: \(normalizedObjective). Output conforms to \(request.schema)."
+        return MCPTaskResponse(summary: summary, confidence: 0.82, completed: true)
+    }
+}
+
+private struct CoordinatorOrchestrator {
+    func plan(goal: String, graph: OrchestrationGraph) -> CoordinatorPlan {
+        precondition(!graph.nodes.isEmpty, "Graph must contain at least one node")
+        let nodeByID = Dictionary(uniqueKeysWithValues: graph.nodes.map { ($0.id, $0) })
+        let childIDs = Set(graph.edges.map(\.childID))
+        let rootCandidates = graph.nodes.filter { !childIDs.contains($0.id) }
+
+        let coordinator = preferredCoordinator(from: rootCandidates, fallback: graph.nodes)
+        let directChildIDs = graph.edges
+            .filter { $0.parentID == coordinator.id }
+            .map(\.childID)
+
+        let delegateNodes = directChildIDs.isEmpty
+            ? graph.nodes.filter { $0.id != coordinator.id }
+            : directChildIDs.compactMap { nodeByID[$0] }
+
+        let parentTaskID = "TASK-\(UUID().uuidString.prefix(8))"
+        let packets = delegateNodes.enumerated().map { index, node in
+            CoordinatorTaskPacket(
+                id: "\(parentTaskID)-\(index + 1)",
+                parentTaskID: parentTaskID,
+                assignedNodeID: node.id,
+                assignedNodeName: node.name,
+                objective: objectiveForNode(node, globalGoal: goal),
+                requiredOutputSchema: schemaForNode(node),
+                allowedPermissions: node.securityAccess.sorted()
+            )
+        }
+
+        return CoordinatorPlan(
+            planID: "PLAN-\(UUID().uuidString.prefix(8))",
+            coordinatorID: coordinator.id,
+            coordinatorName: coordinator.name,
+            goal: goal,
+            packets: packets,
+            createdAt: Date()
+        )
+    }
+
+    func execute(plan: CoordinatorPlan, using client: MCPClient) async -> CoordinatorRun {
+        let startedAt = Date()
+        var results: [CoordinatorTaskResult] = []
+        results.reserveCapacity(plan.packets.count)
+
+        for packet in plan.packets {
+            let response = await client.execute(
+                MCPTaskRequest(
+                    packetID: packet.id,
+                    objective: packet.objective,
+                    schema: packet.requiredOutputSchema,
+                    roleContext: packet.assignedNodeName
+                )
+            )
+            let result = CoordinatorTaskResult(
+                id: UUID().uuidString,
+                packetID: packet.id,
+                assignedNodeName: packet.assignedNodeName,
+                summary: response.summary,
+                confidence: response.confidence,
+                completed: response.completed,
+                finishedAt: Date()
+            )
+            results.append(result)
+        }
+
+        return CoordinatorRun(
+            runID: "RUN-\(UUID().uuidString.prefix(8))",
+            planID: plan.planID,
+            results: results,
+            startedAt: startedAt,
+            finishedAt: Date()
+        )
+    }
+
+    private func preferredCoordinator(from roots: [OrchestrationNode], fallback allNodes: [OrchestrationNode]) -> OrchestrationNode {
+        let source = roots.isEmpty ? allNodes : roots
+        if let preferred = source.first(where: {
+            $0.name.localizedCaseInsensitiveContains("coordinator")
+                || $0.title.localizedCaseInsensitiveContains("coordinator")
+                || $0.name.localizedCaseInsensitiveContains("lead")
+                || $0.title.localizedCaseInsensitiveContains("lead")
+        }) {
+            return preferred
+        }
+        return source.sorted { $0.name < $1.name }.first ?? allNodes.first!
+    }
+
+    private func objectiveForNode(_ node: OrchestrationNode, globalGoal: String) -> String {
+        let context = node.roleDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        if context.isEmpty {
+            return "Contribute to goal: \(globalGoal)"
+        }
+        return "For goal '\(globalGoal)', handle this scope: \(context)"
+    }
+
+    private func schemaForNode(_ node: OrchestrationNode) -> String {
+        switch node.type {
+        case .human:
+            return "human_approval_v1"
+        case .agent:
+            if node.roleDescription.localizedCaseInsensitiveContains("research") {
+                return "research_brief_v1"
+            }
+            if node.roleDescription.localizedCaseInsensitiveContains("test")
+                || node.roleDescription.localizedCaseInsensitiveContains("review")
+            {
+                return "validation_report_v1"
+            }
+            return "task_result_v1"
+        }
     }
 }
 

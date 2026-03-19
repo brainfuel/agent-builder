@@ -9,10 +9,14 @@ import Foundation
 import SwiftData
 
 @Model
-final class Item {
-    var timestamp: Date
-    
-    init(timestamp: Date) {
-        self.timestamp = timestamp
+final class GraphDocument {
+    @Attribute(.unique) var key: String
+    var snapshotData: Data
+    var updatedAt: Date
+
+    init(key: String = "active", snapshotData: Data, updatedAt: Date = Date()) {
+        self.key = key
+        self.snapshotData = snapshotData
+        self.updatedAt = updatedAt
     }
 }
