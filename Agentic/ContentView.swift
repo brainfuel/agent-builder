@@ -31,6 +31,8 @@ struct ContentView: View {
     @State private var latestCoordinatorPlan: CoordinatorPlan?
     @State private var latestCoordinatorRun: CoordinatorRun?
     @State private var isExecutingCoordinator = false
+    @State private var coordinatorRunMode: CoordinatorExecutionMode = .simulation
+    @State private var coordinatorTrace: [CoordinatorTraceStep] = []
 
     private var visibleNodes: [OrgNode] {
         guard !searchText.isEmpty else { return nodes }
@@ -244,6 +246,14 @@ struct ContentView: View {
                     .textFieldStyle(.roundedBorder)
                     .lineLimit(1)
 
+                Picker("Execution Mode", selection: $coordinatorRunMode) {
+                    ForEach(CoordinatorExecutionMode.allCases) { mode in
+                        Text(mode.label).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 220)
+
                 Button {
                     runCoordinatorPipeline()
                 } label: {
@@ -251,7 +261,7 @@ struct ContentView: View {
                         ProgressView()
                             .controlSize(.small)
                     } else {
-                        Text("Run Plan")
+                        Text(coordinatorRunMode == .simulation ? "Simulate" : "Run Live")
                     }
                 }
                 .buttonStyle(.borderedProminent)
@@ -265,9 +275,38 @@ struct ContentView: View {
             }
 
             if let latestCoordinatorRun {
-                Text("Last run: \(latestCoordinatorRun.succeededCount)/\(latestCoordinatorRun.results.count) tasks succeeded.")
+                Text(
+                    "Last \(latestCoordinatorRun.mode.label.lowercased()) run: \(latestCoordinatorRun.succeededCount)/\(latestCoordinatorRun.results.count) tasks succeeded."
+                )
                     .font(.footnote)
                     .foregroundStyle(latestCoordinatorRun.succeededCount == latestCoordinatorRun.results.count ? .green : .orange)
+            }
+
+            if !coordinatorTrace.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text("Run Trace")
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Clear") {
+                            coordinatorTrace = []
+                        }
+                        .buttonStyle(.borderless)
+                        .font(.footnote)
+                        .disabled(isExecutingCoordinator)
+                    }
+
+                    ScrollView {
+                        VStack(spacing: 8) {
+                            ForEach(Array(coordinatorTrace.enumerated()), id: \.element.id) { index, step in
+                                CoordinatorTraceRow(stepNumber: index + 1, step: step)
+                            }
+                        }
+                        .padding(.vertical, 2)
+                    }
+                    .frame(maxHeight: 200)
+                }
             }
         }
         .padding(.horizontal, 24)
@@ -458,15 +497,25 @@ struct ContentView: View {
                 : normalizedGoal,
             graph: orchestrationGraph
         )
+        let mode = coordinatorRunMode
         latestCoordinatorPlan = plan
         latestCoordinatorRun = nil
+        coordinatorTrace = plan.packets.map {
+            CoordinatorTraceStep(
+                packetID: $0.id,
+                assignedNodeName: $0.assignedNodeName,
+                objective: $0.objective,
+                status: .queued,
+                summary: nil,
+                confidence: nil,
+                startedAt: nil,
+                finishedAt: nil
+            )
+        }
 
         isExecutingCoordinator = true
-        let orchestrator = CoordinatorOrchestrator()
-        let client = MockMCPClient()
-
         Task {
-            let run = await orchestrator.execute(plan: plan, using: client)
+            let run = await executeCoordinatorPlan(plan: plan, mode: mode)
             await MainActor.run {
                 latestCoordinatorRun = run
                 isExecutingCoordinator = false
