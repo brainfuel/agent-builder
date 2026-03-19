@@ -523,6 +523,121 @@ struct ContentView: View {
         }
     }
 
+    private func executeCoordinatorPlan(
+        plan: CoordinatorPlan,
+        mode: CoordinatorExecutionMode
+    ) async -> CoordinatorRun {
+        let startedAt = Date()
+        let client = MockMCPClient()
+        var results: [CoordinatorTaskResult] = []
+        results.reserveCapacity(plan.packets.count)
+
+        for packet in plan.packets {
+            let startedAtStep = Date()
+            await MainActor.run {
+                updateTraceStep(
+                    packetID: packet.id,
+                    status: .running,
+                    startedAt: startedAtStep
+                )
+            }
+
+            let response: MCPTaskResponse
+            switch mode {
+            case .simulation:
+                response = await simulatePacketExecution(packet)
+            case .liveMCP:
+                response = await client.execute(
+                    MCPTaskRequest(
+                        packetID: packet.id,
+                        objective: packet.objective,
+                        schema: packet.requiredOutputSchema,
+                        roleContext: packet.assignedNodeName
+                    )
+                )
+            }
+
+            let finishedAtStep = Date()
+            let completed = response.completed
+            let result = CoordinatorTaskResult(
+                id: UUID().uuidString,
+                packetID: packet.id,
+                assignedNodeName: packet.assignedNodeName,
+                summary: response.summary,
+                confidence: response.confidence,
+                completed: completed,
+                finishedAt: finishedAtStep
+            )
+            results.append(result)
+
+            await MainActor.run {
+                updateTraceStep(
+                    packetID: packet.id,
+                    status: completed ? .succeeded : .failed,
+                    summary: response.summary,
+                    confidence: response.confidence,
+                    finishedAt: finishedAtStep
+                )
+            }
+        }
+
+        return CoordinatorRun(
+            runID: "RUN-\(UUID().uuidString.prefix(8))",
+            planID: plan.planID,
+            mode: mode,
+            results: results,
+            startedAt: startedAt,
+            finishedAt: Date()
+        )
+    }
+
+    private func simulatePacketExecution(_ packet: CoordinatorTaskPacket) async -> MCPTaskResponse {
+        let permissionPreview = packet.allowedPermissions.prefix(3).joined(separator: ", ")
+        let hasRestrictedAccess = packet.allowedPermissions.contains(SecurityAccess.secretsRead.rawValue)
+            || packet.allowedPermissions.contains(SecurityAccess.terminalExec.rawValue)
+
+        let delay: UInt64 = hasRestrictedAccess ? 280_000_000 : 180_000_000
+        try? await Task.sleep(nanoseconds: delay)
+
+        let summary = [
+            "Simulated output for \(packet.assignedNodeName).",
+            "Objective: \(packet.objective)",
+            permissionPreview.isEmpty ? "Policy check: no elevated permissions required." : "Policy check: \(permissionPreview).",
+            "Output schema: \(packet.requiredOutputSchema)."
+        ].joined(separator: " ")
+
+        return MCPTaskResponse(
+            summary: summary,
+            confidence: hasRestrictedAccess ? 0.79 : 0.86,
+            completed: true
+        )
+    }
+
+    @MainActor
+    private func updateTraceStep(
+        packetID: String,
+        status: CoordinatorTraceStatus,
+        summary: String? = nil,
+        confidence: Double? = nil,
+        startedAt: Date? = nil,
+        finishedAt: Date? = nil
+    ) {
+        guard let index = coordinatorTrace.firstIndex(where: { $0.packetID == packetID }) else { return }
+        coordinatorTrace[index].status = status
+        if let summary {
+            coordinatorTrace[index].summary = summary
+        }
+        if let confidence {
+            coordinatorTrace[index].confidence = confidence
+        }
+        if let startedAt {
+            coordinatorTrace[index].startedAt = startedAt
+        }
+        if let finishedAt {
+            coordinatorTrace[index].finishedAt = finishedAt
+        }
+    }
+
     private func handleCanvasTap(at point: CGPoint, visibleNodes: [OrgNode], visibleLinks: [NodeLink]) {
         guard linkingFromNodeID == nil else { return }
 
@@ -1379,6 +1494,60 @@ private struct NodeInspector: View {
     }
 }
 
+private struct CoordinatorTraceRow: View {
+    let stepNumber: Int
+    let step: CoordinatorTraceStep
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text("\(stepNumber). \(step.assignedNodeName)")
+                    .font(.footnote.weight(.semibold))
+                    .lineLimit(1)
+
+                Spacer(minLength: 8)
+
+                Text(step.status.label)
+                    .font(.caption2.weight(.bold))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(
+                        Capsule()
+                            .fill(step.status.color.opacity(0.16))
+                    )
+                    .foregroundStyle(step.status.color)
+
+                if let durationText = step.durationText {
+                    Text(durationText)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Text(step.objective)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+
+            if let summary = step.summary {
+                Text(summary)
+                    .font(.caption)
+                    .lineLimit(3)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color(uiColor: .systemBackground))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(Color.black.opacity(0.06), lineWidth: 1)
+        )
+    }
+}
+
 private struct ConnectionLayer: View {
     let nodes: [OrgNode]
     let links: [NodeLink]
@@ -2069,6 +2238,77 @@ private enum OrchestrationNodeKind: String, Codable {
     case agent
 }
 
+private enum CoordinatorExecutionMode: String, CaseIterable, Identifiable, Codable {
+    case simulation
+    case liveMCP
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .simulation:
+            return "Simulation"
+        case .liveMCP:
+            return "Live MCP"
+        }
+    }
+}
+
+private enum CoordinatorTraceStatus: String, Codable {
+    case queued
+    case running
+    case succeeded
+    case failed
+
+    var label: String {
+        switch self {
+        case .queued:
+            return "Queued"
+        case .running:
+            return "Running"
+        case .succeeded:
+            return "Succeeded"
+        case .failed:
+            return "Failed"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .queued:
+            return .gray
+        case .running:
+            return .blue
+        case .succeeded:
+            return .green
+        case .failed:
+            return .red
+        }
+    }
+}
+
+private struct CoordinatorTraceStep: Identifiable {
+    var id: String { packetID }
+    let packetID: String
+    let assignedNodeName: String
+    let objective: String
+    var status: CoordinatorTraceStatus
+    var summary: String?
+    var confidence: Double?
+    var startedAt: Date?
+    var finishedAt: Date?
+
+    var durationText: String? {
+        guard let startedAt else { return nil }
+        let endTime = finishedAt ?? Date()
+        let duration = endTime.timeIntervalSince(startedAt)
+        if duration < 1 {
+            return String(format: "%.0fms", duration * 1000)
+        }
+        return String(format: "%.2fs", duration)
+    }
+}
+
 private struct OrchestrationNode: Identifiable, Codable {
     let id: UUID
     let name: String
@@ -2134,6 +2374,7 @@ private struct CoordinatorTaskResult: Identifiable, Codable {
 private struct CoordinatorRun: Codable {
     let runID: String
     let planID: String
+    let mode: CoordinatorExecutionMode
     let results: [CoordinatorTaskResult]
     let startedAt: Date
     let finishedAt: Date
@@ -2160,17 +2401,16 @@ private struct CoordinatorOrchestrator {
     func plan(goal: String, graph: OrchestrationGraph) -> CoordinatorPlan {
         precondition(!graph.nodes.isEmpty, "Graph must contain at least one node")
         let nodeByID = Dictionary(uniqueKeysWithValues: graph.nodes.map { ($0.id, $0) })
+        let outgoingByParentID = Dictionary(grouping: graph.edges, by: \.parentID)
         let childIDs = Set(graph.edges.map(\.childID))
         let rootCandidates = graph.nodes.filter { !childIDs.contains($0.id) }
 
         let coordinator = preferredCoordinator(from: rootCandidates, fallback: graph.nodes)
-        let directChildIDs = graph.edges
-            .filter { $0.parentID == coordinator.id }
-            .map(\.childID)
-
-        let delegateNodes = directChildIDs.isEmpty
-            ? graph.nodes.filter { $0.id != coordinator.id }
-            : directChildIDs.compactMap { nodeByID[$0] }
+        let delegateNodes = collectDescendantNodes(
+            under: coordinator.id,
+            nodeByID: nodeByID,
+            outgoingByParentID: outgoingByParentID
+        )
 
         let parentTaskID = "TASK-\(UUID().uuidString.prefix(8))"
         let packets = delegateNodes.enumerated().map { index, node in
