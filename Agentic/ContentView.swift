@@ -2713,7 +2713,9 @@ private struct CoordinatorOrchestrator {
                 MCPTaskRequest(
                     packetID: packet.id,
                     objective: packet.objective,
-                    schema: packet.requiredOutputSchema,
+                    inputSchema: packet.requiredInputSchema,
+                    outputSchema: packet.requiredOutputSchema,
+                    handoffSummaries: [],
                     roleContext: packet.assignedNodeName
                 )
             )
@@ -2759,23 +2761,6 @@ private struct CoordinatorOrchestrator {
         }
         return "For goal '\(globalGoal)', handle this scope: \(context)"
     }
-
-    private func schemaForNode(_ node: OrchestrationNode) -> String {
-        switch node.type {
-        case .human:
-            return "human_approval_v1"
-        case .agent:
-            if node.roleDescription.localizedCaseInsensitiveContains("research") {
-                return "research_brief_v1"
-            }
-            if node.roleDescription.localizedCaseInsensitiveContains("test")
-                || node.roleDescription.localizedCaseInsensitiveContains("review")
-            {
-                return "validation_report_v1"
-            }
-            return "task_result_v1"
-        }
-    }
 }
 
 private func computePrimaryParentByChild(
@@ -2809,6 +2794,37 @@ private func computePrimaryParentByChild(
     }
 
     return primaryByChildID
+}
+
+private enum HandoffSchema: String, CaseIterable, Identifiable, Codable {
+    case goalBriefV1 = "goal_brief_v1"
+    case strategyPlanV1 = "strategy_plan_v1"
+    case researchBriefV1 = "research_brief_v1"
+    case taskResultV1 = "task_result_v1"
+    case buildPatchV1 = "build_patch_v1"
+    case validationReportV1 = "validation_report_v1"
+    case releaseDecisionV1 = "release_decision_v1"
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .goalBriefV1:
+            return "Goal Brief v1"
+        case .strategyPlanV1:
+            return "Strategy Plan v1"
+        case .researchBriefV1:
+            return "Research Brief v1"
+        case .taskResultV1:
+            return "Task Result v1"
+        case .buildPatchV1:
+            return "Build Patch v1"
+        case .validationReportV1:
+            return "Validation Report v1"
+        case .releaseDecisionV1:
+            return "Release Decision v1"
+        }
+    }
 }
 
 private enum NodeType: String, CaseIterable, Identifiable, Codable {
