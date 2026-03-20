@@ -761,6 +761,77 @@ struct ContentView: View {
         }
     }
 
+    private func generateSuggestedStructure() {
+        let normalizedGoal = orchestrationGoal.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedGoal.isEmpty else {
+            synthesisStatusMessage = "Enter a coordinator goal first."
+            return
+        }
+
+        let synthesizer = TeamStructureSynthesizer()
+        let requiredQuestions = synthesizer.discoveryQuestions(goal: normalizedGoal, context: synthesisContext)
+        let previousAnswers = Dictionary(uniqueKeysWithValues: synthesisQuestions.map { ($0.key, $0.answer) })
+        synthesisQuestions = requiredQuestions.map {
+            SynthesisQuestionState(key: $0, answer: previousAnswers[$0] ?? "")
+        }
+
+        let answers = Dictionary(uniqueKeysWithValues: synthesisQuestions.map {
+            ($0.key, $0.answer.trimmingCharacters(in: .whitespacesAndNewlines))
+        })
+
+        synthesizedStructure = synthesizer.synthesize(
+            goal: normalizedGoal,
+            context: synthesisContext,
+            answers: answers
+        )
+
+        let unansweredCount = synthesisQuestions.filter {
+            $0.answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }.count
+
+        if unansweredCount > 0 {
+            synthesisStatusMessage =
+                "Draft generated. \(unansweredCount) discovery question(s) are unanswered; fill them and re-generate for a tighter team plan."
+        } else {
+            synthesisStatusMessage = "Suggested structure generated from goal, context, and discovery answers."
+        }
+    }
+
+    private func applySynthesizedStructure() {
+        guard let synthesizedStructure else { return }
+        applyStructureSnapshot(synthesizedStructure)
+        self.synthesizedStructure = nil
+        synthesisStatusMessage = "Applied suggested structure."
+    }
+
+    private func discardSynthesizedStructure() {
+        synthesizedStructure = nil
+        synthesisStatusMessage = "Suggestion discarded."
+    }
+
+    private func summarizeSynthesisPreview(for snapshot: HierarchySnapshot) -> SynthesisPreviewSummary {
+        let currentNames = Set(nodes.map { $0.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() })
+        let suggestedNames = Set(snapshot.nodes.map { $0.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() })
+
+        let addedNames = snapshot.nodes
+            .map(\.name)
+            .filter { !currentNames.contains($0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) }
+            .sorted()
+        let removedNames = nodes
+            .map(\.name)
+            .filter { !suggestedNames.contains($0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) }
+            .sorted()
+
+        return SynthesisPreviewSummary(
+            suggestedNodeCount: snapshot.nodes.count,
+            suggestedLinkCount: snapshot.links.count,
+            nodeDelta: snapshot.nodes.count - nodes.count,
+            linkDelta: snapshot.links.count - links.count,
+            addedNodeNames: Array(addedNames.prefix(8)),
+            removedNodeNames: Array(removedNames.prefix(8))
+        )
+    }
+
     private func handleCanvasTap(at point: CGPoint, visibleNodes: [OrgNode], visibleLinks: [NodeLink]) {
         guard linkingFromNodeID == nil else { return }
 
