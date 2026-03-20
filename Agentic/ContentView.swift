@@ -533,6 +533,12 @@ struct ContentView: View {
         let client = MockMCPClient()
         var results: [CoordinatorTaskResult] = []
         results.reserveCapacity(plan.packets.count)
+        var outputsByNodeID: [UUID: ProducedHandoff] = [
+            plan.coordinatorID: ProducedHandoff(
+                schema: plan.coordinatorOutputSchema,
+                summary: "Coordinator goal packet: \(plan.goal)"
+            )
+        ]
 
         for packet in plan.packets {
             let startedAtStep = Date()
@@ -544,16 +550,52 @@ struct ContentView: View {
                 )
             }
 
+            let handoffValidation = validateRequiredHandoffs(
+                for: packet,
+                outputsByNodeID: outputsByNodeID,
+                goal: plan.goal
+            )
+
+            if !handoffValidation.isValid {
+                let finishedAtStep = Date()
+                let blockedResult = CoordinatorTaskResult(
+                    id: UUID().uuidString,
+                    packetID: packet.id,
+                    assignedNodeName: packet.assignedNodeName,
+                    summary: handoffValidation.message,
+                    confidence: 0,
+                    completed: false,
+                    finishedAt: finishedAtStep
+                )
+                results.append(blockedResult)
+
+                await MainActor.run {
+                    updateTraceStep(
+                        packetID: packet.id,
+                        status: .blocked,
+                        summary: handoffValidation.message,
+                        confidence: 0,
+                        finishedAt: finishedAtStep
+                    )
+                }
+                continue
+            }
+
             let response: MCPTaskResponse
             switch mode {
             case .simulation:
-                response = await simulatePacketExecution(packet)
+                response = await simulatePacketExecution(
+                    packet,
+                    handoffSummaries: handoffValidation.handoffSummaries
+                )
             case .liveMCP:
                 response = await client.execute(
                     MCPTaskRequest(
                         packetID: packet.id,
                         objective: packet.objective,
-                        schema: packet.requiredOutputSchema,
+                        inputSchema: packet.requiredInputSchema,
+                        outputSchema: packet.requiredOutputSchema,
+                        handoffSummaries: handoffValidation.handoffSummaries,
                         roleContext: packet.assignedNodeName
                     )
                 )
@@ -571,6 +613,12 @@ struct ContentView: View {
                 finishedAt: finishedAtStep
             )
             results.append(result)
+            if completed {
+                outputsByNodeID[packet.assignedNodeID] = ProducedHandoff(
+                    schema: packet.requiredOutputSchema,
+                    summary: response.summary
+                )
+            }
 
             await MainActor.run {
                 updateTraceStep(
@@ -612,6 +660,62 @@ struct ContentView: View {
             summary: summary,
             confidence: hasRestrictedAccess ? 0.79 : 0.86,
             completed: true
+        )
+    }
+
+    private func validateRequiredHandoffs(
+        for packet: CoordinatorTaskPacket,
+        outputsByNodeID: [UUID: ProducedHandoff],
+        goal: String
+    ) -> HandoffValidation {
+        if packet.requiredHandoffs.isEmpty {
+            if packet.requiredInputSchema != .goalBriefV1 {
+                return HandoffValidation(
+                    isValid: false,
+                    message: "Blocked: \(packet.assignedNodeName) expects \(packet.requiredInputSchema.label) but has no parent handoff.",
+                    handoffSummaries: []
+                )
+            }
+            return HandoffValidation(
+                isValid: true,
+                message: "",
+                handoffSummaries: ["Coordinator goal: \(goal)"]
+            )
+        }
+
+        var summaries: [String] = []
+        for requirement in packet.requiredHandoffs {
+            guard let handoff = outputsByNodeID[requirement.fromNodeID] else {
+                return HandoffValidation(
+                    isValid: false,
+                    message: "Blocked: missing handoff from \(requirement.fromNodeName).",
+                    handoffSummaries: []
+                )
+            }
+
+            if handoff.schema != requirement.outputSchema {
+                return HandoffValidation(
+                    isValid: false,
+                    message: "Blocked: \(requirement.fromNodeName) produced \(handoff.schema.label), expected \(requirement.outputSchema.label).",
+                    handoffSummaries: []
+                )
+            }
+
+            if requirement.outputSchema != packet.requiredInputSchema {
+                return HandoffValidation(
+                    isValid: false,
+                    message: "Blocked: \(packet.assignedNodeName) requires \(packet.requiredInputSchema.label) but parent \(requirement.fromNodeName) outputs \(requirement.outputSchema.label).",
+                    handoffSummaries: []
+                )
+            }
+
+            summaries.append("\(requirement.fromNodeName): \(handoff.summary)")
+        }
+
+        return HandoffValidation(
+            isValid: true,
+            message: "",
+            handoffSummaries: summaries
         )
     }
 
@@ -2408,14 +2512,35 @@ private struct CoordinatorTaskPacket: Identifiable, Codable {
     let assignedNodeID: UUID
     let assignedNodeName: String
     let objective: String
-    let requiredOutputSchema: String
+    let requiredInputSchema: HandoffSchema
+    let requiredOutputSchema: HandoffSchema
+    let requiredHandoffs: [CoordinatorHandoffRequirement]
     let allowedPermissions: [String]
+}
+
+private struct CoordinatorHandoffRequirement: Identifiable, Codable, Hashable {
+    var id: String { fromNodeID.uuidString }
+    let fromNodeID: UUID
+    let fromNodeName: String
+    let outputSchema: HandoffSchema
+}
+
+private struct ProducedHandoff {
+    let schema: HandoffSchema
+    let summary: String
+}
+
+private struct HandoffValidation {
+    let isValid: Bool
+    let message: String
+    let handoffSummaries: [String]
 }
 
 private struct CoordinatorPlan: Codable {
     let planID: String
     let coordinatorID: UUID
     let coordinatorName: String
+    let coordinatorOutputSchema: HandoffSchema
     let goal: String
     let packets: [CoordinatorTaskPacket]
     let createdAt: Date
@@ -2424,7 +2549,9 @@ private struct CoordinatorPlan: Codable {
 private struct MCPTaskRequest: Codable {
     let packetID: String
     let objective: String
-    let schema: String
+    let inputSchema: HandoffSchema
+    let outputSchema: HandoffSchema
+    let handoffSummaries: [String]
     let roleContext: String
 }
 
@@ -2465,7 +2592,7 @@ private struct MockMCPClient: MCPClient {
     func execute(_ request: MCPTaskRequest) async -> MCPTaskResponse {
         try? await Task.sleep(nanoseconds: 120_000_000)
         let normalizedObjective = request.objective.trimmingCharacters(in: .whitespacesAndNewlines)
-        let summary = "Completed: \(normalizedObjective). Output conforms to \(request.schema)."
+        let summary = "Completed: \(normalizedObjective). Input \(request.inputSchema.rawValue) -> output \(request.outputSchema.rawValue)."
         return MCPTaskResponse(summary: summary, confidence: 0.82, completed: true)
     }
 }
@@ -2475,6 +2602,7 @@ private struct CoordinatorOrchestrator {
         precondition(!graph.nodes.isEmpty, "Graph must contain at least one node")
         let nodeByID = Dictionary(uniqueKeysWithValues: graph.nodes.map { ($0.id, $0) })
         let outgoingByParentID = Dictionary(grouping: graph.edges, by: \.parentID)
+        let incomingByChildID = Dictionary(grouping: graph.edges, by: \.childID)
         let childIDs = Set(graph.edges.map(\.childID))
         let rootCandidates = graph.nodes.filter { !childIDs.contains($0.id) }
 
@@ -2486,14 +2614,25 @@ private struct CoordinatorOrchestrator {
         )
 
         let parentTaskID = "TASK-\(UUID().uuidString.prefix(8))"
-        let packets = delegateNodes.enumerated().map { index, node in
-            CoordinatorTaskPacket(
+        let packets: [CoordinatorTaskPacket] = delegateNodes.enumerated().map { index, node in
+            let handoffs = (incomingByChildID[node.id] ?? [])
+                .compactMap { edge -> CoordinatorHandoffRequirement? in
+                    guard let parent = nodeByID[edge.parentID] else { return nil }
+                    return CoordinatorHandoffRequirement(
+                        fromNodeID: parent.id,
+                        fromNodeName: parent.name,
+                        outputSchema: parent.outputSchema
+                    )
+                }
+            return CoordinatorTaskPacket(
                 id: "\(parentTaskID)-\(index + 1)",
                 parentTaskID: parentTaskID,
                 assignedNodeID: node.id,
                 assignedNodeName: node.name,
                 objective: objectiveForNode(node, globalGoal: goal),
-                requiredOutputSchema: schemaForNode(node),
+                requiredInputSchema: node.inputSchema,
+                requiredOutputSchema: node.outputSchema,
+                requiredHandoffs: handoffs,
                 allowedPermissions: node.securityAccess.sorted()
             )
         }
@@ -2502,6 +2641,7 @@ private struct CoordinatorOrchestrator {
             planID: "PLAN-\(UUID().uuidString.prefix(8))",
             coordinatorID: coordinator.id,
             coordinatorName: coordinator.name,
+            coordinatorOutputSchema: coordinator.outputSchema,
             goal: goal,
             packets: packets,
             createdAt: Date()
