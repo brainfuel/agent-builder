@@ -277,6 +277,78 @@ struct ContentView: View {
                 .disabled(isExecutingCoordinator || nodes.isEmpty)
             }
 
+            HStack(spacing: 10) {
+                TextField("Optional context (data sources, constraints, risk tolerance)...", text: $synthesisContext)
+                    .textFieldStyle(.roundedBorder)
+                    .lineLimit(1)
+
+                Button {
+                    generateSuggestedStructure()
+                } label: {
+                    Label("Generate Structure", systemImage: "wand.and.stars")
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(orchestrationGoal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+
+            if !synthesisQuestions.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Discovery Questions")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    ForEach($synthesisQuestions) { $question in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(question.key.prompt)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            TextField("Optional answer", text: $question.answer)
+                                .textFieldStyle(.roundedBorder)
+                        }
+                    }
+                }
+            }
+
+            if let synthesisPreview {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(
+                        "Suggested structure: \(synthesisPreview.suggestedNodeCount) nodes (\(synthesisPreview.nodeDeltaString)), \(synthesisPreview.suggestedLinkCount) links (\(synthesisPreview.linkDeltaString))."
+                    )
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+
+                    if !synthesisPreview.addedNodeNames.isEmpty {
+                        Text("Adds: \(synthesisPreview.addedNodeNames.joined(separator: ", "))")
+                            .font(.footnote)
+                    }
+
+                    if !synthesisPreview.removedNodeNames.isEmpty {
+                        Text("Replaces: \(synthesisPreview.removedNodeNames.joined(separator: ", "))")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    HStack(spacing: 10) {
+                        Button {
+                            applySynthesizedStructure()
+                        } label: {
+                            Label("Apply Suggested Structure", systemImage: "checkmark.circle")
+                        }
+                        .buttonStyle(.borderedProminent)
+
+                        Button("Discard Suggestion", role: .destructive) {
+                            discardSynthesizedStructure()
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                }
+            }
+
+            if let synthesisStatusMessage {
+                Text(synthesisStatusMessage)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
             if let latestCoordinatorPlan {
                 Text("Planned \(latestCoordinatorPlan.packets.count) task packets from coordinator \(latestCoordinatorPlan.coordinatorName).")
                     .font(.footnote)
