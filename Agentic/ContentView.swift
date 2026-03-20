@@ -33,6 +33,10 @@ struct ContentView: View {
     @State private var isExecutingCoordinator = false
     @State private var coordinatorRunMode: CoordinatorExecutionMode = .simulation
     @State private var coordinatorTrace: [CoordinatorTraceStep] = []
+    @State private var synthesisContext = ""
+    @State private var synthesisQuestions: [SynthesisQuestionState] = []
+    @State private var synthesizedStructure: HierarchySnapshot?
+    @State private var synthesisStatusMessage: String?
 
     private var visibleNodes: [OrgNode] {
         guard !searchText.isEmpty else { return nodes }
@@ -53,6 +57,11 @@ struct ContentView: View {
             width: max(minimumCanvasSize.width, requiredWidth),
             height: max(minimumCanvasSize.height, requiredHeight)
         )
+    }
+
+    private var synthesisPreview: SynthesisPreviewSummary? {
+        guard let synthesizedStructure else { return nil }
+        return summarizeSynthesisPreview(for: synthesizedStructure)
     }
 
     var body: some View {
