@@ -641,7 +641,10 @@ struct ContentView: View {
         )
     }
 
-    private func simulatePacketExecution(_ packet: CoordinatorTaskPacket) async -> MCPTaskResponse {
+    private func simulatePacketExecution(
+        _ packet: CoordinatorTaskPacket,
+        handoffSummaries: [String]
+    ) async -> MCPTaskResponse {
         let permissionPreview = packet.allowedPermissions.prefix(3).joined(separator: ", ")
         let hasRestrictedAccess = packet.allowedPermissions.contains(SecurityAccess.secretsRead.rawValue)
             || packet.allowedPermissions.contains(SecurityAccess.terminalExec.rawValue)
@@ -649,11 +652,16 @@ struct ContentView: View {
         let delay: UInt64 = hasRestrictedAccess ? 280_000_000 : 180_000_000
         try? await Task.sleep(nanoseconds: delay)
 
+        let inputPreview = handoffSummaries.isEmpty
+            ? "No upstream handoff (root context)."
+            : "Handoffs: \(handoffSummaries.joined(separator: " | "))"
         let summary = [
             "Simulated output for \(packet.assignedNodeName).",
             "Objective: \(packet.objective)",
+            "Input schema: \(packet.requiredInputSchema.rawValue).",
+            inputPreview,
             permissionPreview.isEmpty ? "Policy check: no elevated permissions required." : "Policy check: \(permissionPreview).",
-            "Output schema: \(packet.requiredOutputSchema)."
+            "Output schema: \(packet.requiredOutputSchema.rawValue)."
         ].joined(separator: " ")
 
         return MCPTaskResponse(
@@ -2458,6 +2466,8 @@ private enum CoordinatorTraceStatus: String, Codable {
             return .blue
         case .succeeded:
             return .green
+        case .blocked:
+            return .orange
         case .failed:
             return .red
         }
@@ -2493,6 +2503,8 @@ private struct OrchestrationNode: Identifiable, Codable {
     let type: OrchestrationNodeKind
     let provider: String
     let roleDescription: String
+    let inputSchema: HandoffSchema
+    let outputSchema: HandoffSchema
     let securityAccess: Set<String>
 }
 
