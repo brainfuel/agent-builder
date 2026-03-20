@@ -2567,6 +2567,274 @@ private enum PresetHierarchyTemplate: String, CaseIterable, Identifiable {
     }
 }
 
+private struct SynthesisPreviewSummary {
+    let suggestedNodeCount: Int
+    let suggestedLinkCount: Int
+    let nodeDelta: Int
+    let linkDelta: Int
+    let addedNodeNames: [String]
+    let removedNodeNames: [String]
+
+    var nodeDeltaString: String {
+        nodeDelta >= 0 ? "+\(nodeDelta)" : "\(nodeDelta)"
+    }
+
+    var linkDeltaString: String {
+        linkDelta >= 0 ? "+\(linkDelta)" : "\(linkDelta)"
+    }
+}
+
+private struct SynthesisQuestionState: Identifiable {
+    let key: SynthesisQuestionKey
+    var answer: String
+
+    var id: String { key.rawValue }
+}
+
+private enum SynthesisQuestionKey: String, CaseIterable, Identifiable, Hashable {
+    case deadline
+    case riskTolerance
+    case needsHumanApproval
+
+    var id: String { rawValue }
+
+    var prompt: String {
+        switch self {
+        case .deadline:
+            return "What deadline or delivery window should this team optimize for?"
+        case .riskTolerance:
+            return "What is your risk tolerance (low, medium, high)?"
+        case .needsHumanApproval:
+            return "Do you require a human approval gate before launch/execution?"
+        }
+    }
+}
+
+private struct TeamStructureSynthesizer {
+    func discoveryQuestions(goal: String, context: String) -> [SynthesisQuestionKey] {
+        let combined = "\(goal) \(context)".lowercased()
+        var questions: [SynthesisQuestionKey] = []
+
+        if !containsAny(combined, keywords: ["today", "tomorrow", "week", "month", "q1", "q2", "q3", "q4", "deadline", "by "]) {
+            questions.append(.deadline)
+        }
+        if !containsAny(combined, keywords: ["risk", "safe", "strict", "experimental", "compliance"]) {
+            questions.append(.riskTolerance)
+        }
+        if !containsAny(combined, keywords: ["approval", "signoff", "human", "review"]) {
+            questions.append(.needsHumanApproval)
+        }
+
+        return questions
+    }
+
+    func synthesize(
+        goal: String,
+        context: String,
+        answers: [SynthesisQuestionKey: String]
+    ) -> HierarchySnapshot {
+        let combined = "\(goal) \(context) \(answers.values.joined(separator: " "))".lowercased()
+        let requiresResearch = containsAny(combined, keywords: ["research", "discover", "analyze", "investigate", "market"])
+        let requiresBuild = containsAny(combined, keywords: ["build", "ship", "launch", "implement", "feature", "product"])
+        let requiresValidation = requiresBuild || containsAny(combined, keywords: ["qa", "test", "validate", "quality"])
+        let requiresComms = containsAny(combined, keywords: ["launch", "announce", "stakeholder", "report", "comms"])
+        let requiresSecurity = containsAny(combined, keywords: ["security", "compliance", "privacy", "safety", "policy"])
+
+        let riskAnswer = answers[.riskTolerance]?.lowercased() ?? ""
+        let needsApprovalFromAnswer = parseBool(answers[.needsHumanApproval])
+        let requiresHumanApproval = needsApprovalFromAnswer
+            || riskAnswer.contains("low")
+            || containsAny(combined, keywords: ["production", "customer", "security", "compliance"])
+
+        let coordinatorID = UUID()
+        var nodes: [OrgNode] = [
+            OrgNode(
+                id: coordinatorID,
+                name: "Coordinator Agent",
+                title: "Orchestration",
+                department: "Control Plane",
+                type: .agent,
+                provider: .chatGPT,
+                roleDescription: "Decomposes goal, routes work packets, enforces policy and schema contracts.",
+                inputSchema: .goalBriefV1,
+                outputSchema: .strategyPlanV1,
+                selectedRoles: [.coordinator, .planner],
+                securityAccess: [.workspaceRead, .workspaceWrite],
+                position: .zero
+            )
+        ]
+        var links: [NodeLink] = []
+
+        @discardableResult
+        func addNode(
+            name: String,
+            title: String,
+            department: String,
+            type: NodeType,
+            provider: LLMProvider,
+            roleDescription: String,
+            inputSchema: HandoffSchema,
+            outputSchema: HandoffSchema,
+            roles: Set<PresetRole>,
+            access: Set<SecurityAccess>,
+            parentID: UUID,
+            tone: LinkTone
+        ) -> UUID {
+            let id = UUID()
+            nodes.append(
+                OrgNode(
+                    id: id,
+                    name: name,
+                    title: title,
+                    department: department,
+                    type: type,
+                    provider: provider,
+                    roleDescription: roleDescription,
+                    inputSchema: inputSchema,
+                    outputSchema: outputSchema,
+                    selectedRoles: roles,
+                    securityAccess: access,
+                    position: .zero
+                )
+            )
+            links.append(NodeLink(fromID: parentID, toID: id, tone: tone))
+            return id
+        }
+
+        let strategyID = addNode(
+            name: "Strategy Agent",
+            title: "Planner",
+            department: "Planning",
+            type: .agent,
+            provider: .chatGPT,
+            roleDescription: "Translates goals into executable tracks and success checkpoints.",
+            inputSchema: .strategyPlanV1,
+            outputSchema: .strategyPlanV1,
+            roles: [.planner],
+            access: [.workspaceRead, .workspaceWrite],
+            parentID: coordinatorID,
+            tone: .blue
+        )
+
+        if requiresResearch {
+            _ = addNode(
+                name: "Research Agent",
+                title: "Research",
+                department: "Discovery",
+                type: .agent,
+                provider: .gemini,
+                roleDescription: "Builds evidence brief and constraints from available data.",
+                inputSchema: .strategyPlanV1,
+                outputSchema: .researchBriefV1,
+                roles: [.researcher],
+                access: [.workspaceRead, .webAccess],
+                parentID: coordinatorID,
+                tone: .blue
+            )
+        }
+
+        let buildID: UUID? = requiresBuild
+            ? addNode(
+                name: "Builder Agent",
+                title: "Executor",
+                department: "Delivery",
+                type: .agent,
+                provider: .claude,
+                roleDescription: "Implements scoped changes and returns patch artifacts.",
+                inputSchema: .strategyPlanV1,
+                outputSchema: .buildPatchV1,
+                roles: [.executor],
+                access: [.workspaceRead, .workspaceWrite, .terminalExec],
+                parentID: strategyID,
+                tone: .orange
+            )
+            : nil
+
+        let qaID: UUID? = requiresValidation
+            ? addNode(
+                name: "QA Agent",
+                title: "Reviewer",
+                department: "Quality",
+                type: .agent,
+                provider: .grok,
+                roleDescription: "Validates outcomes and enforces quality gates.",
+                inputSchema: buildID == nil ? .strategyPlanV1 : .buildPatchV1,
+                outputSchema: .validationReportV1,
+                roles: [.reviewer],
+                access: [.workspaceRead, .terminalExec],
+                parentID: buildID ?? strategyID,
+                tone: .orange
+            )
+            : nil
+
+        let securityID: UUID? = requiresSecurity
+            ? addNode(
+                name: "Security Agent",
+                title: "Policy Reviewer",
+                department: "Security",
+                type: .agent,
+                provider: .chatGPT,
+                roleDescription: "Checks policy, compliance, and sensitive-access boundaries.",
+                inputSchema: .buildPatchV1,
+                outputSchema: .validationReportV1,
+                roles: [.reviewer],
+                access: [.workspaceRead, .auditLogs],
+                parentID: buildID ?? strategyID,
+                tone: .teal
+            )
+            : nil
+
+        if requiresComms {
+            _ = addNode(
+                name: "Reporting Agent",
+                title: "Comms",
+                department: "Stakeholder Updates",
+                type: .agent,
+                provider: .chatGPT,
+                roleDescription: "Produces clear updates for stakeholders and release notes.",
+                inputSchema: .strategyPlanV1,
+                outputSchema: .taskResultV1,
+                roles: [.summarizer],
+                access: [.workspaceRead],
+                parentID: coordinatorID,
+                tone: .blue
+            )
+        }
+
+        if requiresHumanApproval {
+            _ = addNode(
+                name: "Release Manager",
+                title: "Human Approval Gate",
+                department: "Operations",
+                type: .human,
+                provider: .chatGPT,
+                roleDescription: "Approves or rejects high-impact actions before rollout.",
+                inputSchema: .validationReportV1,
+                outputSchema: .releaseDecisionV1,
+                roles: [.decisionMaker, .reviewer],
+                access: [.workspaceRead, .auditLogs],
+                parentID: securityID ?? qaID ?? buildID ?? strategyID,
+                tone: .indigo
+            )
+        }
+
+        return makeHierarchySnapshot(nodes: nodes, links: links)
+    }
+
+    private func containsAny(_ text: String, keywords: [String]) -> Bool {
+        keywords.contains { text.contains($0) }
+    }
+
+    private func parseBool(_ value: String?) -> Bool {
+        guard let value else { return false }
+        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if normalized.isEmpty { return false }
+        return ["yes", "y", "true", "required", "need", "must"].contains { token in
+            normalized.contains(token)
+        }
+    }
+}
+
 private enum OrchestrationNodeKind: String, Codable {
     case human
     case agent
