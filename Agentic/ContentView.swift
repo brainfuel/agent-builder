@@ -33,6 +33,8 @@ struct ContentView: View {
     @State private var isExecutingCoordinator = false
     @State private var coordinatorRunMode: CoordinatorExecutionMode = .simulation
     @State private var coordinatorTrace: [CoordinatorTraceStep] = []
+    @State private var pendingCoordinatorExecution: PendingCoordinatorExecution?
+    @State private var humanDecisionNote = ""
     @State private var synthesisContext = ""
     @State private var synthesisQuestions: [SynthesisQuestionState] = []
     @State private var synthesizedStructure: HierarchySnapshot?
@@ -62,6 +64,14 @@ struct ContentView: View {
     private var synthesisPreview: SynthesisPreviewSummary? {
         guard let synthesizedStructure else { return nil }
         return summarizeSynthesisPreview(for: synthesizedStructure)
+    }
+
+    private var pendingHumanPacket: CoordinatorTaskPacket? {
+        guard
+            let pendingCoordinatorExecution,
+            let packetID = pendingCoordinatorExecution.awaitingHumanPacketID
+        else { return nil }
+        return pendingCoordinatorExecution.plan.packets.first(where: { $0.id == packetID })
     }
 
     var body: some View {
@@ -274,7 +284,7 @@ struct ContentView: View {
                     }
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(isExecutingCoordinator || nodes.isEmpty)
+                .disabled(isExecutingCoordinator || nodes.isEmpty || pendingHumanPacket != nil)
             }
 
             HStack(spacing: 10) {
@@ -361,6 +371,46 @@ struct ContentView: View {
                 )
                     .font(.footnote)
                     .foregroundStyle(latestCoordinatorRun.succeededCount == latestCoordinatorRun.results.count ? .green : .orange)
+            }
+
+            if let pendingHumanPacket {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Human Inbox")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(.secondary)
+
+                    Text("\(pendingHumanPacket.assignedNodeName) is waiting for a human decision.")
+                        .font(.footnote)
+
+                    Text(pendingHumanPacket.objective)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(3)
+
+                    Text("Expected output: \(pendingHumanPacket.requiredOutputSchema.label)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    TextField("Decision note (optional)", text: $humanDecisionNote)
+                        .textFieldStyle(.roundedBorder)
+
+                    HStack(spacing: 10) {
+                        Button("Approve & Continue") {
+                            resolveHumanTask(.approve)
+                        }
+                        .buttonStyle(.borderedProminent)
+
+                        Button("Reject") {
+                            resolveHumanTask(.reject)
+                        }
+                        .buttonStyle(.bordered)
+
+                        Button("Needs Info") {
+                            resolveHumanTask(.needsInfo)
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                }
             }
 
             if !coordinatorTrace.isEmpty {
@@ -583,6 +633,7 @@ struct ContentView: View {
         let mode = coordinatorRunMode
         latestCoordinatorPlan = plan
         latestCoordinatorRun = nil
+        humanDecisionNote = ""
         coordinatorTrace = plan.packets.map {
             CoordinatorTraceStep(
                 packetID: $0.id,
@@ -596,45 +647,44 @@ struct ContentView: View {
             )
         }
 
+        pendingCoordinatorExecution = PendingCoordinatorExecution(
+            plan: plan,
+            mode: mode,
+            nextPacketIndex: 0,
+            results: [],
+            outputsByNodeID: [
+                plan.coordinatorID: ProducedHandoff(
+                    schema: plan.coordinatorOutputSchema,
+                    summary: "Coordinator goal packet: \(plan.goal)"
+                )
+            ],
+            startedAt: Date(),
+            awaitingHumanPacketID: nil
+        )
         isExecutingCoordinator = true
         Task {
-            let run = await executeCoordinatorPlan(plan: plan, mode: mode)
-            await MainActor.run {
-                latestCoordinatorRun = run
-                isExecutingCoordinator = false
-            }
+            await continueCoordinatorExecution()
         }
     }
 
-    private func executeCoordinatorPlan(
-        plan: CoordinatorPlan,
-        mode: CoordinatorExecutionMode
-    ) async -> CoordinatorRun {
-        let startedAt = Date()
+    @MainActor
+    private func continueCoordinatorExecution() async {
+        guard var pending = pendingCoordinatorExecution else { return }
         let client = MockMCPClient()
-        var results: [CoordinatorTaskResult] = []
-        results.reserveCapacity(plan.packets.count)
-        var outputsByNodeID: [UUID: ProducedHandoff] = [
-            plan.coordinatorID: ProducedHandoff(
-                schema: plan.coordinatorOutputSchema,
-                summary: "Coordinator goal packet: \(plan.goal)"
-            )
-        ]
 
-        for packet in plan.packets {
+        while pending.nextPacketIndex < pending.plan.packets.count {
+            let packet = pending.plan.packets[pending.nextPacketIndex]
             let startedAtStep = Date()
-            await MainActor.run {
-                updateTraceStep(
-                    packetID: packet.id,
-                    status: .running,
-                    startedAt: startedAtStep
-                )
-            }
+            updateTraceStep(
+                packetID: packet.id,
+                status: .running,
+                startedAt: startedAtStep
+            )
 
             let handoffValidation = validateRequiredHandoffs(
                 for: packet,
-                outputsByNodeID: outputsByNodeID,
-                goal: plan.goal
+                outputsByNodeID: pending.outputsByNodeID,
+                goal: pending.plan.goal
             )
 
             if !handoffValidation.isValid {
@@ -648,22 +698,34 @@ struct ContentView: View {
                     completed: false,
                     finishedAt: finishedAtStep
                 )
-                results.append(blockedResult)
-
-                await MainActor.run {
-                    updateTraceStep(
-                        packetID: packet.id,
-                        status: .blocked,
-                        summary: handoffValidation.message,
-                        confidence: 0,
-                        finishedAt: finishedAtStep
-                    )
-                }
+                pending.results.append(blockedResult)
+                pending.nextPacketIndex += 1
+                updateTraceStep(
+                    packetID: packet.id,
+                    status: .blocked,
+                    summary: handoffValidation.message,
+                    confidence: 0,
+                    finishedAt: finishedAtStep
+                )
                 continue
             }
 
+            if packet.assignedNodeKind == .human {
+                pending.awaitingHumanPacketID = packet.id
+                pendingCoordinatorExecution = pending
+                isExecutingCoordinator = false
+                updateTraceStep(
+                    packetID: packet.id,
+                    status: .waitingHuman,
+                    summary: "Awaiting human decision.",
+                    confidence: nil,
+                    finishedAt: nil
+                )
+                return
+            }
+
             let response: MCPTaskResponse
-            switch mode {
+            switch pending.mode {
             case .simulation:
                 response = await simulatePacketExecution(
                     packet,
@@ -693,33 +755,112 @@ struct ContentView: View {
                 completed: completed,
                 finishedAt: finishedAtStep
             )
-            results.append(result)
+            pending.results.append(result)
             if completed {
-                outputsByNodeID[packet.assignedNodeID] = ProducedHandoff(
+                pending.outputsByNodeID[packet.assignedNodeID] = ProducedHandoff(
                     schema: packet.requiredOutputSchema,
                     summary: response.summary
                 )
             }
+            pending.nextPacketIndex += 1
 
-            await MainActor.run {
-                updateTraceStep(
-                    packetID: packet.id,
-                    status: completed ? .succeeded : .failed,
-                    summary: response.summary,
-                    confidence: response.confidence,
-                    finishedAt: finishedAtStep
-                )
-            }
+            updateTraceStep(
+                packetID: packet.id,
+                status: completed ? .succeeded : .failed,
+                summary: response.summary,
+                confidence: response.confidence,
+                finishedAt: finishedAtStep
+            )
         }
 
-        return CoordinatorRun(
+        latestCoordinatorRun = CoordinatorRun(
             runID: "RUN-\(UUID().uuidString.prefix(8))",
-            planID: plan.planID,
-            mode: mode,
-            results: results,
-            startedAt: startedAt,
+            planID: pending.plan.planID,
+            mode: pending.mode,
+            results: pending.results,
+            startedAt: pending.startedAt,
             finishedAt: Date()
         )
+        pendingCoordinatorExecution = nil
+        isExecutingCoordinator = false
+    }
+
+    @MainActor
+    private func resolveHumanTask(_ decision: HumanTaskDecision) {
+        guard
+            var pending = pendingCoordinatorExecution,
+            let packetID = pending.awaitingHumanPacketID,
+            let packet = pending.plan.packets.first(where: { $0.id == packetID })
+        else { return }
+
+        let finishedAt = Date()
+        let note = humanDecisionNote.trimmingCharacters(in: .whitespacesAndNewlines)
+        humanDecisionNote = ""
+
+        let summary: String
+        let status: CoordinatorTraceStatus
+        let completed: Bool
+
+        switch decision {
+        case .approve:
+            summary = note.isEmpty ? "Approved by human reviewer." : "Approved: \(note)"
+            status = .approved
+            completed = true
+            pending.outputsByNodeID[packet.assignedNodeID] = ProducedHandoff(
+                schema: packet.requiredOutputSchema,
+                summary: summary
+            )
+        case .reject:
+            summary = note.isEmpty ? "Rejected by human reviewer." : "Rejected: \(note)"
+            status = .rejected
+            completed = false
+        case .needsInfo:
+            summary = note.isEmpty ? "Needs additional information before decision." : "Needs info: \(note)"
+            status = .needsInfo
+            completed = false
+        }
+
+        pending.results.append(
+            CoordinatorTaskResult(
+                id: UUID().uuidString,
+                packetID: packet.id,
+                assignedNodeName: packet.assignedNodeName,
+                summary: summary,
+                confidence: 1,
+                completed: completed,
+                finishedAt: finishedAt
+            )
+        )
+        pending.nextPacketIndex += 1
+        pending.awaitingHumanPacketID = nil
+
+        updateTraceStep(
+            packetID: packet.id,
+            status: status,
+            summary: summary,
+            confidence: 1,
+            finishedAt: finishedAt
+        )
+
+        switch decision {
+        case .approve:
+            pendingCoordinatorExecution = pending
+            isExecutingCoordinator = true
+            Task {
+                await continueCoordinatorExecution()
+            }
+        case .reject, .needsInfo:
+            latestCoordinatorRun = CoordinatorRun(
+                runID: "RUN-\(UUID().uuidString.prefix(8))",
+                planID: pending.plan.planID,
+                mode: pending.mode,
+                results: pending.results,
+                startedAt: pending.startedAt,
+                finishedAt: Date()
+            )
+            pendingCoordinatorExecution = nil
+            isExecutingCoordinator = false
+        }
     }
 
     private func simulatePacketExecution(
@@ -2859,7 +3000,11 @@ private enum CoordinatorExecutionMode: String, CaseIterable, Identifiable, Codab
 private enum CoordinatorTraceStatus: String, Codable {
     case queued
     case running
+    case waitingHuman
     case succeeded
+    case approved
+    case rejected
+    case needsInfo
     case blocked
     case failed
 
@@ -2869,8 +3014,16 @@ private enum CoordinatorTraceStatus: String, Codable {
             return "Queued"
         case .running:
             return "Running"
+        case .waitingHuman:
+            return "Waiting Human"
         case .succeeded:
             return "Succeeded"
+        case .approved:
+            return "Approved"
+        case .rejected:
+            return "Rejected"
+        case .needsInfo:
+            return "Needs Info"
         case .blocked:
             return "Blocked"
         case .failed:
@@ -2884,8 +3037,16 @@ private enum CoordinatorTraceStatus: String, Codable {
             return .gray
         case .running:
             return .blue
+        case .waitingHuman:
+            return .indigo
         case .succeeded:
             return .green
+        case .approved:
+            return .green
+        case .rejected:
+            return .red
+        case .needsInfo:
+            return .orange
         case .blocked:
             return .orange
         case .failed:
@@ -2943,11 +3104,28 @@ private struct CoordinatorTaskPacket: Identifiable, Codable {
     let parentTaskID: String
     let assignedNodeID: UUID
     let assignedNodeName: String
+    let assignedNodeKind: OrchestrationNodeKind
     let objective: String
     let requiredInputSchema: HandoffSchema
     let requiredOutputSchema: HandoffSchema
     let requiredHandoffs: [CoordinatorHandoffRequirement]
     let allowedPermissions: [String]
+}
+
+private struct PendingCoordinatorExecution {
+    let plan: CoordinatorPlan
+    let mode: CoordinatorExecutionMode
+    var nextPacketIndex: Int
+    var results: [CoordinatorTaskResult]
+    var outputsByNodeID: [UUID: ProducedHandoff]
+    let startedAt: Date
+    var awaitingHumanPacketID: String?
+}
+
+private enum HumanTaskDecision {
+    case approve
+    case reject
+    case needsInfo
 }
 
 private struct CoordinatorHandoffRequirement: Identifiable, Codable, Hashable {
@@ -3061,6 +3239,7 @@ private struct CoordinatorOrchestrator {
                 parentTaskID: parentTaskID,
                 assignedNodeID: node.id,
                 assignedNodeName: node.name,
+                assignedNodeKind: node.type,
                 objective: objectiveForNode(node, globalGoal: goal),
                 requiredInputSchema: node.inputSchema,
                 requiredOutputSchema: node.outputSchema,
