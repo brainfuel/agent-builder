@@ -8,11 +8,12 @@ struct ContentView: View {
     private let maxZoom: CGFloat = 1.5
     private let zoomStep: CGFloat = 0.1
     private let savedStructuresDefaultsKey = "agentic.savedStructures.v1"
-    private let activeGraphKey = "active"
 
     @Environment(\.modelContext) private var modelContext
     @Environment(\.undoManager) private var undoManager
     @Query private var graphDocuments: [GraphDocument]
+    @State private var isShowingTaskList = true
+    @State private var currentGraphKey: String?
     @State private var nodes = OrgNode.sample
     @State private var links = NodeLink.sample
     @State private var selectedNodeID: OrgNode.ID?
@@ -42,6 +43,10 @@ struct ContentView: View {
     @State private var synthesisQuestions: [SynthesisQuestionState] = []
     @State private var synthesizedStructure: HierarchySnapshot?
     @State private var synthesisStatusMessage: String?
+    @State private var isShowingNewTaskOptions = false
+    @State private var newTaskTitle = ""
+    @State private var newTaskGoal = ""
+    @State private var newTaskContext = ""
 
     private var visibleNodes: [OrgNode] {
         guard !searchText.isEmpty else { return nodes }
@@ -77,35 +82,70 @@ struct ContentView: View {
         return pendingCoordinatorExecution.plan.packets.first(where: { $0.id == packetID })
     }
 
+    private var taskDocuments: [GraphDocument] {
+        graphDocuments.sorted { lhs, rhs in
+            if lhs.updatedAt == rhs.updatedAt {
+                return (lhs.createdAt ?? .distantPast) > (rhs.createdAt ?? .distantPast)
+            }
+            return lhs.updatedAt > rhs.updatedAt
+        }
+    }
+
+    private var activeTaskTitle: String {
+        let title = activeGraphDocument?.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return title.isEmpty ? "Task" : title
+    }
+
     var body: some View {
-        VStack(spacing: 0) {
-            header
-            Divider()
-            orchestrationBar
-            Divider()
-            HStack(spacing: 0) {
-                chartCanvas
-                if selectedIndex != nil {
-                    Divider()
-                    inspectorPanel
-                        .frame(minWidth: 320, idealWidth: 360, maxWidth: 420)
-                        .transition(.move(edge: .trailing).combined(with: .opacity))
-                }
+        ZStack {
+            if isShowingTaskList {
+                taskListView
+                    .transition(
+                        .asymmetric(
+                            insertion: .move(edge: .leading).combined(with: .opacity),
+                            removal: .move(edge: .leading).combined(with: .opacity)
+                        )
+                    )
+            } else {
+                editorWorkspace
+                    .transition(
+                        .asymmetric(
+                            insertion: .move(edge: .trailing).combined(with: .opacity),
+                            removal: .move(edge: .trailing).combined(with: .opacity)
+                        )
+                    )
             }
         }
         .background(Color(uiColor: .systemGroupedBackground))
         .animation(.easeInOut(duration: 0.18), value: selectedNodeID)
+        .animation(.snappy(duration: 0.28, extraBounce: 0.02), value: isShowingTaskList)
         .onAppear {
             loadSavedHierarchies()
             modelContext.undoManager = undoManager
-            ensureActiveGraphDocument()
+            ensureAnyGraphDocument()
+            if currentGraphKey == nil {
+                currentGraphKey = taskDocuments.first?.key
+            }
             syncGraphFromStore()
-            DispatchQueue.main.async {
-                syncGraphFromStore()
+        }
+        .onChange(of: currentGraphKey) { _, _ in
+            syncGraphFromStore()
+        }
+        .onChange(of: graphDocuments.count) { _, _ in
+            if currentGraphKey == nil {
+                currentGraphKey = taskDocuments.first?.key
+                if !isShowingTaskList {
+                    syncGraphFromStore()
+                }
+            } else if let currentGraphKey, !graphDocuments.contains(where: { $0.key == currentGraphKey }) {
+                self.currentGraphKey = taskDocuments.first?.key
             }
         }
         .onChange(of: semanticFingerprint) { _, newValue in
             persistGraphIfNeeded(for: newValue)
+        }
+        .onChange(of: orchestrationGoal) { _, _ in
+            persistActiveTaskMetadata()
         }
         .onChange(of: humanActorIdentity) { _, _ in
             persistCoordinatorExecutionState()
@@ -124,6 +164,17 @@ struct ContentView: View {
         } message: {
             Text("Save the current hierarchy so you can reload it later.")
         }
+        .confirmationDialog("Create Top-Level Task", isPresented: $isShowingNewTaskOptions) {
+            Button("Simple Task") {
+                createSimpleTask()
+            }
+            Button("Generate Structure") {
+                createGeneratedTaskFromDraft()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Choose how to create the new coordinator task.")
+        }
         .sheet(isPresented: $isShowingHumanInbox) {
             HumanInboxPanel(
                 pendingPacket: pendingHumanPacket,
@@ -138,16 +189,202 @@ struct ContentView: View {
         }
     }
 
+    private var editorWorkspace: some View {
+        VStack(spacing: 0) {
+            header
+            Divider()
+            orchestrationBar
+            Divider()
+            HStack(spacing: 0) {
+                chartCanvas
+                if selectedIndex != nil {
+                    Divider()
+                    inspectorPanel
+                        .frame(minWidth: 320, idealWidth: 360, maxWidth: 420)
+                        .transition(.move(edge: .trailing).combined(with: .opacity))
+                }
+            }
+        }
+    }
+
+    private var taskListView: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Coordinator Tasks")
+                        .font(.system(size: 30, weight: .bold, design: .rounded))
+                    Text("Manage top-level task structures and human inbox attention.")
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button {
+                    presentTaskCreationOptions()
+                } label: {
+                    Label("New Task", systemImage: "plus")
+                        .font(.headline)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 12)
+                }
+                .buttonStyle(.borderedProminent)
+            }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 18)
+            .background(Color(uiColor: .systemBackground))
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text("New Task Draft")
+                    .font(.headline)
+                Text("Set title, goal, and context once, then choose Simple Task or Generate Structure.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+
+                HStack(spacing: 10) {
+                    TextField("Task title", text: $newTaskTitle)
+                        .textFieldStyle(.roundedBorder)
+                    TextField("Goal", text: $newTaskGoal)
+                        .textFieldStyle(.roundedBorder)
+                    TextField("Context", text: $newTaskContext)
+                        .textFieldStyle(.roundedBorder)
+                }
+
+                HStack(spacing: 10) {
+                    Button {
+                        presentTaskCreationOptions()
+                    } label: {
+                        Label("Create", systemImage: "plus.circle.fill")
+                    }
+                    .buttonStyle(.borderedProminent)
+
+                    Button("Clear") {
+                        resetTaskDraft()
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(
+                        newTaskTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+                        newTaskGoal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+                        newTaskContext.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    )
+                }
+            }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 14)
+            .background(Color(uiColor: .systemBackground))
+
+            Divider()
+
+            ScrollView {
+                LazyVStack(spacing: 12) {
+                    ForEach(taskDocuments, id: \.key) { document in
+                        taskRow(document)
+                    }
+                }
+                .padding(24)
+            }
+        }
+    }
+
+    private func taskRow(_ document: GraphDocument) -> some View {
+        let status = runStatus(for: document)
+        let title = document.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let goal = document.goal?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title.isEmpty ? "Untitled Task" : title)
+                        .font(.headline)
+                    Text(goal.isEmpty ? "No goal set." : goal)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+                Spacer()
+                Text(status.label)
+                    .font(.caption.weight(.semibold))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(
+                        Capsule()
+                            .fill(status.color.opacity(0.18))
+                    )
+                    .foregroundStyle(status.color)
+            }
+
+            HStack(spacing: 10) {
+                Button {
+                    openTaskEditor(key: document.key)
+                } label: {
+                    Label("Edit", systemImage: "pencil")
+                }
+                .buttonStyle(.borderedProminent)
+
+                Button {
+                    openHumanInbox(for: document.key)
+                } label: {
+                    Label("Human Inbox", systemImage: "tray.full")
+                }
+                .buttonStyle(.bordered)
+
+                Spacer()
+                Text("Updated \(document.updatedAt.formatted(date: .abbreviated, time: .shortened))")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(16)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color(uiColor: .secondarySystemBackground))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.black.opacity(0.06), lineWidth: 1)
+        )
+    }
+
+    private func runStatus(for document: GraphDocument) -> TaskRunStatus {
+        guard
+            let data = document.executionStateData,
+            let bundle = try? JSONDecoder().decode(CoordinatorExecutionStateBundle.self, from: data)
+        else {
+            return .draft
+        }
+
+        if bundle.pendingExecution?.awaitingHumanPacketID != nil {
+            return .needsAttention
+        }
+        if bundle.pendingExecution != nil {
+            return .inProgress
+        }
+        if let run = bundle.latestRun, !run.results.isEmpty {
+            return run.succeededCount == run.results.count ? .completed : .needsAttention
+        }
+        return .draft
+    }
+
     private var header: some View {
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Agent Hierarchy Builder")
+                Text(activeTaskTitle)
                     .font(.system(size: 30, weight: .bold, design: .rounded))
-                Text("Design structures of humans and AI agents.")
+                Text("Hierarchy editor for humans and AI agents.")
                     .foregroundStyle(.secondary)
             }
             Spacer()
             HStack(spacing: 12) {
+                Button {
+                    withAnimation(.snappy(duration: 0.28, extraBounce: 0.02)) {
+                        isShowingTaskList = true
+                    }
+                } label: {
+                    Label("Tasks", systemImage: "chevron.left")
+                        .font(.headline)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 10)
+                }
+                .buttonStyle(.bordered)
+
                 HStack(spacing: 8) {
                     Image(systemName: "magnifyingglass")
                         .foregroundStyle(.secondary)
@@ -1653,25 +1890,147 @@ struct ContentView: View {
     }
 
     private var activeGraphDocument: GraphDocument? {
-        if let exact = graphDocuments.first(where: { $0.key == activeGraphKey }) {
+        if let currentGraphKey, let exact = graphDocuments.first(where: { $0.key == currentGraphKey }) {
             return exact
         }
-        return graphDocuments.first
+        return taskDocuments.first
     }
 
-    private func ensureActiveGraphDocument() {
-        if activeGraphDocument != nil { return }
-        guard let data = try? JSONEncoder().encode(makeHierarchySnapshot(nodes: OrgNode.sample, links: NodeLink.sample)) else {
+    private func ensureAnyGraphDocument() {
+        if !graphDocuments.isEmpty { return }
+        guard let data = try? JSONEncoder().encode(simpleTaskSnapshot()) else {
             return
         }
 
         let document = GraphDocument(
-            key: activeGraphKey,
+            title: "New Coordinator Task",
+            goal: orchestrationGoal,
             snapshotData: data,
+            executionStateData: nil,
+            createdAt: Date(),
             updatedAt: Date()
         )
         modelContext.insert(document)
         try? modelContext.save()
+        currentGraphKey = document.key
+    }
+
+    private func presentTaskCreationOptions() {
+        if newTaskGoal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            newTaskGoal = orchestrationGoal
+        }
+        if newTaskContext.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            newTaskContext = synthesisContext
+        }
+        isShowingNewTaskOptions = true
+    }
+
+    private func resetTaskDraft() {
+        newTaskTitle = ""
+        newTaskGoal = ""
+        newTaskContext = ""
+    }
+
+    private func openTaskEditor(key: String) {
+        currentGraphKey = key
+        isShowingHumanInbox = false
+        withAnimation(.snappy(duration: 0.28, extraBounce: 0.02)) {
+            isShowingTaskList = false
+        }
+        syncGraphFromStore()
+    }
+
+    private func openHumanInbox(for key: String) {
+        currentGraphKey = key
+        syncGraphFromStore()
+        isShowingHumanInbox = true
+    }
+
+    private func createSimpleTask() {
+        let draftTitle = newTaskTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        let draftGoal = newTaskGoal.trimmingCharacters(in: .whitespacesAndNewlines)
+        let title = draftTitle.isEmpty
+            ? "Task \(Date().formatted(.dateTime.month().day().hour().minute()))"
+            : draftTitle
+        let goal = draftGoal.isEmpty ? orchestrationGoal : draftGoal
+        createTaskDocument(
+            title: title,
+            goal: goal,
+            snapshot: simpleTaskSnapshot()
+        )
+        resetTaskDraft()
+    }
+
+    private func createGeneratedTaskFromDraft() {
+        let rawGoal = newTaskGoal.trimmingCharacters(in: .whitespacesAndNewlines)
+        let context = newTaskContext.trimmingCharacters(in: .whitespacesAndNewlines)
+        let title = newTaskTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        let goal = rawGoal.isEmpty ? orchestrationGoal : rawGoal
+
+        let synthesizer = TeamStructureSynthesizer()
+        let snapshot = synthesizer.synthesize(
+            goal: goal.isEmpty ? "Execute coordinator objective" : goal,
+            context: context,
+            answers: [:]
+        )
+        createTaskDocument(
+            title: title.isEmpty ? "Generated Task" : title,
+            goal: goal,
+            snapshot: snapshot
+        )
+        resetTaskDraft()
+    }
+
+    private func createTaskDocument(title: String, goal: String, snapshot: HierarchySnapshot) {
+        guard let data = try? JSONEncoder().encode(snapshot) else { return }
+
+        let document = GraphDocument(
+            title: title,
+            goal: goal,
+            snapshotData: data,
+            executionStateData: nil,
+            createdAt: Date(),
+            updatedAt: Date()
+        )
+        modelContext.insert(document)
+        try? modelContext.save()
+
+        currentGraphKey = document.key
+        withAnimation(.snappy(duration: 0.28, extraBounce: 0.02)) {
+            isShowingTaskList = false
+        }
+        syncGraphFromStore()
+    }
+
+    private func simpleTaskSnapshot() -> HierarchySnapshot {
+        let coordinatorID = UUID()
+        let executionID = UUID()
+        let qaID = UUID()
+        let releaseID = UUID()
+
+        let basicNodes: [OrgNode] = [
+            OrgNode(id: coordinatorID, name: "Coordinator", title: "Task Lead", department: "Control Plane", type: .agent, provider: .chatGPT, roleDescription: "Coordinates planning and execution workflow.", inputSchema: .goalBriefV1, outputSchema: .strategyPlanV1, selectedRoles: [.coordinator, .planner], securityAccess: [.workspaceRead, .workspaceWrite], position: .zero),
+            OrgNode(id: executionID, name: "Execution Agent", title: "Builder", department: "Delivery", type: .agent, provider: .claude, roleDescription: "Implements scoped execution steps.", inputSchema: .strategyPlanV1, outputSchema: .buildPatchV1, selectedRoles: [.executor], securityAccess: [.workspaceRead, .workspaceWrite, .terminalExec], position: .zero),
+            OrgNode(id: qaID, name: "QA Agent", title: "Validator", department: "Quality", type: .agent, provider: .grok, roleDescription: "Validates outputs and runs checks.", inputSchema: .buildPatchV1, outputSchema: .validationReportV1, selectedRoles: [.reviewer], securityAccess: [.workspaceRead, .terminalExec], position: .zero),
+            OrgNode(id: releaseID, name: "Release Manager", title: "Human Approval", department: "Operations", type: .human, provider: .chatGPT, roleDescription: "Approves final rollout decision.", inputSchema: .validationReportV1, outputSchema: .releaseDecisionV1, selectedRoles: [.decisionMaker, .reviewer], securityAccess: [.workspaceRead, .auditLogs], position: .zero)
+        ]
+
+        let basicLinks: [NodeLink] = [
+            NodeLink(fromID: coordinatorID, toID: executionID, tone: .blue),
+            NodeLink(fromID: executionID, toID: qaID, tone: .orange),
+            NodeLink(fromID: qaID, toID: releaseID, tone: .indigo)
+        ]
+
+        return makeHierarchySnapshot(nodes: basicNodes, links: basicLinks)
+    }
+
+    private func persistActiveTaskMetadata() {
+        guard let document = activeGraphDocument else { return }
+        if (document.goal ?? "") != orchestrationGoal {
+            document.goal = orchestrationGoal
+            document.updatedAt = Date()
+            try? modelContext.save()
+        }
     }
 
     private func syncGraphFromStore() {
@@ -1688,6 +2047,9 @@ struct ContentView: View {
         suppressStoreSync = true
         setGraph(from: snapshot, resetViewState: false)
         suppressStoreSync = false
+        if orchestrationGoal != (document.goal ?? "") {
+            orchestrationGoal = document.goal ?? ""
+        }
         syncCoordinatorExecutionState(from: document)
         lastPersistedFingerprint = semanticFingerprint
     }
@@ -1695,7 +2057,6 @@ struct ContentView: View {
     private func persistGraphIfNeeded(for newFingerprint: String) {
         guard !suppressStoreSync else { return }
         guard newFingerprint != lastPersistedFingerprint else { return }
-        ensureActiveGraphDocument()
         guard
             let document = activeGraphDocument,
             let data = try? JSONEncoder().encode(captureStructureSnapshot())
@@ -1732,7 +2093,7 @@ struct ContentView: View {
     }
 
     private func persistCoordinatorExecutionState() {
-        ensureActiveGraphDocument()
+        ensureAnyGraphDocument()
         guard let document = activeGraphDocument else { return }
 
         let sanitizedActor = humanActorIdentity.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2136,6 +2497,7 @@ private struct CoordinatorTraceRow: View {
 }
 
 private struct HumanInboxPanel: View {
+    @Environment(\.dismiss) private var dismiss
     let pendingPacket: CoordinatorTaskPacket?
     @Binding var actorIdentity: String
     @Binding var decisionNote: String
@@ -2148,6 +2510,15 @@ private struct HumanInboxPanel: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
+                    HStack {
+                        Spacer()
+                        Button("Close") {
+                            dismiss()
+                        }
+                        .buttonStyle(.bordered)
+                        .keyboardShortcut(.escape, modifiers: [])
+                    }
+
                     GroupBox("Pending Human Task") {
                         if let pendingPacket {
                             VStack(alignment: .leading, spacing: 10) {
@@ -2234,6 +2605,13 @@ private struct HumanInboxPanel: View {
                 .padding(16)
             }
             .navigationTitle("Human Inbox")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Close") {
+                        dismiss()
+                    }
+                }
+            }
         }
     }
 
@@ -2970,6 +3348,39 @@ private struct SynthesisPreviewSummary {
 
     var linkDeltaString: String {
         linkDelta >= 0 ? "+\(linkDelta)" : "\(linkDelta)"
+    }
+}
+
+private enum TaskRunStatus {
+    case draft
+    case inProgress
+    case needsAttention
+    case completed
+
+    var label: String {
+        switch self {
+        case .draft:
+            return "Draft"
+        case .inProgress:
+            return "In Progress"
+        case .needsAttention:
+            return "Needs Attention"
+        case .completed:
+            return "Completed"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .draft:
+            return .gray
+        case .inProgress:
+            return .blue
+        case .needsAttention:
+            return .orange
+        case .completed:
+            return .green
+        }
     }
 }
 
