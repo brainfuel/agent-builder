@@ -34,7 +34,10 @@ struct ContentView: View {
     @State private var coordinatorRunMode: CoordinatorExecutionMode = .simulation
     @State private var coordinatorTrace: [CoordinatorTraceStep] = []
     @State private var pendingCoordinatorExecution: PendingCoordinatorExecution?
+    @State private var humanDecisionAudit: [HumanDecisionAuditEvent] = []
+    @State private var isShowingHumanInbox = false
     @State private var humanDecisionNote = ""
+    @State private var humanActorIdentity = "Human Reviewer"
     @State private var synthesisContext = ""
     @State private var synthesisQuestions: [SynthesisQuestionState] = []
     @State private var synthesizedStructure: HierarchySnapshot?
@@ -104,6 +107,9 @@ struct ContentView: View {
         .onChange(of: semanticFingerprint) { _, newValue in
             persistGraphIfNeeded(for: newValue)
         }
+        .onChange(of: humanActorIdentity) { _, _ in
+            persistCoordinatorExecutionState()
+        }
         .alert("Save Structure", isPresented: $isShowingSaveStructurePrompt) {
             TextField("Structure name", text: $saveStructureName)
             Button("Cancel", role: .cancel) {
@@ -117,6 +123,18 @@ struct ContentView: View {
             }
         } message: {
             Text("Save the current hierarchy so you can reload it later.")
+        }
+        .sheet(isPresented: $isShowingHumanInbox) {
+            HumanInboxPanel(
+                pendingPacket: pendingHumanPacket,
+                actorIdentity: $humanActorIdentity,
+                decisionNote: $humanDecisionNote,
+                auditTrail: humanDecisionAudit,
+                onApprove: { resolveHumanTask(.approve) },
+                onReject: { resolveHumanTask(.reject) },
+                onNeedsInfo: { resolveHumanTask(.needsInfo) }
+            )
+            .presentationDetents([.medium, .large])
         }
     }
 
@@ -284,7 +302,17 @@ struct ContentView: View {
                     }
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(isExecutingCoordinator || nodes.isEmpty || pendingHumanPacket != nil)
+                .disabled(isExecutingCoordinator || nodes.isEmpty || pendingCoordinatorExecution != nil)
+
+                Button {
+                    isShowingHumanInbox = true
+                } label: {
+                    Label(
+                        pendingHumanPacket == nil ? "Human Inbox" : "Human Inbox (1)",
+                        systemImage: "tray.full"
+                    )
+                }
+                .buttonStyle(.bordered)
             }
 
             HStack(spacing: 10) {
@@ -373,6 +401,18 @@ struct ContentView: View {
                     .foregroundStyle(latestCoordinatorRun.succeededCount == latestCoordinatorRun.results.count ? .green : .orange)
             }
 
+            if
+                let pendingCoordinatorExecution,
+                pendingCoordinatorExecution.awaitingHumanPacketID == nil,
+                !isExecutingCoordinator
+            {
+                Button("Resume Pending Run") {
+                    isExecutingCoordinator = true
+                    Task { await continueCoordinatorExecution() }
+                }
+                .buttonStyle(.borderedProminent)
+            }
+
             if let pendingHumanPacket {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Human Inbox")
@@ -409,6 +449,11 @@ struct ContentView: View {
                             resolveHumanTask(.needsInfo)
                         }
                         .buttonStyle(.bordered)
+
+                        Button("Open Inbox") {
+                            isShowingHumanInbox = true
+                        }
+                        .buttonStyle(.bordered)
                     }
                 }
             }
@@ -422,6 +467,7 @@ struct ContentView: View {
                         Spacer()
                         Button("Clear") {
                             coordinatorTrace = []
+                            persistCoordinatorExecutionState()
                         }
                         .buttonStyle(.borderless)
                         .font(.footnote)
@@ -648,6 +694,7 @@ struct ContentView: View {
         }
 
         pendingCoordinatorExecution = PendingCoordinatorExecution(
+            runID: "RUN-\(UUID().uuidString.prefix(8))",
             plan: plan,
             mode: mode,
             nextPacketIndex: 0,
@@ -662,6 +709,7 @@ struct ContentView: View {
             awaitingHumanPacketID: nil
         )
         isExecutingCoordinator = true
+        persistCoordinatorExecutionState()
         Task {
             await continueCoordinatorExecution()
         }
@@ -707,6 +755,8 @@ struct ContentView: View {
                     confidence: 0,
                     finishedAt: finishedAtStep
                 )
+                pendingCoordinatorExecution = pending
+                persistCoordinatorExecutionState()
                 continue
             }
 
@@ -721,6 +771,7 @@ struct ContentView: View {
                     confidence: nil,
                     finishedAt: nil
                 )
+                persistCoordinatorExecutionState()
                 return
             }
 
@@ -771,10 +822,12 @@ struct ContentView: View {
                 confidence: response.confidence,
                 finishedAt: finishedAtStep
             )
+            pendingCoordinatorExecution = pending
+            persistCoordinatorExecutionState()
         }
 
         latestCoordinatorRun = CoordinatorRun(
-            runID: "RUN-\(UUID().uuidString.prefix(8))",
+            runID: pending.runID,
             planID: pending.plan.planID,
             mode: pending.mode,
             results: pending.results,
@@ -783,6 +836,7 @@ struct ContentView: View {
         )
         pendingCoordinatorExecution = nil
         isExecutingCoordinator = false
+        persistCoordinatorExecutionState()
     }
 
     @MainActor
@@ -797,13 +851,16 @@ struct ContentView: View {
         let note = humanDecisionNote.trimmingCharacters(in: .whitespacesAndNewlines)
         humanDecisionNote = ""
 
+        let actor = humanActorIdentity.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "Human Reviewer"
+            : humanActorIdentity.trimmingCharacters(in: .whitespacesAndNewlines)
         let summary: String
         let status: CoordinatorTraceStatus
         let completed: Bool
 
         switch decision {
         case .approve:
-            summary = note.isEmpty ? "Approved by human reviewer." : "Approved: \(note)"
+            summary = note.isEmpty ? "Approved by \(actor)." : "Approved by \(actor): \(note)"
             status = .approved
             completed = true
             pending.outputsByNodeID[packet.assignedNodeID] = ProducedHandoff(
@@ -811,11 +868,11 @@ struct ContentView: View {
                 summary: summary
             )
         case .reject:
-            summary = note.isEmpty ? "Rejected by human reviewer." : "Rejected: \(note)"
+            summary = note.isEmpty ? "Rejected by \(actor)." : "Rejected by \(actor): \(note)"
             status = .rejected
             completed = false
         case .needsInfo:
-            summary = note.isEmpty ? "Needs additional information before decision." : "Needs info: \(note)"
+            summary = note.isEmpty ? "\(actor) requested additional information before decision." : "\(actor) needs info: \(note)"
             status = .needsInfo
             completed = false
         }
@@ -833,6 +890,18 @@ struct ContentView: View {
         )
         pending.nextPacketIndex += 1
         pending.awaitingHumanPacketID = nil
+        humanDecisionAudit.append(
+            HumanDecisionAuditEvent(
+                id: UUID().uuidString,
+                runID: pending.runID,
+                packetID: packet.id,
+                nodeName: packet.assignedNodeName,
+                decision: decision,
+                note: note,
+                actorIdentity: actor,
+                decidedAt: finishedAt
+            )
+        )
 
         updateTraceStep(
             packetID: packet.id,
@@ -846,12 +915,13 @@ struct ContentView: View {
         case .approve:
             pendingCoordinatorExecution = pending
             isExecutingCoordinator = true
+            persistCoordinatorExecutionState()
             Task {
                 await continueCoordinatorExecution()
             }
         case .reject, .needsInfo:
             latestCoordinatorRun = CoordinatorRun(
-                runID: "RUN-\(UUID().uuidString.prefix(8))",
+                runID: pending.runID,
                 planID: pending.plan.planID,
                 mode: pending.mode,
                 results: pending.results,
@@ -860,6 +930,7 @@ struct ContentView: View {
             )
             pendingCoordinatorExecution = nil
             isExecutingCoordinator = false
+            persistCoordinatorExecutionState()
         }
     }
 
@@ -1609,6 +1680,7 @@ struct ContentView: View {
             let snapshot = try? JSONDecoder().decode(HierarchySnapshot.self, from: document.snapshotData)
         else {
             relayoutHierarchy()
+            syncCoordinatorExecutionState(from: nil)
             lastPersistedFingerprint = semanticFingerprint
             return
         }
@@ -1616,6 +1688,7 @@ struct ContentView: View {
         suppressStoreSync = true
         setGraph(from: snapshot, resetViewState: false)
         suppressStoreSync = false
+        syncCoordinatorExecutionState(from: document)
         lastPersistedFingerprint = semanticFingerprint
     }
 
@@ -1632,6 +1705,67 @@ struct ContentView: View {
         document.updatedAt = Date()
         try? modelContext.save()
         lastPersistedFingerprint = newFingerprint
+    }
+
+    private func syncCoordinatorExecutionState(from document: GraphDocument?) {
+        guard
+            let data = document?.executionStateData,
+            let decoded = try? JSONDecoder().decode(CoordinatorExecutionStateBundle.self, from: data)
+        else {
+            pendingCoordinatorExecution = nil
+            latestCoordinatorRun = nil
+            coordinatorTrace = []
+            humanDecisionAudit = []
+            if humanActorIdentity.isEmpty {
+                humanActorIdentity = "Human Reviewer"
+            }
+            isExecutingCoordinator = false
+            return
+        }
+
+        pendingCoordinatorExecution = decoded.pendingExecution
+        latestCoordinatorRun = decoded.latestRun
+        coordinatorTrace = decoded.trace
+        humanDecisionAudit = decoded.humanDecisionAudit
+        humanActorIdentity = decoded.humanActorIdentity
+        isExecutingCoordinator = false
+    }
+
+    private func persistCoordinatorExecutionState() {
+        ensureActiveGraphDocument()
+        guard let document = activeGraphDocument else { return }
+
+        let sanitizedActor = humanActorIdentity.trimmingCharacters(in: .whitespacesAndNewlines)
+        if sanitizedActor.isEmpty {
+            humanActorIdentity = "Human Reviewer"
+        } else {
+            humanActorIdentity = sanitizedActor
+        }
+
+        if
+            pendingCoordinatorExecution == nil,
+            latestCoordinatorRun == nil,
+            coordinatorTrace.isEmpty,
+            humanDecisionAudit.isEmpty
+        {
+            document.executionStateData = nil
+            document.updatedAt = Date()
+            try? modelContext.save()
+            return
+        }
+
+        let bundle = CoordinatorExecutionStateBundle(
+            pendingExecution: pendingCoordinatorExecution,
+            latestRun: latestCoordinatorRun,
+            trace: coordinatorTrace,
+            humanDecisionAudit: humanDecisionAudit,
+            humanActorIdentity: humanActorIdentity
+        )
+        guard let data = try? JSONEncoder().encode(bundle) else { return }
+
+        document.executionStateData = data
+        document.updatedAt = Date()
+        try? modelContext.save()
     }
 
     private func stabilizeLayout(afterAddingAtY rowY: CGFloat, parentID: UUID?) {
@@ -1998,6 +2132,120 @@ private struct CoordinatorTraceRow: View {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .stroke(Color.black.opacity(0.06), lineWidth: 1)
         )
+    }
+}
+
+private struct HumanInboxPanel: View {
+    let pendingPacket: CoordinatorTaskPacket?
+    @Binding var actorIdentity: String
+    @Binding var decisionNote: String
+    let auditTrail: [HumanDecisionAuditEvent]
+    let onApprove: () -> Void
+    let onReject: () -> Void
+    let onNeedsInfo: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    GroupBox("Pending Human Task") {
+                        if let pendingPacket {
+                            VStack(alignment: .leading, spacing: 10) {
+                                Text(pendingPacket.assignedNodeName)
+                                    .font(.headline)
+                                Text(pendingPacket.objective)
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+
+                                Text("Expected output schema: \(pendingPacket.requiredOutputSchema.label)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+
+                                TextField("Actor identity", text: $actorIdentity)
+                                    .textFieldStyle(.roundedBorder)
+
+                                TextField("Decision note (optional)", text: $decisionNote)
+                                    .textFieldStyle(.roundedBorder)
+
+                                HStack(spacing: 10) {
+                                    Button("Approve & Continue") {
+                                        onApprove()
+                                    }
+                                    .buttonStyle(.borderedProminent)
+
+                                    Button("Reject") {
+                                        onReject()
+                                    }
+                                    .buttonStyle(.bordered)
+
+                                    Button("Needs Info") {
+                                        onNeedsInfo()
+                                    }
+                                    .buttonStyle(.bordered)
+                                }
+                            }
+                            .padding(.top, 4)
+                        } else {
+                            Text("No pending human tasks.")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.top, 4)
+                        }
+                    }
+
+                    GroupBox("Decision Audit Trail") {
+                        if auditTrail.isEmpty {
+                            Text("No recorded human decisions yet.")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.top, 4)
+                        } else {
+                            VStack(alignment: .leading, spacing: 10) {
+                                ForEach(auditTrail.sorted { $0.decidedAt > $1.decidedAt }) { event in
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        HStack {
+                                            Text(event.nodeName)
+                                                .font(.subheadline.weight(.semibold))
+                                            Spacer()
+                                            Text(event.decision.label)
+                                                .font(.caption.weight(.semibold))
+                                                .foregroundStyle(decisionColor(for: event.decision))
+                                        }
+                                        Text("Actor: \(event.actorIdentity)")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                        Text("Run: \(event.runID) • \(event.decidedAt.formatted(.dateTime))")
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                        if !event.note.isEmpty {
+                                            Text(event.note)
+                                                .font(.caption)
+                                        }
+                                    }
+                                    .padding(.vertical, 4)
+                                }
+                            }
+                            .padding(.top, 4)
+                        }
+                    }
+                }
+                .padding(16)
+            }
+            .navigationTitle("Human Inbox")
+        }
+    }
+
+    private func decisionColor(for decision: HumanTaskDecision) -> Color {
+        switch decision {
+        case .approve:
+            return .green
+        case .reject:
+            return .red
+        case .needsInfo:
+            return .orange
+        }
     }
 }
 
@@ -3055,7 +3303,7 @@ private enum CoordinatorTraceStatus: String, Codable {
     }
 }
 
-private struct CoordinatorTraceStep: Identifiable {
+private struct CoordinatorTraceStep: Identifiable, Codable {
     var id: String { packetID }
     let packetID: String
     let assignedNodeName: String
@@ -3112,7 +3360,8 @@ private struct CoordinatorTaskPacket: Identifiable, Codable {
     let allowedPermissions: [String]
 }
 
-private struct PendingCoordinatorExecution {
+private struct PendingCoordinatorExecution: Codable {
+    let runID: String
     let plan: CoordinatorPlan
     let mode: CoordinatorExecutionMode
     var nextPacketIndex: Int
@@ -3122,10 +3371,21 @@ private struct PendingCoordinatorExecution {
     var awaitingHumanPacketID: String?
 }
 
-private enum HumanTaskDecision {
+private enum HumanTaskDecision: String, Codable {
     case approve
     case reject
     case needsInfo
+
+    var label: String {
+        switch self {
+        case .approve:
+            return "Approve"
+        case .reject:
+            return "Reject"
+        case .needsInfo:
+            return "Needs Info"
+        }
+    }
 }
 
 private struct CoordinatorHandoffRequirement: Identifiable, Codable, Hashable {
@@ -3135,9 +3395,28 @@ private struct CoordinatorHandoffRequirement: Identifiable, Codable, Hashable {
     let outputSchema: HandoffSchema
 }
 
-private struct ProducedHandoff {
+private struct ProducedHandoff: Codable {
     let schema: HandoffSchema
     let summary: String
+}
+
+private struct HumanDecisionAuditEvent: Identifiable, Codable {
+    let id: String
+    let runID: String
+    let packetID: String
+    let nodeName: String
+    let decision: HumanTaskDecision
+    let note: String
+    let actorIdentity: String
+    let decidedAt: Date
+}
+
+private struct CoordinatorExecutionStateBundle: Codable {
+    let pendingExecution: PendingCoordinatorExecution?
+    let latestRun: CoordinatorRun?
+    let trace: [CoordinatorTraceStep]
+    let humanDecisionAudit: [HumanDecisionAuditEvent]
+    let humanActorIdentity: String
 }
 
 private struct HandoffValidation {
