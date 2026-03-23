@@ -26,6 +26,7 @@ struct AgenticApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .tint(AppTheme.brandTint)
         }
         .modelContainer(sharedModelContainer)
     }

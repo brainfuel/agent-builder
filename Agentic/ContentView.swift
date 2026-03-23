@@ -7,7 +7,7 @@ struct ContentView: View {
     private let minZoom: CGFloat = 0.6
     private let maxZoom: CGFloat = 1.5
     private let zoomStep: CGFloat = 0.1
-    private let savedStructuresDefaultsKey = "agentic.savedStructures.v1"
+    private let apiKeyStore: any APIKeyStoring
 
     @Environment(\.modelContext) private var modelContext
     @Environment(\.undoManager) private var undoManager
@@ -19,9 +19,6 @@ struct ContentView: View {
     @State private var selectedNodeID: OrgNode.ID?
     @State private var searchText = ""
     @State private var zoom: CGFloat = 1.0
-    @State private var savedStructures: [SavedHierarchy] = []
-    @State private var isShowingSaveStructurePrompt = false
-    @State private var saveStructureName = ""
     @State private var suppressStoreSync = false
     @State private var lastPersistedFingerprint = ""
     @State private var selectedLinkID: UUID?
@@ -47,6 +44,14 @@ struct ContentView: View {
     @State private var newTaskTitle = ""
     @State private var newTaskGoal = ""
     @State private var newTaskContext = ""
+    @State private var newTaskTemplate: PresetHierarchyTemplate = .baseline
+    @State private var isShowingTaskResults = false
+    @State private var taskResultsDocumentKey: String?
+    @State private var isShowingAPIKeys = false
+
+    init(apiKeyStore: any APIKeyStoring = KeychainAPIKeyStore()) {
+        self.apiKeyStore = apiKeyStore
+    }
 
     private var visibleNodes: [OrgNode] {
         guard !searchText.isEmpty else { return nodes }
@@ -120,7 +125,6 @@ struct ContentView: View {
         .animation(.easeInOut(duration: 0.18), value: selectedNodeID)
         .animation(.snappy(duration: 0.28, extraBounce: 0.02), value: isShowingTaskList)
         .onAppear {
-            loadSavedHierarchies()
             modelContext.undoManager = undoManager
             ensureAnyGraphDocument()
             if currentGraphKey == nil {
@@ -150,26 +154,15 @@ struct ContentView: View {
         .onChange(of: humanActorIdentity) { _, _ in
             persistCoordinatorExecutionState()
         }
-        .alert("Save Structure", isPresented: $isShowingSaveStructurePrompt) {
-            TextField("Structure name", text: $saveStructureName)
-            Button("Cancel", role: .cancel) {
-                saveStructureName = ""
-            }
-            Button("Save") {
-                let trimmed = saveStructureName.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !trimmed.isEmpty else { return }
-                saveCurrentStructure(named: trimmed)
-                saveStructureName = ""
-            }
-        } message: {
-            Text("Save the current hierarchy so you can reload it later.")
-        }
         .confirmationDialog("Create Top-Level Task", isPresented: $isShowingNewTaskOptions) {
             Button("Simple Task") {
                 createSimpleTask()
             }
             Button("Generate Structure") {
                 createGeneratedTaskFromDraft()
+            }
+            Button("From Selected Template") {
+                createTaskFromSelectedTemplate()
             }
             Button("Cancel", role: .cancel) {}
         } message: {
@@ -187,6 +180,20 @@ struct ContentView: View {
             )
             .presentationDetents([.medium, .large])
         }
+        .sheet(isPresented: $isShowingTaskResults) {
+            TaskResultsPanel(
+                document: taskDocuments.first(where: { $0.key == taskResultsDocumentKey }),
+                onClose: {
+                    isShowingTaskResults = false
+                    taskResultsDocumentKey = nil
+                }
+            )
+            .presentationDetents([.medium, .large])
+        }
+        .sheet(isPresented: $isShowingAPIKeys) {
+            APIKeysSheet(store: apiKeyStore)
+                .presentationDetents([.medium, .large])
+        }
     }
 
     private var editorWorkspace: some View {
@@ -197,7 +204,7 @@ struct ContentView: View {
             Divider()
             HStack(spacing: 0) {
                 chartCanvas
-                if selectedIndex != nil {
+                if inspectorNodeBinding != nil {
                     Divider()
                     inspectorPanel
                         .frame(minWidth: 320, idealWidth: 360, maxWidth: 420)
@@ -218,14 +225,11 @@ struct ContentView: View {
                 }
                 Spacer()
                 Button {
-                    presentTaskCreationOptions()
+                    isShowingAPIKeys = true
                 } label: {
-                    Label("New Task", systemImage: "plus")
-                        .font(.headline)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 12)
+                    Label("API Keys", systemImage: "key.horizontal")
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.bordered)
             }
             .padding(.horizontal, 24)
             .padding(.vertical, 18)
@@ -236,7 +240,7 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 10) {
                 Text("New Task Draft")
                     .font(.headline)
-                Text("Set title, goal, and context once, then choose Simple Task or Generate Structure.")
+                Text("Set title, goal, context, and template, then create.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
 
@@ -250,12 +254,14 @@ struct ContentView: View {
                 }
 
                 HStack(spacing: 10) {
-                    Button {
-                        presentTaskCreationOptions()
-                    } label: {
-                        Label("Create", systemImage: "plus.circle.fill")
+                    Picker("Template", selection: $newTaskTemplate) {
+                        ForEach(PresetHierarchyTemplate.allCases) { template in
+                            Text(template.title).tag(template)
+                        }
                     }
-                    .buttonStyle(.borderedProminent)
+                    .pickerStyle(.menu)
+
+                    Spacer()
 
                     Button("Clear") {
                         resetTaskDraft()
@@ -266,6 +272,13 @@ struct ContentView: View {
                         newTaskGoal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
                         newTaskContext.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     )
+
+                    Button {
+                        presentTaskCreationOptions()
+                    } label: {
+                        Label("Create", systemImage: "plus.circle.fill")
+                    }
+                    .buttonStyle(.borderedProminent)
                 }
             }
             .padding(.horizontal, 24)
@@ -289,6 +302,9 @@ struct ContentView: View {
         let status = runStatus(for: document)
         let title = document.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let goal = document.goal?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let isRunning = isTaskRunningFromList(document)
+        let canRun = canRunTaskFromList(document)
+        let inboxBadgeCount = pendingHumanApprovalCount(for: document)
         return VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 4) {
@@ -312,27 +328,57 @@ struct ContentView: View {
             }
 
             HStack(spacing: 10) {
+                Text("Updated \(document.updatedAt.formatted(date: .abbreviated, time: .shortened))")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Spacer()
+
+                if runStatus(for: document) == .completed {
+                    Button {
+                        openTaskResults(for: document.key)
+                    } label: {
+                        Label("View Results", systemImage: "doc.text.magnifyingglass")
+                    }
+                    .buttonStyle(.bordered)
+                }
+
+                Button {
+                    runOrContinueTask(for: document.key)
+                } label: {
+                    if isRunning {
+                        HStack(spacing: 6) {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text("Working...")
+                        }
+                    } else {
+                        Label(taskRunButtonLabel(for: document), systemImage: "play.fill")
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!canRun)
+
+                Button {
+                    openHumanInbox(for: document.key)
+                } label: {
+                    HumanInboxButtonLabel(pendingCount: inboxBadgeCount)
+                }
+                .buttonStyle(.bordered)
+
                 Button {
                     openTaskEditor(key: document.key)
                 } label: {
                     Label("Edit", systemImage: "pencil")
                 }
                 .buttonStyle(.borderedProminent)
-
-                Button {
-                    openHumanInbox(for: document.key)
-                } label: {
-                    Label("Human Inbox", systemImage: "tray.full")
-                }
-                .buttonStyle(.bordered)
-
-                Spacer()
-                Text("Updated \(document.updatedAt.formatted(date: .abbreviated, time: .shortened))")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
         }
         .padding(16)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            openTaskEditor(key: document.key)
+        }
         .background(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .fill(Color(uiColor: .secondarySystemBackground))
@@ -363,150 +409,204 @@ struct ContentView: View {
         return .draft
     }
 
+    private func executionBundle(for document: GraphDocument) -> CoordinatorExecutionStateBundle? {
+        guard
+            let data = document.executionStateData,
+            let decoded = try? JSONDecoder().decode(CoordinatorExecutionStateBundle.self, from: data)
+        else {
+            return nil
+        }
+        return decoded
+    }
+
+    private func isTaskRunningFromList(_ document: GraphDocument) -> Bool {
+        isExecutingCoordinator && currentGraphKey == document.key
+    }
+
+    private func canRunTaskFromList(_ document: GraphDocument) -> Bool {
+        if isExecutingCoordinator && currentGraphKey != document.key {
+            return false
+        }
+        guard let bundle = executionBundle(for: document) else { return true }
+        if bundle.pendingExecution?.awaitingHumanPacketID != nil {
+            return false
+        }
+        return true
+    }
+
+    private func taskRunButtonLabel(for document: GraphDocument) -> String {
+        guard let bundle = executionBundle(for: document) else { return "Run" }
+        if bundle.pendingExecution?.awaitingHumanPacketID != nil {
+            return "Waiting Human"
+        }
+        return bundle.pendingExecution == nil ? "Run" : "Continue"
+    }
+
+    private func pendingHumanApprovalCount(for document: GraphDocument) -> Int {
+        guard let bundle = executionBundle(for: document) else { return 0 }
+        return bundle.pendingExecution?.awaitingHumanPacketID == nil ? 0 : 1
+    }
+
     private var header: some View {
-        HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(activeTaskTitle)
-                    .font(.system(size: 30, weight: .bold, design: .rounded))
-                Text("Hierarchy editor for humans and AI agents.")
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
+        let headerControlHeight: CGFloat = 42
+        let canUndo = undoManager?.canUndo ?? false
+        let canRedo = undoManager?.canRedo ?? false
+        let canDelete = selectedNodeID != nil || selectedLinkID != nil
+
+        return VStack(spacing: 12) {
             HStack(spacing: 12) {
                 Button {
                     withAnimation(.snappy(duration: 0.28, extraBounce: 0.02)) {
                         isShowingTaskList = true
                     }
                 } label: {
-                    Label("Tasks", systemImage: "chevron.left")
-                        .font(.headline)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 10)
+                    headerControlLabel(
+                        title: "Tasks",
+                        systemImage: "chevron.left",
+                        height: headerControlHeight,
+                        prominent: false,
+                        enabled: true
+                    )
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(.plain)
 
-                HStack(spacing: 8) {
-                    Image(systemName: "magnifyingglass")
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(activeTaskTitle)
+                        .font(.system(size: 30, weight: .bold, design: .rounded))
+                    Text("Hierarchy editor for humans and AI agents.")
                         .foregroundStyle(.secondary)
-                    TextField("Search node", text: $searchText)
-                        .textFieldStyle(.plain)
                 }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .frame(width: 300)
-                .background(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .fill(Color(uiColor: .secondarySystemBackground))
-                )
+                Spacer()
+            }
+            .padding(.horizontal, 24)
 
-                Button {
-                    addNode(type: .agent)
-                } label: {
-                    Label("Add Agent", systemImage: "sparkles")
-                        .font(.headline)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 12)
-                }
-                .buttonStyle(.borderedProminent)
-
-                Button {
-                    addNode(type: .human)
-                } label: {
-                    Label("Add Human", systemImage: "person.badge.plus")
-                        .font(.headline)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 12)
-                }
-                .buttonStyle(.bordered)
-
-                Menu {
-                    ForEach(PresetHierarchyTemplate.allCases) { template in
-                        Button(template.title) {
-                            applyStructureSnapshot(template.snapshot())
-                        }
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 10) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "magnifyingglass")
+                            .foregroundStyle(.secondary)
+                        TextField("Search node", text: $searchText)
+                            .textFieldStyle(.plain)
                     }
-                } label: {
-                    Label("Templates", systemImage: "square.grid.2x2")
-                        .font(.headline)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 12)
-                }
-                .buttonStyle(.bordered)
+                    .padding(.horizontal, 14)
+                    .frame(width: 300, height: headerControlHeight)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(Color(uiColor: .secondarySystemBackground))
+                    )
 
-                Menu {
-                    Button {
-                        saveStructureName = suggestedSaveName()
-                        isShowingSaveStructurePrompt = true
+                    Menu {
+                        ForEach(PresetHierarchyTemplate.allCases) { template in
+                            Button(template.title) {
+                                applyStructureSnapshot(template.snapshot())
+                            }
+                        }
                     } label: {
-                        Label("Save Current Structure", systemImage: "square.and.arrow.down")
+                        headerControlLabel(
+                            title: "Templates",
+                            systemImage: "square.grid.2x2",
+                            height: headerControlHeight,
+                            prominent: false,
+                            enabled: true
+                        )
                     }
+                    .buttonStyle(.plain)
 
-                    if !savedStructures.isEmpty {
-                        Divider()
-                        ForEach(savedStructures) { saved in
-                            Button(saved.name) {
-                                applyStructureSnapshot(saved.snapshot)
-                            }
-                        }
-                        Divider()
-                        Menu("Delete Saved Structure") {
-                            ForEach(savedStructures) { saved in
-                                Button(role: .destructive) {
-                                    deleteSavedStructure(id: saved.id)
-                                } label: {
-                                    Text(saved.name)
-                                }
-                            }
-                        }
+                    Button {
+                        undo()
+                    } label: {
+                        headerControlLabel(
+                            title: "Undo",
+                            systemImage: "arrow.uturn.backward",
+                            height: headerControlHeight,
+                            prominent: false,
+                            enabled: canUndo
+                        )
                     }
-                } label: {
-                    Label("Structures", systemImage: "tray.full")
-                        .font(.headline)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 12)
-                }
-                .buttonStyle(.bordered)
+                    .buttonStyle(.plain)
+                    .disabled(!canUndo)
+                    .keyboardShortcut("z", modifiers: [.command])
 
-                Button {
-                    undo()
-                } label: {
-                    Label("Undo", systemImage: "arrow.uturn.backward")
-                        .font(.headline)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 12)
-                }
-                .buttonStyle(.bordered)
-                .disabled(!(undoManager?.canUndo ?? false))
-                .keyboardShortcut("z", modifiers: [.command])
+                    Button {
+                        redo()
+                    } label: {
+                        headerControlLabel(
+                            title: "Redo",
+                            systemImage: "arrow.uturn.forward",
+                            height: headerControlHeight,
+                            prominent: false,
+                            enabled: canRedo
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!canRedo)
+                    .keyboardShortcut("Z", modifiers: [.command, .shift])
 
-                Button {
-                    redo()
-                } label: {
-                    Label("Redo", systemImage: "arrow.uturn.forward")
-                        .font(.headline)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 12)
+                    Button(role: .destructive) {
+                        deleteCurrentSelection()
+                    } label: {
+                        headerControlLabel(
+                            title: selectedLinkID == nil ? "Delete Node" : "Delete Link",
+                            systemImage: "trash",
+                            height: headerControlHeight,
+                            prominent: false,
+                            enabled: canDelete,
+                            destructive: true
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!canDelete)
+                    .keyboardShortcut(.delete, modifiers: [])
                 }
-                .buttonStyle(.bordered)
-                .disabled(!(undoManager?.canRedo ?? false))
-                .keyboardShortcut("Z", modifiers: [.command, .shift])
-
-                Button(role: .destructive) {
-                    deleteCurrentSelection()
-                } label: {
-                    Label(selectedLinkID == nil ? "Delete Node" : "Delete Link", systemImage: "trash")
-                        .font(.headline)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 12)
-                }
-                .buttonStyle(.bordered)
-                .disabled(selectedNodeID == nil && selectedLinkID == nil)
-                .keyboardShortcut(.delete, modifiers: [])
+                .padding(.horizontal, 24)
+                .padding(.bottom, 2)
             }
         }
-        .padding(.horizontal, 24)
-        .padding(.vertical, 18)
+        .padding(.top, 18)
+        .padding(.bottom, 14)
         .background(Color(uiColor: .systemBackground))
+    }
+
+    private func headerControlLabel(
+        title: String,
+        systemImage: String,
+        height: CGFloat,
+        prominent: Bool,
+        enabled: Bool,
+        destructive: Bool = false
+    ) -> some View {
+        Label(title, systemImage: systemImage)
+            .font(.headline)
+            .lineLimit(1)
+            .padding(.horizontal, 16)
+            .frame(height: height)
+            .foregroundStyle(headerControlForeground(prominent: prominent, enabled: enabled, destructive: destructive))
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(headerControlBackground(prominent: prominent, enabled: enabled))
+            )
+    }
+
+    private func headerControlForeground(prominent: Bool, enabled: Bool, destructive: Bool) -> Color {
+        if !enabled {
+            return Color(uiColor: .tertiaryLabel)
+        }
+        if prominent {
+            return .white
+        }
+        if destructive {
+            return .red
+        }
+        return AppTheme.brandTint
+    }
+
+    private func headerControlBackground(prominent: Bool, enabled: Bool) -> Color {
+        if prominent {
+            return enabled ? AppTheme.brandTint : AppTheme.brandTint.opacity(0.45)
+        }
+        return enabled
+            ? Color(uiColor: .secondarySystemBackground)
+            : Color(uiColor: .tertiarySystemFill)
     }
 
     private var orchestrationBar: some View {
@@ -544,10 +644,7 @@ struct ContentView: View {
                 Button {
                     isShowingHumanInbox = true
                 } label: {
-                    Label(
-                        pendingHumanPacket == nil ? "Human Inbox" : "Human Inbox (1)",
-                        systemImage: "tray.full"
-                    )
+                    HumanInboxButtonLabel(pendingCount: pendingHumanPacket == nil ? 0 : 1)
                 }
                 .buttonStyle(.bordered)
             }
@@ -730,8 +827,8 @@ struct ContentView: View {
 
     private var inspectorPanel: some View {
         ScrollView {
-            if let selectedIndex {
-                NodeInspector(node: $nodes[selectedIndex])
+            if let inspectorNodeBinding {
+                NodeInspector(node: inspectorNodeBinding)
                     .padding(20)
             }
         }
@@ -781,23 +878,15 @@ struct ContentView: View {
                         let selectedNodeID,
                         let selectedNode = visibleNodes.first(where: { $0.id == selectedNodeID })
                     {
-                        LinkHandle(isActive: linkingFromNodeID == selectedNodeID)
+                        Button {
+                            addNode(type: .agent, forcedParentID: selectedNodeID)
+                        } label: {
+                            AddChildHandle()
+                        }
+                        .buttonStyle(.plain)
                             .position(
                                 x: selectedNode.position.x,
                                 y: selectedNode.position.y + (cardSize.height / 2) + 18
-                            )
-                            .gesture(
-                                DragGesture(minimumDistance: 0, coordinateSpace: .named("chart-canvas"))
-                                    .onChanged { value in
-                                        updateLinkDrag(
-                                            sourceID: selectedNodeID,
-                                            pointer: value.location,
-                                            candidateNodes: visibleNodes
-                                        )
-                                    }
-                                    .onEnded { _ in
-                                        completeLinkDrag(candidateNodes: visibleNodes)
-                                    }
                             )
                     }
                 }
@@ -869,9 +958,17 @@ struct ContentView: View {
         }
     }
 
-    private var selectedIndex: Int? {
+    private var inspectorNodeBinding: Binding<OrgNode>? {
         guard let selectedNodeID else { return nil }
-        return nodes.firstIndex(where: { $0.id == selectedNodeID })
+        return Binding(
+            get: {
+                nodes.first(where: { $0.id == selectedNodeID }) ?? OrgNode.placeholder(id: selectedNodeID)
+            },
+            set: { updatedNode in
+                guard let index = nodes.firstIndex(where: { $0.id == selectedNodeID }) else { return }
+                nodes[index] = updatedNode
+            }
+        )
     }
 
     private var linkDraft: LinkDraft? {
@@ -1583,7 +1680,7 @@ struct ContentView: View {
         return nodePart + "###" + linkPart
     }
 
-    private func addNode(type: NodeType) {
+    private func addNode(type: NodeType, forcedParentID: UUID? = nil) {
         let fallbackPosition = CGPoint(
             x: CGFloat(Int.random(in: 400...1700)),
             y: CGFloat(Int.random(in: 120...1080))
@@ -1595,24 +1692,24 @@ struct ContentView: View {
         var inheritedInputSchemaForNewNode: HandoffSchema?
 
         if
-            let selectedNodeID,
-            let selectedNode = nodes.first(where: { $0.id == selectedNodeID })
+            let parentSeedID = forcedParentID ?? selectedNodeID,
+            let selectedNode = nodes.first(where: { $0.id == parentSeedID })
         {
             let childIDs = Set(
                 links
-                    .filter { $0.fromID == selectedNodeID }
+                    .filter { $0.fromID == parentSeedID }
                     .map(\.toID)
             )
             let children = nodes.filter { childIDs.contains($0.id) }
 
             let preferredChildY: CGFloat? = {
-                guard let parentParentID = links.first(where: { $0.toID == selectedNodeID })?.fromID else {
+                guard let parentParentID = links.first(where: { $0.toID == parentSeedID })?.fromID else {
                     return nil
                 }
 
                 let siblingIDs = Set(
                     links
-                        .filter { $0.fromID == parentParentID && $0.toID != selectedNodeID }
+                        .filter { $0.fromID == parentParentID && $0.toID != parentSeedID }
                         .map(\.toID)
                 )
 
@@ -1630,11 +1727,11 @@ struct ContentView: View {
                 existingChildren: children,
                 preferredY: preferredChildY
             )
-            parentIDForNewNode = selectedNodeID
+            parentIDForNewNode = parentSeedID
             inheritedInputSchemaForNewNode = selectedNode.outputSchema
             parentLinkToneForNewNode =
-                links.first(where: { $0.fromID == selectedNodeID })?.tone
-                ?? links.first(where: { $0.toID == selectedNodeID })?.tone
+                links.first(where: { $0.fromID == parentSeedID })?.tone
+                ?? links.first(where: { $0.toID == parentSeedID })?.tone
                 ?? .blue
         }
 
@@ -1738,62 +1835,6 @@ struct ContentView: View {
             return
         }
         deleteSelectedNode()
-    }
-
-    private func suggestedSaveName() -> String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd HH:mm"
-        return "Structure \(formatter.string(from: Date()))"
-    }
-
-    private func saveCurrentStructure(named name: String) {
-        let snapshot = captureStructureSnapshot()
-
-        if let existingIndex = savedStructures.firstIndex(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) {
-            savedStructures[existingIndex].snapshot = snapshot
-            savedStructures[existingIndex].updatedAt = Date()
-        } else {
-            savedStructures.append(
-                SavedHierarchy(
-                    id: UUID(),
-                    name: name,
-                    createdAt: Date(),
-                    updatedAt: Date(),
-                    snapshot: snapshot
-                )
-            )
-        }
-
-        savedStructures.sort { $0.updatedAt > $1.updatedAt }
-        persistSavedHierarchies()
-    }
-
-    private func deleteSavedStructure(id: UUID) {
-        savedStructures.removeAll { $0.id == id }
-        persistSavedHierarchies()
-    }
-
-    private func loadSavedHierarchies() {
-        guard let data = UserDefaults.standard.data(forKey: savedStructuresDefaultsKey) else {
-            savedStructures = []
-            return
-        }
-
-        do {
-            let decoded = try JSONDecoder().decode([SavedHierarchy].self, from: data)
-            savedStructures = decoded.sorted { $0.updatedAt > $1.updatedAt }
-        } catch {
-            savedStructures = []
-        }
-    }
-
-    private func persistSavedHierarchies() {
-        do {
-            let data = try JSONEncoder().encode(savedStructures)
-            UserDefaults.standard.set(data, forKey: savedStructuresDefaultsKey)
-        } catch {
-            return
-        }
     }
 
     private func captureStructureSnapshot() -> HierarchySnapshot {
@@ -1929,6 +1970,7 @@ struct ContentView: View {
         newTaskTitle = ""
         newTaskGoal = ""
         newTaskContext = ""
+        newTaskTemplate = .baseline
     }
 
     private func openTaskEditor(key: String) {
@@ -1981,6 +2023,45 @@ struct ContentView: View {
         resetTaskDraft()
     }
 
+    private func createTaskFromSelectedTemplate() {
+        let title = newTaskTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        let goal = newTaskGoal.trimmingCharacters(in: .whitespacesAndNewlines)
+        createTaskDocument(
+            title: title.isEmpty ? newTaskTemplate.title : title,
+            goal: goal.isEmpty ? orchestrationGoal : goal,
+            snapshot: newTaskTemplate.snapshot()
+        )
+        resetTaskDraft()
+    }
+
+    private func openTaskResults(for key: String) {
+        taskResultsDocumentKey = key
+        isShowingTaskResults = true
+    }
+
+    private func runOrContinueTask(for key: String) {
+        if isExecutingCoordinator {
+            return
+        }
+
+        currentGraphKey = key
+        syncGraphFromStore()
+
+        if let pending = pendingCoordinatorExecution {
+            if pending.awaitingHumanPacketID != nil {
+                isShowingHumanInbox = true
+                return
+            }
+            isExecutingCoordinator = true
+            Task {
+                await continueCoordinatorExecution()
+            }
+            return
+        }
+
+        runCoordinatorPipeline()
+    }
+
     private func createTaskDocument(title: String, goal: String, snapshot: HierarchySnapshot) {
         guard let data = try? JSONEncoder().encode(snapshot) else { return }
 
@@ -2003,25 +2084,25 @@ struct ContentView: View {
     }
 
     private func simpleTaskSnapshot() -> HierarchySnapshot {
-        let coordinatorID = UUID()
-        let executionID = UUID()
-        let qaID = UUID()
-        let releaseID = UUID()
-
+        let agentID = UUID()
         let basicNodes: [OrgNode] = [
-            OrgNode(id: coordinatorID, name: "Coordinator", title: "Task Lead", department: "Control Plane", type: .agent, provider: .chatGPT, roleDescription: "Coordinates planning and execution workflow.", inputSchema: .goalBriefV1, outputSchema: .strategyPlanV1, selectedRoles: [.coordinator, .planner], securityAccess: [.workspaceRead, .workspaceWrite], position: .zero),
-            OrgNode(id: executionID, name: "Execution Agent", title: "Builder", department: "Delivery", type: .agent, provider: .claude, roleDescription: "Implements scoped execution steps.", inputSchema: .strategyPlanV1, outputSchema: .buildPatchV1, selectedRoles: [.executor], securityAccess: [.workspaceRead, .workspaceWrite, .terminalExec], position: .zero),
-            OrgNode(id: qaID, name: "QA Agent", title: "Validator", department: "Quality", type: .agent, provider: .grok, roleDescription: "Validates outputs and runs checks.", inputSchema: .buildPatchV1, outputSchema: .validationReportV1, selectedRoles: [.reviewer], securityAccess: [.workspaceRead, .terminalExec], position: .zero),
-            OrgNode(id: releaseID, name: "Release Manager", title: "Human Approval", department: "Operations", type: .human, provider: .chatGPT, roleDescription: "Approves final rollout decision.", inputSchema: .validationReportV1, outputSchema: .releaseDecisionV1, selectedRoles: [.decisionMaker, .reviewer], securityAccess: [.workspaceRead, .auditLogs], position: .zero)
+            OrgNode(
+                id: agentID,
+                name: "Task Agent",
+                title: "Generalist",
+                department: "Automation",
+                type: .agent,
+                provider: .chatGPT,
+                roleDescription: "Handles the task directly end-to-end as a single autonomous worker.",
+                inputSchema: .goalBriefV1,
+                outputSchema: .taskResultV1,
+                selectedRoles: [.executor, .planner],
+                securityAccess: [.workspaceRead],
+                position: .zero
+            )
         ]
 
-        let basicLinks: [NodeLink] = [
-            NodeLink(fromID: coordinatorID, toID: executionID, tone: .blue),
-            NodeLink(fromID: executionID, toID: qaID, tone: .orange),
-            NodeLink(fromID: qaID, toID: releaseID, tone: .indigo)
-        ]
-
-        return makeHierarchySnapshot(nodes: basicNodes, links: basicLinks)
+        return makeHierarchySnapshot(nodes: basicNodes, links: [])
     }
 
     private func persistActiveTaskMetadata() {
@@ -2323,14 +2404,29 @@ private struct NodeInspector: View {
 
             GroupBox {
                 VStack(alignment: .leading, spacing: 14) {
-                    TextField("Display Name", text: $node.name)
-                        .textFieldStyle(.roundedBorder)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Display Name")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        TextField("Display Name", text: $node.name)
+                            .textFieldStyle(.roundedBorder)
+                    }
 
-                    TextField("Role Title", text: $node.title)
-                        .textFieldStyle(.roundedBorder)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Role Title")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        TextField("Role Title", text: $node.title)
+                            .textFieldStyle(.roundedBorder)
+                    }
 
-                    TextField("Department", text: $node.department)
-                        .textFieldStyle(.roundedBorder)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Department")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        TextField("Department", text: $node.department)
+                            .textFieldStyle(.roundedBorder)
+                    }
                 }
             } label: {
                 Text("Identity")
@@ -2338,20 +2434,30 @@ private struct NodeInspector: View {
 
             GroupBox {
                 VStack(alignment: .leading, spacing: 14) {
-                    Picker("Node Type", selection: $node.type) {
-                        ForEach(NodeType.allCases) { type in
-                            Text(type.label).tag(type)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-
-                    if node.type == .agent {
-                        Picker("Model", selection: $node.provider) {
-                            ForEach(LLMProvider.allCases) { provider in
-                                Text(provider.label).tag(provider)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Node Type")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Picker("Node Type", selection: $node.type) {
+                            ForEach(NodeType.allCases) { type in
+                                Text(type.label).tag(type)
                             }
                         }
-                        .pickerStyle(.menu)
+                        .pickerStyle(.segmented)
+                    }
+
+                    if node.type == .agent {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Model")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            Picker("Model", selection: $node.provider) {
+                                ForEach(LLMProvider.allCases) { provider in
+                                    Text(provider.label).tag(provider)
+                                }
+                            }
+                            .pickerStyle(.menu)
+                        }
                     }
                 }
             } label: {
@@ -2359,30 +2465,45 @@ private struct NodeInspector: View {
             }
 
             GroupBox {
-                TextEditor(text: $node.roleDescription)
-                    .frame(minHeight: 110)
-                    .padding(6)
-                    .background(Color(uiColor: .systemBackground))
-                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Description")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    TextEditor(text: $node.roleDescription)
+                        .frame(minHeight: 110)
+                        .padding(6)
+                        .background(Color(uiColor: .systemBackground))
+                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                }
             } label: {
                 Text("Role Description")
             }
 
             GroupBox {
                 VStack(alignment: .leading, spacing: 14) {
-                    Picker("Input Schema", selection: $node.inputSchema) {
-                        ForEach(HandoffSchema.allCases) { schema in
-                            Text(schema.label).tag(schema)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Input Schema")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Picker("Input Schema", selection: $node.inputSchema) {
+                            ForEach(HandoffSchema.allCases) { schema in
+                                Text(schema.label).tag(schema)
+                            }
                         }
+                        .pickerStyle(.menu)
                     }
-                    .pickerStyle(.menu)
 
-                    Picker("Output Schema", selection: $node.outputSchema) {
-                        ForEach(HandoffSchema.allCases) { schema in
-                            Text(schema.label).tag(schema)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Output Schema")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Picker("Output Schema", selection: $node.outputSchema) {
+                            ForEach(HandoffSchema.allCases) { schema in
+                                Text(schema.label).tag(schema)
+                            }
                         }
+                        .pickerStyle(.menu)
                     }
-                    .pickerStyle(.menu)
                 }
             } label: {
                 Text("Typed Handoffs")
@@ -2510,15 +2631,6 @@ private struct HumanInboxPanel: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    HStack {
-                        Spacer()
-                        Button("Close") {
-                            dismiss()
-                        }
-                        .buttonStyle(.bordered)
-                        .keyboardShortcut(.escape, modifiers: [])
-                    }
-
                     GroupBox("Pending Human Task") {
                         if let pendingPacket {
                             VStack(alignment: .leading, spacing: 10) {
@@ -2607,9 +2719,14 @@ private struct HumanInboxPanel: View {
             .navigationTitle("Human Inbox")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Close") {
+                    Button {
                         dismiss()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.headline.weight(.semibold))
                     }
+                    .accessibilityLabel("Close")
+                    .keyboardShortcut(.escape, modifiers: [])
                 }
             }
         }
@@ -2623,6 +2740,143 @@ private struct HumanInboxPanel: View {
             return .red
         case .needsInfo:
             return .orange
+        }
+    }
+}
+
+private struct TaskResultsPanel: View {
+    let document: GraphDocument?
+    let onClose: () -> Void
+
+    private var bundle: CoordinatorExecutionStateBundle? {
+        guard
+            let data = document?.executionStateData,
+            let decoded = try? JSONDecoder().decode(CoordinatorExecutionStateBundle.self, from: data)
+        else {
+            return nil
+        }
+        return decoded
+    }
+
+    private var latestRun: CoordinatorRun? {
+        bundle?.latestRun
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    if let document {
+                        Text(document.title?.isEmpty == false ? (document.title ?? "") : "Task Results")
+                            .font(.headline)
+                        Text(document.goal?.isEmpty == false ? (document.goal ?? "") : "No goal set.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    if let run = latestRun {
+                        HStack(spacing: 8) {
+                            Text("Run \(run.runID)")
+                                .font(.caption.weight(.semibold))
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(.blue.opacity(0.12), in: Capsule())
+                            Text("\(run.succeededCount)/\(run.results.count) tasks succeeded")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Text(run.finishedAt.formatted(date: .abbreviated, time: .shortened))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        ForEach(run.results) { result in
+                            VStack(alignment: .leading, spacing: 6) {
+                                HStack {
+                                    Text(result.assignedNodeName)
+                                        .font(.subheadline.weight(.semibold))
+                                    Spacer()
+                                    Text(result.completed ? "Succeeded" : "Failed")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(result.completed ? .green : .red)
+                                }
+                                Text(result.summary)
+                                    .font(.caption)
+                            }
+                            .padding(10)
+                            .background(
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .fill(Color(uiColor: .secondarySystemBackground))
+                            )
+                        }
+                    } else {
+                        Text("No completed results for this task yet.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(16)
+            }
+            .navigationTitle("Task Results")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button {
+                        onClose()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.headline.weight(.semibold))
+                    }
+                    .accessibilityLabel("Close")
+                    .keyboardShortcut(.escape, modifiers: [])
+                }
+            }
+        }
+    }
+}
+
+private struct InboxAttentionBadge: View {
+    let count: Int
+    @State private var isPulsing = false
+
+    var body: some View {
+        Text(badgeText)
+            .font(.system(size: 10, weight: .bold, design: .rounded))
+            .foregroundStyle(.white)
+            .frame(width: 18, height: 18)
+            .background(Circle().fill(Color.red))
+            .scaleEffect(isPulsing ? 1.08 : 0.92)
+            .opacity(isPulsing ? 1 : 0.82)
+            .animation(
+                .easeInOut(duration: 0.85).repeatForever(autoreverses: true),
+                value: isPulsing
+            )
+            .onAppear {
+                isPulsing = true
+            }
+    }
+
+    private var badgeText: String {
+        if count > 9 { return "9+" }
+        return "\(count)"
+    }
+}
+
+private struct HumanInboxButtonLabel: View {
+    let pendingCount: Int
+
+    var body: some View {
+        HStack(spacing: 8) {
+            ZStack {
+                if pendingCount > 0 {
+                    InboxAttentionBadge(count: pendingCount)
+                } else {
+                    Image(systemName: "tray.full")
+                        .font(.body.weight(.semibold))
+                }
+            }
+            .frame(width: 18, height: 18)
+
+            Text("Human Inbox")
         }
     }
 }
@@ -2693,6 +2947,20 @@ private struct LinkHandle: View {
             )
             .frame(width: 24, height: 24)
             .shadow(color: .black.opacity(0.18), radius: 6, y: 2)
+    }
+}
+
+private struct AddChildHandle: View {
+    var body: some View {
+        Circle()
+            .fill(Color.blue)
+            .overlay(
+                Image(systemName: "plus")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(.white)
+            )
+            .frame(width: 26, height: 26)
+            .shadow(color: .black.opacity(0.2), radius: 6, y: 2)
     }
 }
 
@@ -3001,6 +3269,23 @@ private struct OrgNode: Identifiable {
         return (first + second).uppercased()
     }
 
+    static func placeholder(id: UUID) -> OrgNode {
+        OrgNode(
+            id: id,
+            name: "",
+            title: "",
+            department: "",
+            type: .agent,
+            provider: .chatGPT,
+            roleDescription: "",
+            inputSchema: .taskResultV1,
+            outputSchema: .taskResultV1,
+            selectedRoles: [],
+            securityAccess: [],
+            position: .zero
+        )
+    }
+
     static let sample: [OrgNode] = [
         OrgNode(
             id: UUID(uuidString: "A5E8B12B-2207-43B4-B363-C6D0E0F55541")!,
@@ -3212,14 +3497,6 @@ private struct HierarchySnapshotLink: Codable {
     var fromID: UUID
     var toID: UUID
     var tone: LinkTone
-}
-
-private struct SavedHierarchy: Identifiable, Codable {
-    var id: UUID
-    var name: String
-    var createdAt: Date
-    var updatedAt: Date
-    var snapshot: HierarchySnapshot
 }
 
 private func makeHierarchySnapshot(nodes: [OrgNode], links: [NodeLink]) -> HierarchySnapshot {
