@@ -1593,13 +1593,38 @@ struct ContentView: View {
         else { return }
 
         performSemanticMutation {
-            if let existing = links.first(where: { $0.fromID == sourceID && $0.toID == targetID }) {
-                selectedLinkID = existing.id
-                selectedNodeID = nil
+            guard !wouldCreateCycle(from: sourceID, to: targetID, links: links) else {
                 return
             }
 
-            guard !wouldCreateCycle(from: sourceID, to: targetID, links: links) else {
+            if let targetNode = nodes.first(where: { $0.id == targetID }), targetNode.type == .output {
+                let existingOutputLinks = links.filter { $0.toID == targetID }
+                if let existing = existingOutputLinks.first(where: { $0.fromID == sourceID }) {
+                    selectedLinkID = existing.id
+                    selectedNodeID = nil
+                    return
+                }
+
+                let outputTone = existingOutputLinks.first?.tone ?? .teal
+                let outputEdgeType = existingOutputLinks.first?.edgeType ?? .primary
+                links.removeAll { $0.toID == targetID }
+
+                let created = NodeLink(
+                    fromID: sourceID,
+                    toID: targetID,
+                    tone: outputTone,
+                    edgeType: outputEdgeType
+                )
+                links.append(created)
+                selectedLinkID = created.id
+                selectedNodeID = nil
+                relayoutHierarchy()
+                return
+            }
+
+            if let existing = links.first(where: { $0.fromID == sourceID && $0.toID == targetID }) {
+                selectedLinkID = existing.id
+                selectedNodeID = nil
                 return
             }
 
@@ -1645,13 +1670,38 @@ struct ContentView: View {
         else { return }
 
         performSemanticMutation {
-            if let existing = links.first(where: { $0.fromID == sourceID && $0.toID == targetID }) {
-                selectedLinkID = existing.id
-                selectedNodeID = nil
+            guard !wouldCreateCycle(from: sourceID, to: targetID, links: links) else {
                 return
             }
 
-            guard !wouldCreateCycle(from: sourceID, to: targetID, links: links) else {
+            if let targetNode = nodes.first(where: { $0.id == targetID }), targetNode.type == .output {
+                let existingOutputLinks = links.filter { $0.toID == targetID }
+                if let existing = existingOutputLinks.first(where: { $0.fromID == sourceID }) {
+                    selectedLinkID = existing.id
+                    selectedNodeID = nil
+                    return
+                }
+
+                let outputTone = existingOutputLinks.first?.tone ?? .teal
+                let outputEdgeType = existingOutputLinks.first?.edgeType ?? .primary
+                links.removeAll { $0.toID == targetID }
+
+                let created = NodeLink(
+                    fromID: sourceID,
+                    toID: targetID,
+                    tone: outputTone,
+                    edgeType: outputEdgeType
+                )
+                links.append(created)
+                selectedLinkID = created.id
+                selectedNodeID = nil
+                relayoutHierarchy()
+                return
+            }
+
+            if let existing = links.first(where: { $0.fromID == sourceID && $0.toID == targetID }) {
+                selectedLinkID = existing.id
+                selectedNodeID = nil
                 return
             }
 
@@ -1679,6 +1729,17 @@ struct ContentView: View {
             let source = candidates.first(where: { $0.id == sourceID }),
             let target = candidates.first(where: { $0.id == targetID })
         else { return false }
+
+        // Keep anchors directional: no links out of Output, no links into Input.
+        if source.type == .output || target.type == .input {
+            return false
+        }
+
+        // Allow redirecting Output from any work node, even if on the same row.
+        if target.type == .output {
+            return source.type == .agent || source.type == .human
+        }
+
         return target.position.y > source.position.y + 8
     }
 
