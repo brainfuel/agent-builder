@@ -1971,6 +1971,29 @@ struct ContentView: View {
                         tone: parentLinkToneForNewNode
                     )
                 )
+
+                // If the selected parent was directly connected to Output, insert the new
+                // node between parent and Output so flow stays linear by default.
+                if
+                    let outputID = nodes.first(where: { $0.type == .output })?.id,
+                    let parentToOutputIndex = links.firstIndex(where: {
+                        $0.fromID == parentIDForNewNode && $0.toID == outputID
+                    })
+                {
+                    let redirectedLink = links[parentToOutputIndex]
+                    links.remove(at: parentToOutputIndex)
+
+                    if !links.contains(where: { $0.fromID == newNodeID && $0.toID == outputID }) {
+                        links.append(
+                            NodeLink(
+                                fromID: newNodeID,
+                                toID: outputID,
+                                tone: redirectedLink.tone,
+                                edgeType: redirectedLink.edgeType
+                            )
+                        )
+                    }
+                }
             }
 
             stabilizeLayout(afterAddingAtY: newPosition.y, parentID: parentIDForNewNode)
@@ -2251,12 +2274,30 @@ struct ContentView: View {
         let attachments = anchorAttachmentNodeIDs(nodes: nodes, links: links)
         let rootNode = attachments.rootID.flatMap { id in nodes.first(where: { $0.id == id }) }
         let sinkNode = attachments.sinkID.flatMap { id in nodes.first(where: { $0.id == id }) }
+        let outputID = nodes.first(where: { $0.type == .output })?.id
+        let outputParentNodes: [OrgNode] = {
+            guard let outputID else { return [] }
+            let outputParentIDs = Set(
+                links
+                    .filter { $0.toID == outputID }
+                    .map(\.fromID)
+            )
+            return nodes.filter { outputParentIDs.contains($0.id) && $0.type != .input && $0.type != .output }
+        }()
 
         let inputX = rootNode?.position.x ?? defaultCenterX
         let inputY = max(topInset, (rootNode?.position.y ?? topInset) - verticalOffset)
 
-        let outputX = sinkNode?.position.x ?? defaultCenterX
-        let proposedOutputY = (sinkNode?.position.y ?? (bottomInset - verticalOffset)) + verticalOffset
+        let outputX: CGFloat
+        let proposedOutputY: CGFloat
+        if outputParentNodes.isEmpty {
+            outputX = sinkNode?.position.x ?? defaultCenterX
+            proposedOutputY = (sinkNode?.position.y ?? (bottomInset - verticalOffset)) + verticalOffset
+        } else {
+            outputX = outputParentNodes.map(\.position.x).reduce(0, +) / CGFloat(outputParentNodes.count)
+            let maxParentY = outputParentNodes.map(\.position.y).max() ?? (bottomInset - verticalOffset)
+            proposedOutputY = maxParentY + verticalOffset
+        }
         let outputY = min(bottomInset, max(inputY + 180, proposedOutputY))
 
         return (
@@ -2344,6 +2385,9 @@ struct ContentView: View {
                 .map(\.id)
         )
         let preferredRootID = mutableLinks.first(where: { $0.fromID == inputID && workNodeIDs.contains($0.toID) })?.toID
+        let preferredOutputParentIDs = mutableLinks
+            .filter { $0.toID == outputID && workNodeIDs.contains($0.fromID) }
+            .map(\.fromID)
         mutableLinks.removeAll {
             $0.fromID == inputID || $0.toID == inputID || $0.fromID == outputID || $0.toID == outputID
         }
@@ -2368,6 +2412,9 @@ struct ContentView: View {
                 let resolvedRootID,
                 workNodeIDs.contains(resolvedRootID)
             else {
+                if let preferredOutputParentID = preferredOutputParentIDs.first(where: { workNodeIDs.contains($0) }) {
+                    return preferredOutputParentID
+                }
                 return attachments.sinkID
             }
 
@@ -2385,6 +2432,10 @@ struct ContentView: View {
                 for childID in (outgoingByParentID[nodeID] ?? []).map(\.toID) where !reachable.contains(childID) {
                     queue.append(childID)
                 }
+            }
+
+            if let preferredReachableOutputParentID = preferredOutputParentIDs.first(where: { reachable.contains($0) }) {
+                return preferredReachableOutputParentID
             }
 
             guard !reachable.isEmpty else { return attachments.sinkID }
