@@ -49,6 +49,7 @@ struct ContentView: View {
     @State private var isShowingTaskResults = false
     @State private var taskResultsDocumentKey: String?
     @State private var isShowingAPIKeys = false
+    @State private var isShowingWipeDataConfirmation = false
 
     init(
         apiKeyStore: any APIKeyStoring = KeychainAPIKeyStore(),
@@ -173,6 +174,14 @@ struct ContentView: View {
         } message: {
             Text("Choose how to create the new coordinator task.")
         }
+        .confirmationDialog("Wipe All Data?", isPresented: $isShowingWipeDataConfirmation) {
+            Button("Wipe All Data", role: .destructive) {
+                wipeAllDataForTesting()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This temporary testing action will delete all tasks, execution history, API keys, and saved model preferences.")
+        }
         .sheet(isPresented: $isShowingHumanInbox) {
             HumanInboxPanel(
                 pendingPacket: pendingHumanPacket,
@@ -233,6 +242,13 @@ struct ContentView: View {
                     isShowingAPIKeys = true
                 } label: {
                     Label("API Keys", systemImage: "key.horizontal")
+                }
+                .buttonStyle(.bordered)
+
+                Button(role: .destructive) {
+                    isShowingWipeDataConfirmation = true
+                } label: {
+                    Label("Wipe Data", systemImage: "trash")
                 }
                 .buttonStyle(.bordered)
             }
@@ -2724,6 +2740,49 @@ struct ContentView: View {
             isShowingTaskList = false
         }
         syncGraphFromStore()
+    }
+
+    private func wipeAllDataForTesting() {
+        // Clear persisted graph documents.
+        for document in graphDocuments {
+            modelContext.delete(document)
+        }
+        try? modelContext.save()
+
+        // Clear API keys + provider model preferences.
+        for provider in APIKeyProvider.allCases {
+            try? apiKeyStore.removeKey(for: provider)
+            providerModelStore.persistCachedModels([], for: provider)
+            providerModelStore.persistDefaultModel(nil, for: provider)
+        }
+
+        // Reset editor/list state so UI reflects an empty project immediately.
+        currentGraphKey = nil
+        nodes = []
+        links = []
+        selectedNodeID = nil
+        selectedLinkID = nil
+        linkingFromNodeID = nil
+        linkingPointer = nil
+        linkHoverTargetNodeID = nil
+        searchText = ""
+        zoom = 1.0
+        latestCoordinatorPlan = nil
+        latestCoordinatorRun = nil
+        pendingCoordinatorExecution = nil
+        coordinatorTrace = []
+        humanDecisionAudit = []
+        humanDecisionNote = ""
+        isShowingHumanInbox = false
+        isShowingTaskResults = false
+        taskResultsDocumentKey = nil
+        isExecutingCoordinator = false
+        synthesisContext = ""
+        synthesisQuestions = []
+        synthesizedStructure = nil
+        synthesisStatusMessage = nil
+        resetTaskDraft()
+        isShowingTaskList = true
     }
 
     private func simpleTaskSnapshot() -> HierarchySnapshot {
