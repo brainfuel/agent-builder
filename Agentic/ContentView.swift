@@ -8,6 +8,7 @@ struct ContentView: View {
     private let maxZoom: CGFloat = 1.5
     private let zoomStep: CGFloat = 0.1
     private let apiKeyStore: any APIKeyStoring
+    private let providerModelStore: any ProviderModelPreferencesStoring
 
     @Environment(\.modelContext) private var modelContext
     @Environment(\.undoManager) private var undoManager
@@ -30,6 +31,7 @@ struct ContentView: View {
     @State private var latestCoordinatorRun: CoordinatorRun?
     @State private var isExecutingCoordinator = false
     @State private var coordinatorRunMode: CoordinatorExecutionMode = .simulation
+    @State private var coordinatorFlowMode: CoordinatorFlowMode = .downThenUp
     @State private var coordinatorTrace: [CoordinatorTraceStep] = []
     @State private var pendingCoordinatorExecution: PendingCoordinatorExecution?
     @State private var humanDecisionAudit: [HumanDecisionAuditEvent] = []
@@ -49,8 +51,12 @@ struct ContentView: View {
     @State private var taskResultsDocumentKey: String?
     @State private var isShowingAPIKeys = false
 
-    init(apiKeyStore: any APIKeyStoring = KeychainAPIKeyStore()) {
+    init(
+        apiKeyStore: any APIKeyStoring = KeychainAPIKeyStore(),
+        providerModelStore: any ProviderModelPreferencesStoring = UserDefaultsProviderModelStore()
+    ) {
         self.apiKeyStore = apiKeyStore
+        self.providerModelStore = providerModelStore
     }
 
     private var visibleNodes: [OrgNode] {
@@ -191,7 +197,7 @@ struct ContentView: View {
             .presentationDetents([.medium, .large])
         }
         .sheet(isPresented: $isShowingAPIKeys) {
-            APIKeysSheet(store: apiKeyStore)
+            APIKeysSheet(store: apiKeyStore, modelStore: providerModelStore)
                 .presentationDetents([.medium, .large])
         }
     }
@@ -628,6 +634,14 @@ struct ContentView: View {
                 .pickerStyle(.segmented)
                 .frame(width: 220)
 
+                Picker("Flow Mode", selection: $coordinatorFlowMode) {
+                    ForEach(CoordinatorFlowMode.allCases) { mode in
+                        Text(mode.label).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 220)
+
                 Button {
                     runCoordinatorPipeline()
                 } label: {
@@ -868,9 +882,7 @@ struct ContentView: View {
                             .animation(.spring(response: 0.5, dampingFraction: 0.82), value: node.position.x)
                             .animation(.spring(response: 0.5, dampingFraction: 0.82), value: node.position.y)
                             .onTapGesture {
-                                clearLinkDragState()
-                                selectedLinkID = nil
-                                selectedNodeID = (selectedNodeID == node.id) ? nil : node.id
+                                handleNodeTap(node)
                             }
                     }
 
@@ -878,16 +890,25 @@ struct ContentView: View {
                         let selectedNodeID,
                         let selectedNode = visibleNodes.first(where: { $0.id == selectedNodeID })
                     {
-                        Button {
-                            addNode(type: .agent, forcedParentID: selectedNodeID)
-                        } label: {
-                            AddChildHandle()
+                        HStack(spacing: 8) {
+                            Button {
+                                toggleLinkStart(for: selectedNodeID)
+                            } label: {
+                                LinkHandle(isActive: linkingFromNodeID == selectedNodeID)
+                            }
+                            .buttonStyle(.plain)
+
+                            Button {
+                                addNode(type: .agent, forcedParentID: selectedNodeID)
+                            } label: {
+                                AddChildHandle()
+                            }
+                            .buttonStyle(.plain)
                         }
-                        .buttonStyle(.plain)
-                            .position(
-                                x: selectedNode.position.x,
-                                y: selectedNode.position.y + (cardSize.height / 2) + 18
-                            )
+                        .position(
+                            x: selectedNode.position.x,
+                            y: selectedNode.position.y + (cardSize.height / 2) + 18
+                        )
                     }
                 }
                 .coordinateSpace(name: "chart-canvas")
@@ -1008,7 +1029,8 @@ struct ContentView: View {
             goal: normalizedGoal.isEmpty
                 ? "Execute coordinator objective"
                 : normalizedGoal,
-            graph: orchestrationGraph
+            graph: orchestrationGraph,
+            flowMode: coordinatorFlowMode
         )
         let mode = coordinatorRunMode
         latestCoordinatorPlan = plan
@@ -1033,12 +1055,7 @@ struct ContentView: View {
             mode: mode,
             nextPacketIndex: 0,
             results: [],
-            outputsByNodeID: [
-                plan.coordinatorID: ProducedHandoff(
-                    schema: plan.coordinatorOutputSchema,
-                    summary: "Coordinator goal packet: \(plan.goal)"
-                )
-            ],
+            outputsByNodeID: [:],
             startedAt: Date(),
             awaitingHumanPacketID: nil
         )
@@ -1052,7 +1069,6 @@ struct ContentView: View {
     @MainActor
     private func continueCoordinatorExecution() async {
         guard var pending = pendingCoordinatorExecution else { return }
-        let client = MockMCPClient()
 
         while pending.nextPacketIndex < pending.plan.packets.count {
             let packet = pending.plan.packets[pending.nextPacketIndex]
@@ -1117,15 +1133,10 @@ struct ContentView: View {
                     handoffSummaries: handoffValidation.handoffSummaries
                 )
             case .liveMCP:
-                response = await client.execute(
-                    MCPTaskRequest(
-                        packetID: packet.id,
-                        objective: packet.objective,
-                        inputSchema: packet.requiredInputSchema,
-                        outputSchema: packet.requiredOutputSchema,
-                        handoffSummaries: handoffValidation.handoffSummaries,
-                        roleContext: packet.assignedNodeName
-                    )
+                response = await executeLiveProviderPacket(
+                    packet,
+                    handoffSummaries: handoffValidation.handoffSummaries,
+                    goal: pending.plan.goal
                 )
             }
 
@@ -1298,19 +1309,71 @@ struct ContentView: View {
         )
     }
 
+    private func executeLiveProviderPacket(
+        _ packet: CoordinatorTaskPacket,
+        handoffSummaries: [String],
+        goal: String
+    ) async -> MCPTaskResponse {
+        guard let node = nodes.first(where: { $0.id == packet.assignedNodeID }) else {
+            return MCPTaskResponse(
+                summary: "Live run failed: node for packet \(packet.id) was not found.",
+                confidence: 0,
+                completed: false
+            )
+        }
+
+        let provider = node.provider.apiKeyProvider
+        let trimmedKey = (try? apiKeyStore.key(for: provider))?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !trimmedKey.isEmpty else {
+            return MCPTaskResponse(
+                summary: "Live run failed for \(node.name): missing \(provider.label) API key. Open API Keys and save one, then run again.",
+                confidence: 0,
+                completed: false
+            )
+        }
+
+        let request = LiveProviderTaskRequest(
+            goal: goal,
+            objective: packet.objective,
+            roleContext: packet.assignedNodeName,
+            requiredInputSchema: packet.requiredInputSchema.label,
+            requiredOutputSchema: packet.requiredOutputSchema.label,
+            handoffSummaries: handoffSummaries,
+            allowedPermissions: packet.allowedPermissions
+        )
+
+        do {
+            let preferredModel = providerModelStore.defaultModel(for: provider)
+            let output = try await LiveProviderExecutionService.execute(
+                provider: provider,
+                apiKey: trimmedKey,
+                request: request,
+                preferredModelID: preferredModel
+            )
+            let normalized = output.trimmingCharacters(in: .whitespacesAndNewlines)
+            let completed = !normalized.lowercased().hasPrefix("blocked")
+            return MCPTaskResponse(
+                summary: normalized,
+                confidence: completed ? 0.9 : 0.4,
+                completed: completed
+            )
+        } catch {
+            return MCPTaskResponse(
+                summary: "Live run failed for \(node.name): \(error.localizedDescription)",
+                confidence: 0,
+                completed: false
+            )
+        }
+    }
+
     private func validateRequiredHandoffs(
         for packet: CoordinatorTaskPacket,
         outputsByNodeID: [UUID: ProducedHandoff],
         goal: String
     ) -> HandoffValidation {
         if packet.requiredHandoffs.isEmpty {
-            if packet.requiredInputSchema != .goalBriefV1 {
-                return HandoffValidation(
-                    isValid: false,
-                    message: "Blocked: \(packet.assignedNodeName) expects \(packet.requiredInputSchema.label) but has no parent handoff.",
-                    handoffSummaries: []
-                )
-            }
+            // Leaf work starts from coordinator goal context when no child handoffs are required.
             return HandoffValidation(
                 isValid: true,
                 message: "",
@@ -1339,7 +1402,7 @@ struct ContentView: View {
             if requirement.outputSchema != packet.requiredInputSchema {
                 return HandoffValidation(
                     isValid: false,
-                    message: "Blocked: \(packet.assignedNodeName) requires \(packet.requiredInputSchema.label) but parent \(requirement.fromNodeName) outputs \(requirement.outputSchema.label).",
+                    message: "Blocked: \(packet.assignedNodeName) requires \(packet.requiredInputSchema.label) but child \(requirement.fromNodeName) outputs \(requirement.outputSchema.label).",
                     handoffSummaries: []
                 )
             }
@@ -1462,6 +1525,67 @@ struct ContentView: View {
             selectedNodeID = nil
         } else {
             selectedLinkID = nil
+        }
+    }
+
+    private func handleNodeTap(_ node: OrgNode) {
+        if let sourceID = linkingFromNodeID {
+            guard sourceID != node.id else {
+                clearLinkDragState()
+                selectedNodeID = node.id
+                return
+            }
+            completeLinkSelection(sourceID: sourceID, targetID: node.id)
+            return
+        }
+
+        clearLinkDragState()
+        selectedLinkID = nil
+        selectedNodeID = (selectedNodeID == node.id) ? nil : node.id
+    }
+
+    private func toggleLinkStart(for nodeID: UUID) {
+        if linkingFromNodeID == nodeID {
+            clearLinkDragState()
+            return
+        }
+        linkingFromNodeID = nodeID
+        linkingPointer = nil
+        linkHoverTargetNodeID = nil
+        selectedNodeID = nodeID
+        selectedLinkID = nil
+    }
+
+    private func completeLinkSelection(sourceID: UUID, targetID: UUID) {
+        defer { clearLinkDragState() }
+        guard
+            sourceID != targetID,
+            nodes.contains(where: { $0.id == targetID })
+        else { return }
+
+        performSemanticMutation {
+            if let existing = links.first(where: { $0.fromID == sourceID && $0.toID == targetID }) {
+                selectedLinkID = existing.id
+                selectedNodeID = nil
+                return
+            }
+
+            let prunedParents = links.filter { !($0.toID == targetID && $0.fromID != sourceID) }
+            guard !wouldCreateCycle(from: sourceID, to: targetID, links: prunedParents) else {
+                return
+            }
+
+            let inheritedTone =
+                links.first(where: { $0.fromID == sourceID })?.tone
+                ?? links.first(where: { $0.toID == sourceID })?.tone
+                ?? .blue
+
+            let created = NodeLink(fromID: sourceID, toID: targetID, tone: inheritedTone)
+            links = prunedParents.filter { !($0.fromID == sourceID && $0.toID == targetID) }
+            links.append(created)
+            selectedLinkID = created.id
+            selectedNodeID = nil
+            relayoutHierarchy()
         }
     }
 
@@ -3928,7 +4052,23 @@ private enum CoordinatorExecutionMode: String, CaseIterable, Identifiable, Codab
         case .simulation:
             return "Simulation"
         case .liveMCP:
-            return "Live MCP"
+            return "Live API"
+        }
+    }
+}
+
+private enum CoordinatorFlowMode: String, CaseIterable, Identifiable, Codable {
+    case linear
+    case downThenUp
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .linear:
+            return "Linear"
+        case .downThenUp:
+            return "Down + Up"
         }
     }
 }
@@ -4175,7 +4315,7 @@ private struct MockMCPClient: MCPClient {
 }
 
 private struct CoordinatorOrchestrator {
-    func plan(goal: String, graph: OrchestrationGraph) -> CoordinatorPlan {
+    func plan(goal: String, graph: OrchestrationGraph, flowMode: CoordinatorFlowMode) -> CoordinatorPlan {
         precondition(!graph.nodes.isEmpty, "Graph must contain at least one node")
         let nodeByID = Dictionary(uniqueKeysWithValues: graph.nodes.map { ($0.id, $0) })
         let outgoingByParentID = Dictionary(grouping: graph.edges, by: \.parentID)
@@ -4184,15 +4324,32 @@ private struct CoordinatorOrchestrator {
         let rootCandidates = graph.nodes.filter { !childIDs.contains($0.id) }
 
         let coordinator = preferredCoordinator(from: rootCandidates, fallback: graph.nodes)
-        let delegateNodes = collectDescendantNodes(
+        let reachableIDs = collectReachableNodeIDs(
+            under: coordinator.id,
+            outgoingByParentID: outgoingByParentID
+        )
+        let dispatchOrder = collectExecutionNodesPreOrder(
             under: coordinator.id,
             nodeByID: nodeByID,
-            outgoingByParentID: outgoingByParentID
+            outgoingByParentID: outgoingByParentID,
+            reachableIDs: reachableIDs
+        )
+        let aggregationOrder = collectExecutionNodesPostOrder(
+            under: coordinator.id,
+            nodeByID: nodeByID,
+            outgoingByParentID: outgoingByParentID,
+            reachableIDs: reachableIDs
         )
 
         let parentTaskID = "TASK-\(UUID().uuidString.prefix(8))"
-        let packets: [CoordinatorTaskPacket] = delegateNodes.enumerated().map { index, node in
+        var packets: [CoordinatorTaskPacket] = []
+        packets.reserveCapacity(dispatchOrder.count + aggregationOrder.count)
+        var packetIndex = 1
+
+        // Phase 1: top-down delegation/input propagation (parent -> child)
+        for node in dispatchOrder {
             let handoffs = (incomingByChildID[node.id] ?? [])
+                .filter { reachableIDs.contains($0.parentID) }
                 .compactMap { edge -> CoordinatorHandoffRequirement? in
                     guard let parent = nodeByID[edge.parentID] else { return nil }
                     return CoordinatorHandoffRequirement(
@@ -4201,18 +4358,56 @@ private struct CoordinatorOrchestrator {
                         outputSchema: parent.outputSchema
                     )
                 }
-            return CoordinatorTaskPacket(
-                id: "\(parentTaskID)-\(index + 1)",
-                parentTaskID: parentTaskID,
-                assignedNodeID: node.id,
-                assignedNodeName: node.name,
-                assignedNodeKind: node.type,
-                objective: objectiveForNode(node, globalGoal: goal),
-                requiredInputSchema: node.inputSchema,
-                requiredOutputSchema: node.outputSchema,
-                requiredHandoffs: handoffs,
-                allowedPermissions: node.securityAccess.sorted()
+
+            packets.append(
+                CoordinatorTaskPacket(
+                    id: "\(parentTaskID)-\(packetIndex)",
+                    parentTaskID: parentTaskID,
+                    assignedNodeID: node.id,
+                    assignedNodeName: node.name,
+                    assignedNodeKind: node.type,
+                    objective: objectiveForNode(node, globalGoal: goal),
+                    requiredInputSchema: node.inputSchema,
+                    requiredOutputSchema: node.outputSchema,
+                    requiredHandoffs: handoffs,
+                    allowedPermissions: node.securityAccess.sorted()
+                )
             )
+            packetIndex += 1
+        }
+
+        if flowMode == .downThenUp {
+            // Phase 2: bottom-up aggregation/result percolation (child -> parent)
+            for node in aggregationOrder {
+                let children = (outgoingByParentID[node.id] ?? [])
+                    .filter { reachableIDs.contains($0.childID) }
+                guard !children.isEmpty else { continue }
+
+                let handoffs = children.compactMap { edge -> CoordinatorHandoffRequirement? in
+                    guard let child = nodeByID[edge.childID] else { return nil }
+                    return CoordinatorHandoffRequirement(
+                        fromNodeID: child.id,
+                        fromNodeName: child.name,
+                        outputSchema: child.outputSchema
+                    )
+                }
+
+                packets.append(
+                    CoordinatorTaskPacket(
+                        id: "\(parentTaskID)-\(packetIndex)",
+                        parentTaskID: parentTaskID,
+                        assignedNodeID: node.id,
+                        assignedNodeName: node.name,
+                        assignedNodeKind: node.type,
+                        objective: aggregationObjectiveForNode(node, globalGoal: goal),
+                        requiredInputSchema: node.inputSchema,
+                        requiredOutputSchema: node.outputSchema,
+                        requiredHandoffs: handoffs,
+                        allowedPermissions: node.securityAccess.sorted()
+                    )
+                )
+                packetIndex += 1
+            }
         }
 
         return CoordinatorPlan(
@@ -4226,22 +4421,47 @@ private struct CoordinatorOrchestrator {
         )
     }
 
-    private func collectDescendantNodes(
+    private func collectReachableNodeIDs(
         under coordinatorID: UUID,
-        nodeByID: [UUID: OrchestrationNode],
         outgoingByParentID: [UUID: [OrchestrationEdge]]
-    ) -> [OrchestrationNode] {
-        var ordered: [OrchestrationNode] = []
-        var visited: Set<UUID> = [coordinatorID]
+    ) -> Set<UUID> {
+        var reachable: Set<UUID> = [coordinatorID]
         var queue: [UUID] = [coordinatorID]
         var head = 0
 
         while head < queue.count {
             let currentID = queue[head]
             head += 1
+            for childID in (outgoingByParentID[currentID] ?? []).map(\.childID) where !reachable.contains(childID) {
+                reachable.insert(childID)
+                queue.append(childID)
+            }
+        }
 
-            let children = (outgoingByParentID[currentID] ?? [])
+        return reachable
+    }
+
+    private func collectExecutionNodesPreOrder(
+        under coordinatorID: UUID,
+        nodeByID: [UUID: OrchestrationNode],
+        outgoingByParentID: [UUID: [OrchestrationEdge]],
+        reachableIDs: Set<UUID>
+    ) -> [OrchestrationNode] {
+        var orderedIDs: [UUID] = []
+        var visited: Set<UUID> = []
+        var recursionStack: Set<UUID> = []
+
+        func dfs(_ nodeID: UUID) {
+            guard reachableIDs.contains(nodeID) else { return }
+            guard !visited.contains(nodeID) else { return }
+            guard !recursionStack.contains(nodeID) else { return }
+            recursionStack.insert(nodeID)
+            visited.insert(nodeID)
+            orderedIDs.append(nodeID)
+
+            let children = (outgoingByParentID[nodeID] ?? [])
                 .map(\.childID)
+                .filter { reachableIDs.contains($0) }
                 .sorted { lhs, rhs in
                     let left = nodeByID[lhs]?.name ?? lhs.uuidString
                     let right = nodeByID[rhs]?.name ?? rhs.uuidString
@@ -4250,23 +4470,73 @@ private struct CoordinatorOrchestrator {
                 }
 
             for childID in children {
-                guard !visited.contains(childID) else { continue }
-                visited.insert(childID)
-                queue.append(childID)
-                if let child = nodeByID[childID] {
-                    ordered.append(child)
-                }
+                dfs(childID)
+            }
+
+            recursionStack.remove(nodeID)
+        }
+
+        dfs(coordinatorID)
+
+        if orderedIDs.isEmpty {
+            orderedIDs = reachableIDs.sorted { lhs, rhs in
+                let left = nodeByID[lhs]?.name ?? lhs.uuidString
+                let right = nodeByID[rhs]?.name ?? rhs.uuidString
+                if left == right { return lhs.uuidString < rhs.uuidString }
+                return left.localizedCaseInsensitiveCompare(right) == .orderedAscending
             }
         }
 
-        // Safety fallback for malformed/disconnected structures.
-        if ordered.isEmpty {
-            return nodeByID.values
-                .filter { $0.id != coordinatorID }
-                .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        return orderedIDs.compactMap { nodeByID[$0] }
+    }
+
+    private func collectExecutionNodesPostOrder(
+        under coordinatorID: UUID,
+        nodeByID: [UUID: OrchestrationNode],
+        outgoingByParentID: [UUID: [OrchestrationEdge]],
+        reachableIDs: Set<UUID>
+    ) -> [OrchestrationNode] {
+        var orderedIDs: [UUID] = []
+        var visited: Set<UUID> = []
+        var recursionStack: Set<UUID> = []
+
+        func dfs(_ nodeID: UUID) {
+            guard reachableIDs.contains(nodeID) else { return }
+            guard !visited.contains(nodeID) else { return }
+            guard !recursionStack.contains(nodeID) else { return }
+            recursionStack.insert(nodeID)
+
+            let children = (outgoingByParentID[nodeID] ?? [])
+                .map(\.childID)
+                .filter { reachableIDs.contains($0) }
+                .sorted { lhs, rhs in
+                    let left = nodeByID[lhs]?.name ?? lhs.uuidString
+                    let right = nodeByID[rhs]?.name ?? rhs.uuidString
+                    if left == right { return lhs.uuidString < rhs.uuidString }
+                    return left.localizedCaseInsensitiveCompare(right) == .orderedAscending
+                }
+
+            for childID in children {
+                dfs(childID)
+            }
+
+            recursionStack.remove(nodeID)
+            visited.insert(nodeID)
+            orderedIDs.append(nodeID)
         }
 
-        return ordered
+        dfs(coordinatorID)
+
+        if orderedIDs.isEmpty {
+            orderedIDs = reachableIDs.sorted { lhs, rhs in
+                let left = nodeByID[lhs]?.name ?? lhs.uuidString
+                let right = nodeByID[rhs]?.name ?? rhs.uuidString
+                if left == right { return lhs.uuidString < rhs.uuidString }
+                return left.localizedCaseInsensitiveCompare(right) == .orderedAscending
+            }
+        }
+
+        return orderedIDs.compactMap { nodeByID[$0] }
     }
 
     func execute(plan: CoordinatorPlan, using client: MCPClient) async -> CoordinatorRun {
@@ -4326,6 +4596,14 @@ private struct CoordinatorOrchestrator {
             return "Contribute to goal: \(globalGoal)"
         }
         return "For goal '\(globalGoal)', handle this scope: \(context)"
+    }
+
+    private func aggregationObjectiveForNode(_ node: OrchestrationNode, globalGoal: String) -> String {
+        let context = node.roleDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        if context.isEmpty {
+            return "Aggregate child outputs and report upward for goal: \(globalGoal)"
+        }
+        return "Aggregate child outputs for goal '\(globalGoal)' and synthesize this scope: \(context)"
     }
 }
 
@@ -4427,6 +4705,21 @@ private enum LLMProvider: String, CaseIterable, Identifiable, Codable {
             return "Gemini"
         case .claude:
             return "Claude"
+        }
+    }
+}
+
+private extension LLMProvider {
+    var apiKeyProvider: APIKeyProvider {
+        switch self {
+        case .chatGPT:
+            return .chatGPT
+        case .gemini:
+            return .gemini
+        case .claude:
+            return .claude
+        case .grok:
+            return .grok
         }
     }
 }

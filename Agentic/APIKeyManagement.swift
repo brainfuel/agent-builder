@@ -50,6 +50,40 @@ protocol APIKeyStoring {
     func removeKey(for provider: APIKeyProvider) throws
 }
 
+protocol ProviderModelPreferencesStoring {
+    func cachedModels(for provider: APIKeyProvider) -> [String]
+    func persistCachedModels(_ models: [String], for provider: APIKeyProvider)
+    func defaultModel(for provider: APIKeyProvider) -> String?
+    func persistDefaultModel(_ modelID: String?, for provider: APIKeyProvider)
+}
+
+struct UserDefaultsProviderModelStore: ProviderModelPreferencesStoring {
+    private let defaults: UserDefaults
+    private let cachePrefix = "api.provider.models."
+    private let defaultPrefix = "api.provider.defaultModel."
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+    }
+
+    func cachedModels(for provider: APIKeyProvider) -> [String] {
+        defaults.stringArray(forKey: cachePrefix + provider.rawValue) ?? []
+    }
+
+    func persistCachedModels(_ models: [String], for provider: APIKeyProvider) {
+        let normalized = Array(Set(models)).sorted()
+        defaults.set(normalized, forKey: cachePrefix + provider.rawValue)
+    }
+
+    func defaultModel(for provider: APIKeyProvider) -> String? {
+        defaults.string(forKey: defaultPrefix + provider.rawValue)
+    }
+
+    func persistDefaultModel(_ modelID: String?, for provider: APIKeyProvider) {
+        defaults.set(modelID, forKey: defaultPrefix + provider.rawValue)
+    }
+}
+
 struct KeychainAPIKeyStore: APIKeyStoring {
     private let keychain: KeychainStore
 
@@ -72,13 +106,25 @@ struct KeychainAPIKeyStore: APIKeyStoring {
 
 struct APIKeysSheet: View {
     let store: any APIKeyStoring
+    let modelStore: any ProviderModelPreferencesStoring
 
     @Environment(\.dismiss) private var dismiss
     @State private var drafts: [APIKeyProvider: String] = [:]
     @State private var savedProviders: Set<APIKeyProvider> = []
     @State private var revealedProviders: Set<APIKeyProvider> = []
+    @State private var availableModelsByProvider: [APIKeyProvider: [String]] = [:]
+    @State private var selectedModelByProvider: [APIKeyProvider: String] = [:]
+    @State private var loadingProviders: Set<APIKeyProvider> = []
     @State private var feedbackMessage: String?
     @State private var feedbackIsError = false
+
+    init(
+        store: any APIKeyStoring,
+        modelStore: any ProviderModelPreferencesStoring = UserDefaultsProviderModelStore()
+    ) {
+        self.store = store
+        self.modelStore = modelStore
+    }
 
     var body: some View {
         NavigationStack {
@@ -131,13 +177,15 @@ struct APIKeysSheet: View {
 
             HStack(spacing: 8) {
                 Group {
-                    if revealedProviders.contains(provider) {
+                    if shouldShowStoredMask(for: provider) {
+                        storedMaskField(provider)
+                    } else if revealedProviders.contains(provider) {
                         TextField(provider.placeholder, text: binding(for: provider))
                     } else {
                         SecureField(provider.placeholder, text: binding(for: provider))
                     }
                 }
-                .textFieldStyle(.roundedBorder)
+                .modifier(APIKeyFieldStylingModifier())
 
                 Button {
                     toggleReveal(for: provider)
@@ -158,6 +206,61 @@ struct APIKeysSheet: View {
                 .buttonStyle(.bordered)
                 .disabled(!savedProviders.contains(provider) && trimmedValue(for: provider).isEmpty)
             }
+
+            HStack(spacing: 8) {
+                Button {
+                    Task { await loadModels(for: provider, reportErrors: true) }
+                } label: {
+                    if loadingProviders.contains(provider) {
+                        HStack(spacing: 6) {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text("Loading…")
+                        }
+                    } else {
+                        Label("Load Models", systemImage: "arrow.down.circle")
+                    }
+                }
+                .buttonStyle(.bordered)
+                .disabled(loadingProviders.contains(provider) || !savedProviders.contains(provider))
+
+                Menu {
+                    let models = availableModels(for: provider)
+                    if models.isEmpty {
+                        Button("No models loaded") {}
+                            .disabled(true)
+                    } else {
+                        ForEach(models, id: \.self) { model in
+                            Button {
+                                selectModel(model, for: provider)
+                            } label: {
+                                HStack {
+                                    Text(model)
+                                    if selectedModelByProvider[provider] == model {
+                                        Spacer()
+                                        Image(systemName: "checkmark")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } label: {
+                    Label(
+                        selectedModelByProvider[provider] ?? "Default Model",
+                        systemImage: "chevron.up.chevron.down"
+                    )
+                }
+                .buttonStyle(.bordered)
+                .disabled(availableModels(for: provider).isEmpty)
+
+                Spacer()
+            }
+
+            if savedProviders.contains(provider), trimmedValue(for: provider).isEmpty {
+                Text("Stored securely in Keychain. Enter a new key to replace.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .padding(14)
         .background(
@@ -174,6 +277,14 @@ struct APIKeysSheet: View {
                 nextSaved.insert(provider)
             }
             drafts[provider] = ""
+            let cached = modelStore.cachedModels(for: provider)
+            availableModelsByProvider[provider] = cached
+            if let persistedDefault = modelStore.defaultModel(for: provider), cached.contains(persistedDefault) {
+                selectedModelByProvider[provider] = persistedDefault
+            } else if let first = cached.first {
+                selectedModelByProvider[provider] = first
+                modelStore.persistDefaultModel(first, for: provider)
+            }
         }
         savedProviders = nextSaved
     }
@@ -192,7 +303,15 @@ struct APIKeysSheet: View {
     private func toggleReveal(for provider: APIKeyProvider) {
         if revealedProviders.contains(provider) {
             revealedProviders.remove(provider)
+            if savedProviders.contains(provider) {
+                drafts[provider] = ""
+            }
         } else {
+            if savedProviders.contains(provider), trimmedValue(for: provider).isEmpty {
+                if let stored = storedKey(for: provider), !stored.isEmpty {
+                    drafts[provider] = stored
+                }
+            }
             revealedProviders.insert(provider)
         }
     }
@@ -203,9 +322,10 @@ struct APIKeysSheet: View {
         do {
             try store.setKey(key, for: provider)
             savedProviders.insert(provider)
-            drafts[provider] = ""
+            drafts[provider] = key
             feedbackMessage = "\(provider.label) key saved."
             feedbackIsError = false
+            Task { await loadModels(for: provider, reportErrors: false) }
         } catch {
             feedbackMessage = error.localizedDescription
             feedbackIsError = true
@@ -217,12 +337,125 @@ struct APIKeysSheet: View {
             try store.removeKey(for: provider)
             savedProviders.remove(provider)
             drafts[provider] = ""
+            availableModelsByProvider[provider] = []
+            selectedModelByProvider[provider] = nil
+            modelStore.persistCachedModels([], for: provider)
+            modelStore.persistDefaultModel(nil, for: provider)
             feedbackMessage = "\(provider.label) key removed."
             feedbackIsError = false
         } catch {
             feedbackMessage = error.localizedDescription
             feedbackIsError = true
         }
+    }
+
+    private func availableModels(for provider: APIKeyProvider) -> [String] {
+        availableModelsByProvider[provider] ?? []
+    }
+
+    private func selectModel(_ modelID: String, for provider: APIKeyProvider) {
+        selectedModelByProvider[provider] = modelID
+        modelStore.persistDefaultModel(modelID, for: provider)
+        feedbackMessage = "\(provider.label) default model set to \(modelID)."
+        feedbackIsError = false
+    }
+
+    @MainActor
+    private func loadModels(for provider: APIKeyProvider, reportErrors: Bool) async {
+        guard savedProviders.contains(provider) else { return }
+        loadingProviders.insert(provider)
+        defer { loadingProviders.remove(provider) }
+
+        let key = storedKey(for: provider)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !key.isEmpty else { return }
+
+        do {
+            let fetched = try await LiveProviderExecutionService.fetchModels(provider: provider, apiKey: key)
+            let normalized = Array(Set(fetched)).sorted()
+            availableModelsByProvider[provider] = normalized
+            modelStore.persistCachedModels(normalized, for: provider)
+
+            let current = selectedModelByProvider[provider]
+            if let current, normalized.contains(current) {
+                modelStore.persistDefaultModel(current, for: provider)
+            } else if let persisted = modelStore.defaultModel(for: provider), normalized.contains(persisted) {
+                selectedModelByProvider[provider] = persisted
+            } else if let first = normalized.first {
+                selectedModelByProvider[provider] = first
+                modelStore.persistDefaultModel(first, for: provider)
+            } else {
+                selectedModelByProvider[provider] = nil
+                modelStore.persistDefaultModel(nil, for: provider)
+            }
+
+            feedbackMessage = normalized.isEmpty
+                ? "No models returned for \(provider.label)."
+                : "Loaded \(normalized.count) models for \(provider.label)."
+            feedbackIsError = false
+        } catch {
+            guard reportErrors else { return }
+            if let urlError = error as? URLError, urlError.code == .cannotFindHost {
+                feedbackMessage = "Could not resolve provider host. Check internet access/VPN/DNS and make sure the app is rebuilt after enabling network entitlement."
+            } else {
+                feedbackMessage = error.localizedDescription
+            }
+            feedbackIsError = true
+        }
+    }
+
+    private func shouldShowStoredMask(for provider: APIKeyProvider) -> Bool {
+        savedProviders.contains(provider)
+            && !revealedProviders.contains(provider)
+            && trimmedValue(for: provider).isEmpty
+    }
+
+    @ViewBuilder
+    private func storedMaskField(_ provider: APIKeyProvider) -> some View {
+        HStack(spacing: 8) {
+            Text(maskedStoredPlaceholder(for: provider))
+                .font(.body.monospaced())
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 38)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color(uiColor: .systemBackground))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(Color(uiColor: .separator), lineWidth: 1)
+                )
+        )
+        .accessibilityLabel("\(provider.label) API key is saved and masked")
+    }
+
+    private func maskedStoredPlaceholder(for provider: APIKeyProvider) -> String {
+        if let stored = storedKey(for: provider), !stored.isEmpty {
+            let count = min(max(stored.count, 8), 24)
+            return String(repeating: "•", count: count)
+        }
+        return "••••••••••••"
+    }
+
+    private func storedKey(for provider: APIKeyProvider) -> String? {
+        do {
+            return try store.key(for: provider)
+        } catch {
+            return nil
+        }
+    }
+}
+
+private struct APIKeyFieldStylingModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .textFieldStyle(.roundedBorder)
+            .textInputAutocapitalization(.never)
+            .autocorrectionDisabled(true)
+            .textContentType(.oneTimeCode)
     }
 }
 
@@ -343,6 +576,9 @@ enum KeychainStoreError: LocalizedError {
         case .unexpectedData:
             return "Keychain data had an unexpected format."
         case .unexpectedStatus(let status, let operation):
+            if status == errSecMissingEntitlement {
+                return "Keychain \(operation) failed (\(status)): missing entitlement. In Xcode, enable Signing for this target and add the Keychain Sharing capability."
+            }
             let message = SecCopyErrorMessageString(status, nil) as String? ?? "Unknown error"
             return "Keychain \(operation) failed (\(status)): \(message)"
         }
