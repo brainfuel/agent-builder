@@ -180,7 +180,7 @@ struct ContentView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This temporary testing action will delete all tasks, execution history, API keys, and saved model preferences.")
+            Text("This temporary testing action will delete all tasks and execution history. API keys and provider model preferences are preserved.")
         }
         .sheet(isPresented: $isShowingHumanInbox) {
             HumanInboxPanel(
@@ -841,7 +841,15 @@ struct ContentView: View {
                     ScrollView {
                         VStack(spacing: 8) {
                             ForEach(Array(coordinatorTrace.enumerated()), id: \.element.id) { index, step in
-                                CoordinatorTraceRow(stepNumber: index + 1, step: step)
+                                let resolution = traceResolution(for: step)
+                                CoordinatorTraceRow(
+                                    stepNumber: index + 1,
+                                    step: step,
+                                    resolution: resolution.map { $0.presentation },
+                                    onResolve: resolution == nil
+                                        ? nil
+                                        : { applyTraceResolution(for: step) }
+                                )
                             }
                         }
                         .padding(.vertical, 2)
@@ -858,8 +866,13 @@ struct ContentView: View {
     private var inspectorPanel: some View {
         ScrollView {
             if let inspectorNodeBinding {
-                NodeInspector(node: inspectorNodeBinding)
-                    .padding(20)
+                if inspectorNodeBinding.wrappedValue.type == .input || inspectorNodeBinding.wrappedValue.type == .output {
+                    FixedNodeInspector(node: inspectorNodeBinding)
+                        .padding(20)
+                } else {
+                    NodeInspector(node: inspectorNodeBinding)
+                        .padding(20)
+                }
             }
         }
         .background(Color(uiColor: .secondarySystemBackground))
@@ -1083,6 +1096,7 @@ struct ContentView: View {
         coordinatorTrace = plan.packets.map {
             CoordinatorTraceStep(
                 packetID: $0.id,
+                assignedNodeID: $0.assignedNodeID,
                 assignedNodeName: $0.assignedNodeName,
                 objective: $0.objective,
                 status: .queued,
@@ -1459,6 +1473,124 @@ struct ContentView: View {
             message: "",
             handoffSummaries: summaries
         )
+    }
+
+    private func inferredMissingPermission(from summary: String?) -> SecurityAccess? {
+        guard let summary else { return nil }
+        let normalized = summary.lowercased()
+
+        if normalized.contains("missing web")
+            || normalized.contains("no web access")
+            || normalized.contains("missing webaccess")
+            || normalized.contains("missing browse")
+            || normalized.contains("missing search")
+            || normalized.contains("school directory tool")
+            || normalized.contains("browse_page")
+        {
+            return .webAccess
+        }
+        if normalized.contains("missing workspace read")
+            || normalized.contains("workspace read is required")
+            || normalized.contains("missing workspaceread")
+        {
+            return .workspaceRead
+        }
+        if normalized.contains("missing workspace write")
+            || normalized.contains("workspace write is required")
+            || normalized.contains("missing workspacewrite")
+            || normalized.contains("write permission")
+        {
+            return .workspaceWrite
+        }
+        if normalized.contains("missing terminal")
+            || normalized.contains("terminal execution")
+            || normalized.contains("shell access")
+            || normalized.contains("command execution")
+        {
+            return .terminalExec
+        }
+        if normalized.contains("missing secrets")
+            || normalized.contains("secrets read")
+            || normalized.contains("secret access")
+        {
+            return .secretsRead
+        }
+        if normalized.contains("missing audit")
+            || normalized.contains("audit logs")
+        {
+            return .auditLogs
+        }
+
+        return nil
+    }
+
+    private func indicatesRuntimeToolUnavailable(from summary: String?) -> Bool {
+        guard let summary else { return false }
+        let normalized = summary.lowercased()
+        return normalized.contains("only team comms tools available")
+            || normalized.contains("chatroom_send")
+            || normalized.contains("tool unavailable")
+            || normalized.contains("despite 'webaccess' permission listed")
+            || normalized.contains("despite webaccess permission listed")
+    }
+
+    private func traceResolution(for step: CoordinatorTraceStep) -> TraceResolutionRecommendation? {
+        guard step.status == .failed || step.status == .blocked else { return nil }
+        guard let summary = step.summary else { return nil }
+
+        let nodeID: UUID? = {
+            if let assignedNodeID = step.assignedNodeID {
+                return assignedNodeID
+            }
+            return nodes.first(where: { $0.name.caseInsensitiveCompare(step.assignedNodeName) == .orderedSame })?.id
+        }()
+
+        if let missingPermission = inferredMissingPermission(from: summary) {
+            if
+                let nodeID,
+                let node = nodes.first(where: { $0.id == nodeID }),
+                !node.securityAccess.contains(missingPermission)
+            {
+                let title = "Missing permission: \(missingPermission.label)"
+                let detail = "\(node.name) cannot complete this task without \(missingPermission.label)."
+                return TraceResolutionRecommendation(
+                    presentation: CoordinatorTraceResolutionPresentation(
+                        title: title,
+                        detail: detail,
+                        buttonTitle: "Allow \(missingPermission.label)"
+                    ),
+                    action: .grantPermission(nodeID: nodeID, permission: missingPermission)
+                )
+            }
+        }
+
+        if indicatesRuntimeToolUnavailable(from: summary) {
+            return TraceResolutionRecommendation(
+                presentation: CoordinatorTraceResolutionPresentation(
+                    title: "Runtime tool unavailable",
+                    detail: "This task needs web/browse capability, but Live API has no active web tool connection in this run.",
+                    buttonTitle: "Switch to Simulation"
+                ),
+                action: .switchToSimulation
+            )
+        }
+
+        return nil
+    }
+
+    private func applyTraceResolution(for step: CoordinatorTraceStep) {
+        guard let resolution = traceResolution(for: step) else { return }
+        switch resolution.action {
+        case .grantPermission(let nodeID, let permission):
+            performSemanticMutation {
+                guard let index = nodes.firstIndex(where: { $0.id == nodeID }) else { return }
+                nodes[index].securityAccess.insert(permission)
+                selectedNodeID = nodes[index].id
+                selectedLinkID = nil
+            }
+        case .switchToSimulation:
+            coordinatorRunMode = .simulation
+        }
     }
 
     @MainActor
@@ -2000,27 +2132,32 @@ struct ContentView: View {
         let defaultDepartment: String
         let defaultRoleDescription: String
         let defaultRoles: Set<PresetRole>
+        let defaultSecurityAccess: Set<SecurityAccess>
         switch type {
         case .agent:
             defaultName = "New Agent"
             defaultDepartment = "Automation"
             defaultRoleDescription = "Autonomous specialist handling scoped tasks with explicit escalation boundaries."
             defaultRoles = [.planner]
+            defaultSecurityAccess = [.workspaceRead]
         case .human:
             defaultName = "New Human"
             defaultDepartment = "Operations"
             defaultRoleDescription = "Human lead responsible for reviewing AI output and making final decisions."
             defaultRoles = [.planner]
+            defaultSecurityAccess = [.workspaceRead]
         case .input:
             defaultName = "Input"
             defaultDepartment = "System"
             defaultRoleDescription = "Fixed start node for task inputs."
             defaultRoles = []
+            defaultSecurityAccess = []
         case .output:
             defaultName = "Output"
             defaultDepartment = "System"
             defaultRoleDescription = "Fixed end node for final outputs."
             defaultRoles = []
+            defaultSecurityAccess = []
         }
         let newNode = OrgNode(
             id: newNodeID,
@@ -2033,7 +2170,7 @@ struct ContentView: View {
             inputSchema: inheritedInputSchemaForNewNode ?? defaultInputSchema(for: type),
             outputSchema: defaultOutputSchema(for: type),
             selectedRoles: defaultRoles,
-            securityAccess: [.workspaceRead],
+            securityAccess: defaultSecurityAccess,
             position: newPosition
         )
 
@@ -2398,7 +2535,7 @@ struct ContentView: View {
             inputSchema: defaultInputSchema(for: type),
             outputSchema: defaultOutputSchema(for: type),
             selectedRoles: [],
-            securityAccess: [.workspaceRead],
+            securityAccess: [],
             position: position
         )
     }
@@ -2541,6 +2678,18 @@ struct ContentView: View {
         let anchorPositions = preferredAnchorPositions(for: mutableNodes, links: mutableLinks)
         mutableNodes[inputIndex].position = anchorPositions.input
         mutableNodes[outputIndex].position = anchorPositions.output
+
+        // Structural anchors are not agent nodes; keep them fixed and non-configurable.
+        mutableNodes[inputIndex].provider = .chatGPT
+        mutableNodes[outputIndex].provider = .chatGPT
+        mutableNodes[inputIndex].inputSchema = defaultInputSchema(for: .input)
+        mutableNodes[inputIndex].outputSchema = defaultOutputSchema(for: .input)
+        mutableNodes[outputIndex].inputSchema = defaultInputSchema(for: .output)
+        mutableNodes[outputIndex].outputSchema = defaultOutputSchema(for: .output)
+        mutableNodes[inputIndex].securityAccess = []
+        mutableNodes[outputIndex].securityAccess = []
+        mutableNodes[inputIndex].selectedRoles = []
+        mutableNodes[outputIndex].selectedRoles = []
         if mutableNodes[inputIndex].name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             mutableNodes[inputIndex].name = "Input"
         }
@@ -2749,13 +2898,6 @@ struct ContentView: View {
         }
         try? modelContext.save()
 
-        // Clear API keys + provider model preferences.
-        for provider in APIKeyProvider.allCases {
-            try? apiKeyStore.removeKey(for: provider)
-            providerModelStore.persistCachedModels([], for: provider)
-            providerModelStore.persistDefaultModel(nil, for: provider)
-        }
-
         // Reset editor/list state so UI reflects an empty project immediately.
         currentGraphKey = nil
         nodes = []
@@ -2805,7 +2947,7 @@ struct ContentView: View {
                 inputSchema: .goalBriefV1,
                 outputSchema: .goalBriefV1,
                 selectedRoles: [],
-                securityAccess: [.workspaceRead],
+                securityAccess: [],
                 position: CGPoint(x: centerX, y: inputY)
             ),
             OrgNode(
@@ -2833,7 +2975,7 @@ struct ContentView: View {
                 inputSchema: .taskResultV1,
                 outputSchema: .taskResultV1,
                 selectedRoles: [],
-                securityAccess: [.workspaceRead],
+                securityAccess: [],
                 position: CGPoint(x: centerX, y: outputY)
             )
         ]
@@ -3226,8 +3368,196 @@ struct ContentView: View {
 private struct NodeInspector: View {
     @Binding var node: OrgNode
 
+    private let editableTypes: [NodeType] = [.human, .agent]
     private let allRoles = PresetRole.allCases
     private let allAccess = SecurityAccess.allCases
+
+    var body: some View {
+        Group {
+            // Belt-and-braces guard so full inspector never renders for fixed anchors.
+            if node.type == .input || node.type == .output {
+                EmptyView()
+            } else {
+                VStack(alignment: .leading, spacing: 18) {
+                    Text("Node Details")
+                        .font(.title2.bold())
+
+                    GroupBox {
+                        VStack(alignment: .leading, spacing: 14) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Display Name")
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                                TextField("Display Name", text: $node.name)
+                                    .textFieldStyle(.roundedBorder)
+                            }
+
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Role Title")
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                                TextField("Role Title", text: $node.title)
+                                    .textFieldStyle(.roundedBorder)
+                            }
+
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Department")
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                                TextField("Department", text: $node.department)
+                                    .textFieldStyle(.roundedBorder)
+                            }
+                        }
+                    } label: {
+                        Text("Identity")
+                    }
+
+                    GroupBox {
+                        VStack(alignment: .leading, spacing: 14) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Node Type")
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                                Picker("Node Type", selection: $node.type) {
+                                    ForEach(editableTypes) { type in
+                                        Text(type.label).tag(type)
+                                    }
+                                }
+                                .pickerStyle(.segmented)
+                            }
+
+                            if node.type == .agent {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("Model")
+                                        .font(.caption2.weight(.semibold))
+                                        .foregroundStyle(.secondary)
+                                    Picker("Model", selection: $node.provider) {
+                                        ForEach(LLMProvider.allCases) { provider in
+                                            Text(provider.label).tag(provider)
+                                        }
+                                    }
+                                    .pickerStyle(.menu)
+                                }
+                            }
+                        }
+                    } label: {
+                        Text("Type")
+                    }
+
+                    GroupBox {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Description")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            TextEditor(text: $node.roleDescription)
+                                .frame(minHeight: 110)
+                                .padding(6)
+                                .background(Color(uiColor: .systemBackground))
+                                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        }
+                    } label: {
+                        Text("Role Description")
+                    }
+
+                    GroupBox {
+                        VStack(alignment: .leading, spacing: 14) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Input Schema")
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                                Picker("Input Schema", selection: $node.inputSchema) {
+                                    ForEach(HandoffSchema.allCases) { schema in
+                                        Text(schema.label).tag(schema)
+                                    }
+                                }
+                                .pickerStyle(.menu)
+                            }
+
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Output Schema")
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                                Picker("Output Schema", selection: $node.outputSchema) {
+                                    ForEach(HandoffSchema.allCases) { schema in
+                                        Text(schema.label).tag(schema)
+                                    }
+                                }
+                                .pickerStyle(.menu)
+                            }
+                        }
+                    } label: {
+                        Text("Typed Handoffs")
+                    }
+
+                    GroupBox {
+                        FlowLayout(items: allRoles, spacing: 8) { role in
+                            let selected = node.selectedRoles.contains(role)
+                            Button {
+                                if selected {
+                                    node.selectedRoles.remove(role)
+                                } else {
+                                    node.selectedRoles.insert(role)
+                                }
+                            } label: {
+                                Text(role.label)
+                                    .font(.subheadline.weight(.medium))
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 7)
+                                    .background(
+                                        Capsule()
+                                            .fill(selected ? Color.blue.opacity(0.18) : Color.gray.opacity(0.14))
+                                    )
+                                    .overlay(
+                                        Capsule()
+                                            .stroke(selected ? Color.blue : Color.gray.opacity(0.35), lineWidth: 1)
+                                    )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    } label: {
+                        Text("Preset Roles")
+                    }
+
+                    GroupBox {
+                        VStack(spacing: 10) {
+                            ForEach(allAccess) { access in
+                                Toggle(
+                                    access.label,
+                                    isOn: Binding(
+                                        get: { node.securityAccess.contains(access) },
+                                        set: { isEnabled in
+                                            if isEnabled {
+                                                node.securityAccess.insert(access)
+                                            } else {
+                                                node.securityAccess.remove(access)
+                                            }
+                                        }
+                                    )
+                                )
+                            }
+                        }
+                    } label: {
+                        Text("Security Access")
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct FixedNodeInspector: View {
+    @Binding var node: OrgNode
+
+    private var descriptionText: String {
+        switch node.type {
+        case .input:
+            return "Fixed entry point for all task inputs."
+        case .output:
+            return "Fixed exit point for all task outputs."
+        case .agent, .human:
+            return ""
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -3240,24 +3570,16 @@ private struct NodeInspector: View {
                         Text("Display Name")
                             .font(.caption2.weight(.semibold))
                             .foregroundStyle(.secondary)
-                        TextField("Display Name", text: $node.name)
-                            .textFieldStyle(.roundedBorder)
-                    }
-
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Role Title")
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                        TextField("Role Title", text: $node.title)
-                            .textFieldStyle(.roundedBorder)
-                    }
-
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Department")
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                        TextField("Department", text: $node.department)
-                            .textFieldStyle(.roundedBorder)
+                        TextField(
+                            "Display Name",
+                            text: .constant(
+                                node.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                    ? node.type.label
+                                    : node.name
+                            )
+                        )
+                        .textFieldStyle(.roundedBorder)
+                        .disabled(true)
                     }
                 }
             } label: {
@@ -3265,45 +3587,16 @@ private struct NodeInspector: View {
             }
 
             GroupBox {
-                VStack(alignment: .leading, spacing: 14) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Node Type")
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                        Picker("Node Type", selection: $node.type) {
-                            ForEach(NodeType.allCases) { type in
-                                Text(type.label).tag(type)
-                            }
-                        }
-                        .pickerStyle(.segmented)
-                    }
-
-                    if node.type == .agent {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Model")
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(.secondary)
-                            Picker("Model", selection: $node.provider) {
-                                ForEach(LLMProvider.allCases) { provider in
-                                    Text(provider.label).tag(provider)
-                                }
-                            }
-                            .pickerStyle(.menu)
-                        }
-                    }
-                }
-            } label: {
-                Text("Type")
-            }
-
-            GroupBox {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Description")
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.secondary)
-                    TextEditor(text: $node.roleDescription)
-                        .frame(minHeight: 110)
-                        .padding(6)
+                    Text(descriptionText)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 10)
                         .background(Color(uiColor: .systemBackground))
                         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                 }
@@ -3311,93 +3604,32 @@ private struct NodeInspector: View {
                 Text("Role Description")
             }
 
-            GroupBox {
-                VStack(alignment: .leading, spacing: 14) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Input Schema")
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                        Picker("Input Schema", selection: $node.inputSchema) {
-                            ForEach(HandoffSchema.allCases) { schema in
-                                Text(schema.label).tag(schema)
-                            }
-                        }
-                        .pickerStyle(.menu)
-                    }
-
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Output Schema")
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                        Picker("Output Schema", selection: $node.outputSchema) {
-                            ForEach(HandoffSchema.allCases) { schema in
-                                Text(schema.label).tag(schema)
-                            }
-                        }
-                        .pickerStyle(.menu)
-                    }
-                }
-            } label: {
-                Text("Typed Handoffs")
-            }
-
-            GroupBox {
-                FlowLayout(items: allRoles, spacing: 8) { role in
-                    let selected = node.selectedRoles.contains(role)
-                    Button {
-                        if selected {
-                            node.selectedRoles.remove(role)
-                        } else {
-                            node.selectedRoles.insert(role)
-                        }
-                    } label: {
-                        Text(role.label)
-                            .font(.subheadline.weight(.medium))
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 7)
-                            .background(
-                                Capsule()
-                                    .fill(selected ? Color.blue.opacity(0.18) : Color.gray.opacity(0.14))
-                            )
-                            .overlay(
-                                Capsule()
-                                    .stroke(selected ? Color.blue : Color.gray.opacity(0.35), lineWidth: 1)
-                            )
-                    }
-                    .buttonStyle(.plain)
-                }
-            } label: {
-                Text("Preset Roles")
-            }
-
-            GroupBox {
-                VStack(spacing: 10) {
-                    ForEach(allAccess) { access in
-                        Toggle(
-                            access.label,
-                            isOn: Binding(
-                                get: { node.securityAccess.contains(access) },
-                                set: { isEnabled in
-                                    if isEnabled {
-                                        node.securityAccess.insert(access)
-                                    } else {
-                                        node.securityAccess.remove(access)
-                                    }
-                                }
-                            )
-                        )
-                    }
-                }
-            } label: {
-                Text("Security Access")
-            }
+            Spacer(minLength: 0)
         }
     }
+}
+
+private struct CoordinatorTraceResolutionPresentation {
+    let title: String
+    let detail: String
+    let buttonTitle: String
+}
+
+private enum TraceResolutionAction {
+    case grantPermission(nodeID: UUID, permission: SecurityAccess)
+    case switchToSimulation
+}
+
+private struct TraceResolutionRecommendation {
+    let presentation: CoordinatorTraceResolutionPresentation
+    let action: TraceResolutionAction
 }
 
 private struct CoordinatorTraceRow: View {
     let stepNumber: Int
     let step: CoordinatorTraceStep
+    let resolution: CoordinatorTraceResolutionPresentation?
+    let onResolve: (() -> Void)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -3430,10 +3662,42 @@ private struct CoordinatorTraceRow: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
 
+            if let resolution {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.orange)
+                        Text(resolution.title)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.orange)
+                    }
+                    Text(resolution.detail)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                    if let onResolve {
+                        Button {
+                            onResolve()
+                        } label: {
+                            Label(resolution.buttonTitle, systemImage: "checkmark.shield")
+                                .font(.caption.weight(.semibold))
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                    }
+                }
+                .padding(8)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color.orange.opacity(0.08))
+                )
+            }
+
             if let summary = step.summary {
                 Text(summary)
                     .font(.caption)
-                    .lineLimit(3)
+                    .lineLimit(4)
             }
         }
         .padding(.horizontal, 10)
@@ -3739,7 +4003,7 @@ private struct ConnectionLayer: View {
                     lineJoin: .round,
                     dash: geometry.isSecondary ? [6, 4] : []
                 )
-                let strokeColor = isSelected ? Color.red : geometry.link.color.opacity(geometry.isSecondary ? 0.9 : 1)
+                let strokeColor = geometry.link.color.opacity(geometry.isSecondary ? 0.9 : 1)
                 context.stroke(path, with: .color(strokeColor), style: strokeStyle)
 
                 if let arrow = arrowHeadPath(for: geometry.points, size: isSelected ? 12 : 10) {
@@ -3767,7 +4031,7 @@ private struct ConnectionLayer: View {
 
                 context.stroke(
                     previewPath,
-                    with: .color(draft.hoveredTargetID == nil ? Color.blue : Color.green),
+                    with: .color(AppTheme.brandTint),
                     style: StrokeStyle(lineWidth: 2.4, lineCap: .round, lineJoin: .round, dash: [5, 4])
                 )
             }
@@ -4254,7 +4518,7 @@ private struct OrgNode: Identifiable {
             inputSchema: .goalBriefV1,
             outputSchema: .goalBriefV1,
             selectedRoles: [],
-            securityAccess: [.workspaceRead],
+            securityAccess: [],
             position: CGPoint(x: 950, y: 68)
         ),
         OrgNode(
@@ -4380,7 +4644,7 @@ private struct OrgNode: Identifiable {
             inputSchema: .taskResultV1,
             outputSchema: .taskResultV1,
             selectedRoles: [],
-            securityAccess: [.workspaceRead],
+            securityAccess: [],
             position: CGPoint(x: 950, y: 1132)
         )
     ]
@@ -4466,18 +4730,7 @@ private enum LinkTone: String, CaseIterable, Codable {
     case indigo
 
     var color: Color {
-        switch self {
-        case .blue:
-            return .blue
-        case .orange:
-            return .orange
-        case .teal:
-            return .teal
-        case .green:
-            return .green
-        case .indigo:
-            return .indigo
-        }
+        AppTheme.brandTint
     }
 }
 
@@ -5031,6 +5284,7 @@ private enum CoordinatorTraceStatus: String, Codable {
 private struct CoordinatorTraceStep: Identifiable, Codable {
     var id: String { packetID }
     let packetID: String
+    let assignedNodeID: UUID?
     let assignedNodeName: String
     let objective: String
     var status: CoordinatorTraceStatus
