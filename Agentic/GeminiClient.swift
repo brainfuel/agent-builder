@@ -6,8 +6,27 @@ protocol GeminiServicing {
         modelID: String,
         systemInstruction: String,
         messages: [ChatMessage],
-        latestUserAttachments: [PendingAttachment]
+        latestUserAttachments: [PendingAttachment],
+        webSearchEnabled: Bool
     ) -> AsyncThrowingStream<ModelReply, Error>
+}
+
+extension GeminiServicing {
+    /// Convenience overload so existing callers that don't need web search still compile.
+    func generateReplyStream(
+        modelID: String,
+        systemInstruction: String,
+        messages: [ChatMessage],
+        latestUserAttachments: [PendingAttachment]
+    ) -> AsyncThrowingStream<ModelReply, Error> {
+        generateReplyStream(
+            modelID: modelID,
+            systemInstruction: systemInstruction,
+            messages: messages,
+            latestUserAttachments: latestUserAttachments,
+            webSearchEnabled: false
+        )
+    }
 }
 
 struct GeminiClient: GeminiServicing {
@@ -70,7 +89,8 @@ struct GeminiClient: GeminiServicing {
         modelID: String,
         systemInstruction: String,
         messages: [ChatMessage],
-        latestUserAttachments: [PendingAttachment]
+        latestUserAttachments: [PendingAttachment],
+        webSearchEnabled: Bool = false
     ) -> AsyncThrowingStream<ModelReply, Error> {
         AsyncThrowingStream { continuation in
             Task {
@@ -79,7 +99,8 @@ struct GeminiClient: GeminiServicing {
                         modelID: modelID,
                         systemInstruction: systemInstruction,
                         messages: messages,
-                        latestUserAttachments: latestUserAttachments
+                        latestUserAttachments: latestUserAttachments,
+                        webSearchEnabled: webSearchEnabled
                     )
                     continuation.yield(reply)
                     continuation.finish()
@@ -94,7 +115,8 @@ struct GeminiClient: GeminiServicing {
         modelID: String,
         systemInstruction: String,
         messages: [ChatMessage],
-        latestUserAttachments: [PendingAttachment]
+        latestUserAttachments: [PendingAttachment],
+        webSearchEnabled: Bool = false
     ) async throws -> ModelReply {
         let escapedModel = modelID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? modelID
         guard let url = URL(string: "https://generativelanguage.googleapis.com/v1beta/models/\(escapedModel):generateContent") else {
@@ -108,6 +130,7 @@ struct GeminiClient: GeminiServicing {
         request.timeoutInterval = 120
 
         let lastUserIndex = messages.lastIndex { $0.role == .user }
+        let tools: [GeminiTool]? = webSearchEnabled ? [GeminiTool(googleSearch: GeminiGoogleSearch())] : nil
         let payload = GeminiGenerateRequest(
             contents: messages.enumerated().map { index, message in
                 var parts = [GeminiPart(text: message.text)]
@@ -133,7 +156,8 @@ struct GeminiClient: GeminiServicing {
             ),
             generationConfig: GeminiGenerationConfig(
                 responseModalities: preferredResponseModalities(for: modelID)
-            )
+            ),
+            tools: tools
         )
         request.httpBody = try JSONEncoder().encode(payload)
 
@@ -261,13 +285,27 @@ struct GeminiGenerateRequest: Encodable {
     let contents: [GeminiContent]
     let systemInstruction: GeminiContent?
     let generationConfig: GeminiGenerationConfig?
+    let tools: [GeminiTool]?
 
     enum CodingKeys: String, CodingKey {
         case contents
         case systemInstruction = "system_instruction"
         case generationConfig = "generation_config"
+        case tools
     }
 }
+
+/// Wraps a single Gemini tool entry. Currently only Google Search grounding is supported.
+struct GeminiTool: Encodable {
+    let googleSearch: GeminiGoogleSearch?
+
+    enum CodingKeys: String, CodingKey {
+        case googleSearch = "google_search"
+    }
+}
+
+/// Empty object – presence in the tools array enables Google Search grounding.
+struct GeminiGoogleSearch: Encodable {}
 
 struct GeminiGenerationConfig: Codable {
     let responseModalities: [String]

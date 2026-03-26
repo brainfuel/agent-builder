@@ -791,7 +791,7 @@ struct ContentView: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(3)
 
-                    Text("Expected output: \(pendingHumanPacket.requiredOutputSchema.label)")
+                    Text("Expected output: \(pendingHumanPacket.requiredOutputSchema)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
@@ -1067,6 +1067,7 @@ struct ContentView: View {
                 roleDescription: node.roleDescription,
                 inputSchema: node.inputSchema,
                 outputSchema: node.outputSchema,
+                outputSchemaDescription: node.outputSchemaDescription,
                 securityAccess: Set(node.securityAccess.map(\.rawValue))
             )
         }
@@ -1354,10 +1355,10 @@ struct ContentView: View {
         let summary = [
             "Simulated output for \(packet.assignedNodeName).",
             "Objective: \(packet.objective)",
-            "Input schema: \(packet.requiredInputSchema.rawValue).",
+            "Input schema: \(packet.requiredInputSchema).",
             inputPreview,
             permissionPreview.isEmpty ? "Policy check: no elevated permissions required." : "Policy check: \(permissionPreview).",
-            "Output schema: \(packet.requiredOutputSchema.rawValue)."
+            "Output schema: \(packet.requiredOutputSchema)."
         ].joined(separator: " ")
 
         return MCPTaskResponse(
@@ -1395,8 +1396,9 @@ struct ContentView: View {
             goal: goal,
             objective: packet.objective,
             roleContext: packet.assignedNodeName,
-            requiredInputSchema: packet.requiredInputSchema.label,
-            requiredOutputSchema: packet.requiredOutputSchema.label,
+            requiredInputSchema: packet.requiredInputSchema,
+            requiredOutputSchema: packet.requiredOutputSchema,
+            outputSchemaDescription: packet.outputSchemaDescription,
             handoffSummaries: handoffSummaries,
             allowedPermissions: packet.allowedPermissions
         )
@@ -1452,7 +1454,7 @@ struct ContentView: View {
             if handoff.schema != requirement.outputSchema {
                 return HandoffValidation(
                     isValid: false,
-                    message: "Blocked: \(requirement.fromNodeName) produced \(handoff.schema.label), expected \(requirement.outputSchema.label).",
+                    message: "Blocked: \(requirement.fromNodeName) produced \(handoff.schema), expected \(requirement.outputSchema).",
                     handoffSummaries: []
                 )
             }
@@ -1460,7 +1462,7 @@ struct ContentView: View {
             if requirement.outputSchema != packet.requiredInputSchema {
                 return HandoffValidation(
                     isValid: false,
-                    message: "Blocked: \(packet.assignedNodeName) requires \(packet.requiredInputSchema.label) but child \(requirement.fromNodeName) outputs \(requirement.outputSchema.label).",
+                    message: "Blocked: \(packet.assignedNodeName) requires \(packet.requiredInputSchema) but child \(requirement.fromNodeName) outputs \(requirement.outputSchema).",
                     handoffSummaries: []
                 )
             }
@@ -2023,8 +2025,8 @@ struct ContentView: View {
                     node.type.rawValue,
                     node.provider.rawValue,
                     node.roleDescription,
-                    node.inputSchema.rawValue,
-                    node.outputSchema.rawValue,
+                    node.inputSchema,
+                    node.outputSchema,
                     roles,
                     access
                 ].joined(separator: "§")
@@ -2056,7 +2058,7 @@ struct ContentView: View {
         var newPosition = fallbackPosition
         var parentIDForNewNode: UUID?
         var parentLinkToneForNewNode: LinkTone = .blue
-        var inheritedInputSchemaForNewNode: HandoffSchema?
+        var inheritedInputSchemaForNewNode: String?
 
         let requestedParentID = forcedParentID ?? selectedNodeID
         let resolvedParentID: UUID? = {
@@ -2169,6 +2171,7 @@ struct ContentView: View {
             roleDescription: defaultRoleDescription,
             inputSchema: inheritedInputSchemaForNewNode ?? defaultInputSchema(for: type),
             outputSchema: defaultOutputSchema(for: type),
+            outputSchemaDescription: DefaultSchema.defaultDescription(for: defaultOutputSchema(for: type)),
             selectedRoles: defaultRoles,
             securityAccess: defaultSecurityAccess,
             position: newPosition
@@ -2305,6 +2308,7 @@ struct ContentView: View {
                 roleDescription: entry.roleDescription,
                 inputSchema: entry.inputSchema ?? defaultInputSchema(for: entry.type),
                 outputSchema: entry.outputSchema ?? defaultOutputSchema(for: entry.type),
+                outputSchemaDescription: entry.outputSchemaDescription ?? DefaultSchema.defaultDescription(for: entry.outputSchema ?? defaultOutputSchema(for: entry.type)),
                 selectedRoles: Set(entry.selectedRoles),
                 securityAccess: Set(entry.securityAccess),
                 position: CGPoint(x: entry.positionX, y: entry.positionY)
@@ -2343,29 +2347,29 @@ struct ContentView: View {
         persistGraphIfNeeded(for: semanticFingerprint)
     }
 
-    private func defaultInputSchema(for type: NodeType) -> HandoffSchema {
+    private func defaultInputSchema(for type: NodeType) -> String {
         switch type {
         case .human:
-            return .taskResultV1
+            return DefaultSchema.taskResult
         case .agent:
-            return .taskResultV1
+            return DefaultSchema.taskResult
         case .input:
-            return .goalBriefV1
+            return DefaultSchema.goalBrief
         case .output:
-            return .taskResultV1
+            return DefaultSchema.taskResult
         }
     }
 
-    private func defaultOutputSchema(for type: NodeType) -> HandoffSchema {
+    private func defaultOutputSchema(for type: NodeType) -> String {
         switch type {
         case .human:
-            return .releaseDecisionV1
+            return DefaultSchema.releaseDecision
         case .agent:
-            return .taskResultV1
+            return DefaultSchema.taskResult
         case .input:
-            return .goalBriefV1
+            return DefaultSchema.goalBrief
         case .output:
-            return .taskResultV1
+            return DefaultSchema.taskResult
         }
     }
 
@@ -2534,6 +2538,7 @@ struct ContentView: View {
                 : "Fixed end node for final outputs.",
             inputSchema: defaultInputSchema(for: type),
             outputSchema: defaultOutputSchema(for: type),
+            outputSchemaDescription: DefaultSchema.defaultDescription(for: defaultOutputSchema(for: type)),
             selectedRoles: [],
             securityAccess: [],
             position: position
@@ -2860,6 +2865,7 @@ struct ContentView: View {
                 roleDescription: entry.roleDescription,
                 inputSchema: entry.inputSchema ?? defaultInputSchema(for: entry.type),
                 outputSchema: entry.outputSchema ?? defaultOutputSchema(for: entry.type),
+                outputSchemaDescription: entry.outputSchemaDescription ?? DefaultSchema.defaultDescription(for: entry.outputSchema ?? defaultOutputSchema(for: entry.type)),
                 selectedRoles: Set(entry.selectedRoles),
                 securityAccess: Set(entry.securityAccess),
                 position: CGPoint(x: entry.positionX, y: entry.positionY)
@@ -2944,8 +2950,9 @@ struct ContentView: View {
                 type: .input,
                 provider: .chatGPT,
                 roleDescription: "Fixed start node for task inputs.",
-                inputSchema: .goalBriefV1,
-                outputSchema: .goalBriefV1,
+                inputSchema: DefaultSchema.goalBrief,
+                outputSchema: DefaultSchema.goalBrief,
+                outputSchemaDescription: DefaultSchema.defaultDescription(for: DefaultSchema.goalBrief),
                 selectedRoles: [],
                 securityAccess: [],
                 position: CGPoint(x: centerX, y: inputY)
@@ -2958,8 +2965,9 @@ struct ContentView: View {
                 type: .agent,
                 provider: .chatGPT,
                 roleDescription: "Handles the task directly end-to-end as a single autonomous worker.",
-                inputSchema: .goalBriefV1,
-                outputSchema: .taskResultV1,
+                inputSchema: DefaultSchema.goalBrief,
+                outputSchema: DefaultSchema.taskResult,
+                outputSchemaDescription: DefaultSchema.defaultDescription(for: DefaultSchema.taskResult),
                 selectedRoles: [.executor, .planner],
                 securityAccess: [.workspaceRead],
                 position: CGPoint(x: centerX, y: agentY)
@@ -2972,8 +2980,9 @@ struct ContentView: View {
                 type: .output,
                 provider: .chatGPT,
                 roleDescription: "Fixed end node for final outputs.",
-                inputSchema: .taskResultV1,
-                outputSchema: .taskResultV1,
+                inputSchema: DefaultSchema.taskResult,
+                outputSchema: DefaultSchema.taskResult,
+                outputSchemaDescription: DefaultSchema.defaultDescription(for: DefaultSchema.taskResult),
                 selectedRoles: [],
                 securityAccess: [],
                 position: CGPoint(x: centerX, y: outputY)
@@ -3370,7 +3379,10 @@ private struct NodeInspector: View {
 
     private let editableTypes: [NodeType] = [.human, .agent]
     private let allRoles = PresetRole.allCases
-    private let allAccess = SecurityAccess.allCases
+    /// Only show permissions that are actually wired to provider tools.
+    /// The remaining permissions (workspaceRead, workspaceWrite, terminalExec,
+    /// secretsRead, auditLogs) are hidden until their backends are implemented.
+    private let allAccess: [SecurityAccess] = [.webAccess]
 
     var body: some View {
         Group {
@@ -3462,27 +3474,31 @@ private struct NodeInspector: View {
                     GroupBox {
                         VStack(alignment: .leading, spacing: 14) {
                             VStack(alignment: .leading, spacing: 4) {
-                                Text("Input Schema")
-                                    .font(.caption2.weight(.semibold))
-                                    .foregroundStyle(.secondary)
-                                Picker("Input Schema", selection: $node.inputSchema) {
-                                    ForEach(HandoffSchema.allCases) { schema in
-                                        Text(schema.label).tag(schema)
-                                    }
-                                }
-                                .pickerStyle(.menu)
-                            }
-
-                            VStack(alignment: .leading, spacing: 4) {
                                 Text("Output Schema")
                                     .font(.caption2.weight(.semibold))
                                     .foregroundStyle(.secondary)
-                                Picker("Output Schema", selection: $node.outputSchema) {
-                                    ForEach(HandoffSchema.allCases) { schema in
-                                        Text(schema.label).tag(schema)
+                                TextField("e.g. Research Brief, Interview Scorecard", text: $node.outputSchema)
+                                    .textFieldStyle(.roundedBorder)
+                                    .font(.callout)
+                                    .onChange(of: node.outputSchema) { _, newSchema in
+                                        let suggested = DefaultSchema.defaultDescription(for: newSchema)
+                                        if !suggested.isEmpty {
+                                            node.outputSchemaDescription = suggested
+                                        }
                                     }
-                                }
-                                .pickerStyle(.menu)
+                            }
+
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Output Format Description")
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                                TextEditor(text: $node.outputSchemaDescription)
+                                    .font(.caption)
+                                    .frame(minHeight: 60, maxHeight: 100)
+                                    .scrollContentBackground(.hidden)
+                                    .padding(6)
+                                    .background(Color.gray.opacity(0.08))
+                                    .cornerRadius(6)
                             }
                         }
                     } label: {
@@ -3736,7 +3752,7 @@ private struct HumanInboxPanel: View {
                                     .font(.subheadline)
                                     .foregroundStyle(.secondary)
 
-                                Text("Expected output schema: \(pendingPacket.requiredOutputSchema.label)")
+                                Text("Expected output schema: \(pendingPacket.requiredOutputSchema)")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
 
@@ -4417,6 +4433,7 @@ private struct FlowLayout<Item: Hashable, Content: View>: View {
     let items: [Item]
     let spacing: CGFloat
     let content: (Item) -> Content
+    @State private var totalHeight: CGFloat = 44
 
     init(
         items: [Item],
@@ -4431,8 +4448,22 @@ private struct FlowLayout<Item: Hashable, Content: View>: View {
     var body: some View {
         GeometryReader { proxy in
             generateContent(in: proxy)
+                .background(
+                    GeometryReader { innerProxy in
+                        Color.clear.preference(
+                            key: FlowLayoutHeightPreferenceKey.self,
+                            value: innerProxy.size.height
+                        )
+                    }
+                )
         }
-        .frame(minHeight: 96)
+        .frame(height: totalHeight)
+        .onPreferenceChange(FlowLayoutHeightPreferenceKey.self) { newHeight in
+            let clamped = max(44, newHeight)
+            if abs(clamped - totalHeight) > 0.5 {
+                totalHeight = clamped
+            }
+        }
     }
 
     private func generateContent(in geo: GeometryProxy) -> some View {
@@ -4468,6 +4499,14 @@ private struct FlowLayout<Item: Hashable, Content: View>: View {
     }
 }
 
+private struct FlowLayoutHeightPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 44
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
 private struct OrgNode: Identifiable {
     let id: UUID
     var name: String
@@ -4476,8 +4515,9 @@ private struct OrgNode: Identifiable {
     var type: NodeType
     var provider: LLMProvider
     var roleDescription: String
-    var inputSchema: HandoffSchema
-    var outputSchema: HandoffSchema
+    var inputSchema: String
+    var outputSchema: String
+    var outputSchemaDescription: String
     var selectedRoles: Set<PresetRole>
     var securityAccess: Set<SecurityAccess>
     var position: CGPoint
@@ -4498,8 +4538,9 @@ private struct OrgNode: Identifiable {
             type: .agent,
             provider: .chatGPT,
             roleDescription: "",
-            inputSchema: .taskResultV1,
-            outputSchema: .taskResultV1,
+            inputSchema: DefaultSchema.taskResult,
+            outputSchema: DefaultSchema.taskResult,
+            outputSchemaDescription: DefaultSchema.defaultDescription(for: DefaultSchema.taskResult),
             selectedRoles: [],
             securityAccess: [],
             position: .zero
@@ -4515,8 +4556,9 @@ private struct OrgNode: Identifiable {
             type: .input,
             provider: .chatGPT,
             roleDescription: "Fixed start node for task inputs.",
-            inputSchema: .goalBriefV1,
-            outputSchema: .goalBriefV1,
+            inputSchema: DefaultSchema.goalBrief,
+            outputSchema: DefaultSchema.goalBrief,
+            outputSchemaDescription: DefaultSchema.defaultDescription(for: DefaultSchema.goalBrief),
             selectedRoles: [],
             securityAccess: [],
             position: CGPoint(x: 950, y: 68)
@@ -4529,8 +4571,9 @@ private struct OrgNode: Identifiable {
             type: .agent,
             provider: .chatGPT,
             roleDescription: "Routes goals into sub-workflows, enforces policy checks, and merges outputs.",
-            inputSchema: .goalBriefV1,
-            outputSchema: .strategyPlanV1,
+            inputSchema: DefaultSchema.goalBrief,
+            outputSchema: DefaultSchema.strategyPlan,
+            outputSchemaDescription: DefaultSchema.defaultDescription(for: DefaultSchema.strategyPlan),
             selectedRoles: [.coordinator, .reviewer],
             securityAccess: [.workspaceRead, .workspaceWrite, .secretsRead],
             position: CGPoint(x: 940, y: 120)
@@ -4543,8 +4586,9 @@ private struct OrgNode: Identifiable {
             type: .human,
             provider: .chatGPT,
             roleDescription: "Defines intent, approves policy changes, and signs off production actions.",
-            inputSchema: .goalBriefV1,
-            outputSchema: .releaseDecisionV1,
+            inputSchema: DefaultSchema.goalBrief,
+            outputSchema: DefaultSchema.releaseDecision,
+            outputSchemaDescription: DefaultSchema.defaultDescription(for: DefaultSchema.releaseDecision),
             selectedRoles: [.decisionMaker],
             securityAccess: [.workspaceRead, .auditLogs],
             position: CGPoint(x: 560, y: 280)
@@ -4557,8 +4601,9 @@ private struct OrgNode: Identifiable {
             type: .agent,
             provider: .gemini,
             roleDescription: "Runs discovery queries, consolidates sources, and drafts evidence summaries.",
-            inputSchema: .strategyPlanV1,
-            outputSchema: .researchBriefV1,
+            inputSchema: DefaultSchema.strategyPlan,
+            outputSchema: DefaultSchema.researchBrief,
+            outputSchemaDescription: DefaultSchema.defaultDescription(for: DefaultSchema.researchBrief),
             selectedRoles: [.researcher],
             securityAccess: [.workspaceRead, .webAccess],
             position: CGPoint(x: 940, y: 280)
@@ -4571,8 +4616,9 @@ private struct OrgNode: Identifiable {
             type: .agent,
             provider: .claude,
             roleDescription: "Executes approved changes, runs commands, and reports diffs plus verification.",
-            inputSchema: .strategyPlanV1,
-            outputSchema: .buildPatchV1,
+            inputSchema: DefaultSchema.strategyPlan,
+            outputSchema: DefaultSchema.buildPatch,
+            outputSchemaDescription: DefaultSchema.defaultDescription(for: DefaultSchema.buildPatch),
             selectedRoles: [.executor, .planner],
             securityAccess: [.workspaceRead, .workspaceWrite, .terminalExec],
             position: CGPoint(x: 1320, y: 280)
@@ -4585,8 +4631,9 @@ private struct OrgNode: Identifiable {
             type: .agent,
             provider: .grok,
             roleDescription: "Runs test suites and static checks before actions are marked as complete.",
-            inputSchema: .buildPatchV1,
-            outputSchema: .validationReportV1,
+            inputSchema: DefaultSchema.buildPatch,
+            outputSchema: DefaultSchema.validationReport,
+            outputSchemaDescription: DefaultSchema.defaultDescription(for: DefaultSchema.validationReport),
             selectedRoles: [.reviewer],
             securityAccess: [.workspaceRead, .terminalExec],
             position: CGPoint(x: 760, y: 480)
@@ -4599,8 +4646,9 @@ private struct OrgNode: Identifiable {
             type: .human,
             provider: .chatGPT,
             roleDescription: "Reviews privileged actions and controls secret/materialized access policies.",
-            inputSchema: .buildPatchV1,
-            outputSchema: .releaseDecisionV1,
+            inputSchema: DefaultSchema.buildPatch,
+            outputSchema: DefaultSchema.releaseDecision,
+            outputSchemaDescription: DefaultSchema.defaultDescription(for: DefaultSchema.releaseDecision),
             selectedRoles: [.decisionMaker, .reviewer],
             securityAccess: [.auditLogs],
             position: CGPoint(x: 1120, y: 480)
@@ -4613,8 +4661,9 @@ private struct OrgNode: Identifiable {
             type: .agent,
             provider: .chatGPT,
             roleDescription: "Creates concise updates and incident summaries for stakeholders.",
-            inputSchema: .strategyPlanV1,
-            outputSchema: .taskResultV1,
+            inputSchema: DefaultSchema.strategyPlan,
+            outputSchema: DefaultSchema.taskResult,
+            outputSchemaDescription: DefaultSchema.defaultDescription(for: DefaultSchema.taskResult),
             selectedRoles: [.summarizer],
             securityAccess: [.workspaceRead],
             position: CGPoint(x: 1500, y: 480)
@@ -4627,8 +4676,9 @@ private struct OrgNode: Identifiable {
             type: .human,
             provider: .chatGPT,
             roleDescription: "Handles real-world execution beyond automation boundaries.",
-            inputSchema: .validationReportV1,
-            outputSchema: .releaseDecisionV1,
+            inputSchema: DefaultSchema.validationReport,
+            outputSchema: DefaultSchema.releaseDecision,
+            outputSchemaDescription: DefaultSchema.defaultDescription(for: DefaultSchema.releaseDecision),
             selectedRoles: [.executor],
             securityAccess: [.workspaceRead],
             position: CGPoint(x: 940, y: 680)
@@ -4641,8 +4691,9 @@ private struct OrgNode: Identifiable {
             type: .output,
             provider: .chatGPT,
             roleDescription: "Fixed end node for final outputs.",
-            inputSchema: .taskResultV1,
-            outputSchema: .taskResultV1,
+            inputSchema: DefaultSchema.taskResult,
+            outputSchema: DefaultSchema.taskResult,
+            outputSchemaDescription: DefaultSchema.defaultDescription(for: DefaultSchema.taskResult),
             selectedRoles: [],
             securityAccess: [],
             position: CGPoint(x: 950, y: 1132)
@@ -4752,8 +4803,9 @@ private struct HierarchySnapshotNode: Codable {
     var type: NodeType
     var provider: LLMProvider
     var roleDescription: String
-    var inputSchema: HandoffSchema?
-    var outputSchema: HandoffSchema?
+    var inputSchema: String?
+    var outputSchema: String?
+    var outputSchemaDescription: String?
     var selectedRoles: [PresetRole]
     var securityAccess: [SecurityAccess]
     var positionX: CGFloat
@@ -4801,6 +4853,7 @@ private func makeHierarchySnapshot(nodes: [OrgNode], links: [NodeLink]) -> Hiera
             roleDescription: node.roleDescription,
             inputSchema: node.inputSchema,
             outputSchema: node.outputSchema,
+            outputSchemaDescription: node.outputSchemaDescription,
             selectedRoles: node.selectedRoles.sorted { $0.rawValue < $1.rawValue },
             securityAccess: node.securityAccess.sorted { $0.rawValue < $1.rawValue },
             positionX: node.position.x,
@@ -4853,12 +4906,12 @@ private enum PresetHierarchyTemplate: String, CaseIterable, Identifiable {
         let releaseID = UUID()
 
         let nodes: [OrgNode] = [
-            OrgNode(id: coordinatorID, name: "Program Lead", title: "Coordinator", department: "Planning", type: .human, provider: .chatGPT, roleDescription: "Sets direction and approves release scope.", inputSchema: .goalBriefV1, outputSchema: .strategyPlanV1, selectedRoles: [.decisionMaker], securityAccess: [.workspaceRead, .auditLogs], position: .zero),
-            OrgNode(id: plannerID, name: "Strategy Agent", title: "Planner", department: "Planning", type: .agent, provider: .chatGPT, roleDescription: "Breaks goals into implementation tracks.", inputSchema: .strategyPlanV1, outputSchema: .strategyPlanV1, selectedRoles: [.planner], securityAccess: [.workspaceRead, .workspaceWrite], position: .zero),
-            OrgNode(id: researchID, name: "Research Agent", title: "Research", department: "Discovery", type: .agent, provider: .gemini, roleDescription: "Collects context and references for execution.", inputSchema: .strategyPlanV1, outputSchema: .researchBriefV1, selectedRoles: [.researcher], securityAccess: [.workspaceRead, .webAccess], position: .zero),
-            OrgNode(id: buildID, name: "Builder Agent", title: "Executor", department: "Delivery", type: .agent, provider: .claude, roleDescription: "Implements requested changes.", inputSchema: .strategyPlanV1, outputSchema: .buildPatchV1, selectedRoles: [.executor], securityAccess: [.workspaceRead, .workspaceWrite, .terminalExec], position: .zero),
-            OrgNode(id: qualityID, name: "QA Agent", title: "Reviewer", department: "Quality", type: .agent, provider: .grok, roleDescription: "Runs tests and validates behavior.", inputSchema: .buildPatchV1, outputSchema: .validationReportV1, selectedRoles: [.reviewer], securityAccess: [.workspaceRead, .terminalExec], position: .zero),
-            OrgNode(id: releaseID, name: "Release Manager", title: "Human Signoff", department: "Operations", type: .human, provider: .chatGPT, roleDescription: "Approves deployment and communications.", inputSchema: .validationReportV1, outputSchema: .releaseDecisionV1, selectedRoles: [.decisionMaker, .reviewer], securityAccess: [.workspaceRead, .auditLogs], position: .zero)
+            OrgNode(id: coordinatorID, name: "Program Lead", title: "Coordinator", department: "Planning", type: .human, provider: .chatGPT, roleDescription: "Sets direction and approves release scope.", inputSchema: DefaultSchema.goalBrief, outputSchema: DefaultSchema.strategyPlan, outputSchemaDescription: DefaultSchema.defaultDescription(for: DefaultSchema.strategyPlan), selectedRoles: [.decisionMaker], securityAccess: [.workspaceRead, .auditLogs], position: .zero),
+            OrgNode(id: plannerID, name: "Strategy Agent", title: "Planner", department: "Planning", type: .agent, provider: .chatGPT, roleDescription: "Breaks goals into implementation tracks.", inputSchema: DefaultSchema.strategyPlan, outputSchema: DefaultSchema.strategyPlan, outputSchemaDescription: DefaultSchema.defaultDescription(for: DefaultSchema.strategyPlan), selectedRoles: [.planner], securityAccess: [.workspaceRead, .workspaceWrite], position: .zero),
+            OrgNode(id: researchID, name: "Research Agent", title: "Research", department: "Discovery", type: .agent, provider: .gemini, roleDescription: "Collects context and references for execution.", inputSchema: DefaultSchema.strategyPlan, outputSchema: DefaultSchema.researchBrief, outputSchemaDescription: DefaultSchema.defaultDescription(for: DefaultSchema.researchBrief), selectedRoles: [.researcher], securityAccess: [.workspaceRead, .webAccess], position: .zero),
+            OrgNode(id: buildID, name: "Builder Agent", title: "Executor", department: "Delivery", type: .agent, provider: .claude, roleDescription: "Implements requested changes.", inputSchema: DefaultSchema.strategyPlan, outputSchema: DefaultSchema.buildPatch, outputSchemaDescription: DefaultSchema.defaultDescription(for: DefaultSchema.buildPatch), selectedRoles: [.executor], securityAccess: [.workspaceRead, .workspaceWrite, .terminalExec], position: .zero),
+            OrgNode(id: qualityID, name: "QA Agent", title: "Reviewer", department: "Quality", type: .agent, provider: .grok, roleDescription: "Runs tests and validates behavior.", inputSchema: DefaultSchema.buildPatch, outputSchema: DefaultSchema.validationReport, outputSchemaDescription: DefaultSchema.defaultDescription(for: DefaultSchema.validationReport), selectedRoles: [.reviewer], securityAccess: [.workspaceRead, .terminalExec], position: .zero),
+            OrgNode(id: releaseID, name: "Release Manager", title: "Human Signoff", department: "Operations", type: .human, provider: .chatGPT, roleDescription: "Approves deployment and communications.", inputSchema: DefaultSchema.validationReport, outputSchema: DefaultSchema.releaseDecision, outputSchemaDescription: DefaultSchema.defaultDescription(for: DefaultSchema.releaseDecision), selectedRoles: [.decisionMaker, .reviewer], securityAccess: [.workspaceRead, .auditLogs], position: .zero)
         ]
 
         let links: [NodeLink] = [
@@ -4881,12 +4934,12 @@ private enum PresetHierarchyTemplate: String, CaseIterable, Identifiable {
         let approverID = UUID()
 
         let nodes: [OrgNode] = [
-            OrgNode(id: commanderID, name: "Incident Commander", title: "Coordinator", department: "Security", type: .human, provider: .chatGPT, roleDescription: "Owns response decisions and escalation.", inputSchema: .goalBriefV1, outputSchema: .strategyPlanV1, selectedRoles: [.coordinator, .decisionMaker], securityAccess: [.workspaceRead, .auditLogs], position: .zero),
-            OrgNode(id: triageID, name: "Triage Agent", title: "Classifier", department: "Security", type: .agent, provider: .chatGPT, roleDescription: "Classifies impact and routes tasks.", inputSchema: .strategyPlanV1, outputSchema: .taskResultV1, selectedRoles: [.planner, .summarizer], securityAccess: [.workspaceRead, .webAccess], position: .zero),
-            OrgNode(id: remediationID, name: "Remediation Agent", title: "Executor", department: "Engineering", type: .agent, provider: .claude, roleDescription: "Applies fixes and executes rollback plans.", inputSchema: .taskResultV1, outputSchema: .buildPatchV1, selectedRoles: [.executor], securityAccess: [.workspaceRead, .workspaceWrite, .terminalExec], position: .zero),
-            OrgNode(id: commsID, name: "Comms Agent", title: "Status Reporter", department: "Comms", type: .agent, provider: .gemini, roleDescription: "Produces executive and customer updates.", inputSchema: .taskResultV1, outputSchema: .taskResultV1, selectedRoles: [.summarizer], securityAccess: [.workspaceRead], position: .zero),
-            OrgNode(id: forensicsID, name: "Forensics Agent", title: "Investigator", department: "Security", type: .agent, provider: .grok, roleDescription: "Collects traces and root-cause timeline.", inputSchema: .taskResultV1, outputSchema: .researchBriefV1, selectedRoles: [.researcher, .reviewer], securityAccess: [.workspaceRead, .terminalExec], position: .zero),
-            OrgNode(id: approverID, name: "Approver", title: "Human Gate", department: "Leadership", type: .human, provider: .chatGPT, roleDescription: "Approves high-impact remediations.", inputSchema: .buildPatchV1, outputSchema: .releaseDecisionV1, selectedRoles: [.decisionMaker], securityAccess: [.auditLogs], position: .zero)
+            OrgNode(id: commanderID, name: "Incident Commander", title: "Coordinator", department: "Security", type: .human, provider: .chatGPT, roleDescription: "Owns response decisions and escalation.", inputSchema: DefaultSchema.goalBrief, outputSchema: DefaultSchema.strategyPlan, outputSchemaDescription: DefaultSchema.defaultDescription(for: DefaultSchema.strategyPlan), selectedRoles: [.coordinator, .decisionMaker], securityAccess: [.workspaceRead, .auditLogs], position: .zero),
+            OrgNode(id: triageID, name: "Triage Agent", title: "Classifier", department: "Security", type: .agent, provider: .chatGPT, roleDescription: "Classifies impact and routes tasks.", inputSchema: DefaultSchema.strategyPlan, outputSchema: DefaultSchema.taskResult, outputSchemaDescription: DefaultSchema.defaultDescription(for: DefaultSchema.taskResult), selectedRoles: [.planner, .summarizer], securityAccess: [.workspaceRead, .webAccess], position: .zero),
+            OrgNode(id: remediationID, name: "Remediation Agent", title: "Executor", department: "Engineering", type: .agent, provider: .claude, roleDescription: "Applies fixes and executes rollback plans.", inputSchema: DefaultSchema.taskResult, outputSchema: DefaultSchema.buildPatch, outputSchemaDescription: DefaultSchema.defaultDescription(for: DefaultSchema.buildPatch), selectedRoles: [.executor], securityAccess: [.workspaceRead, .workspaceWrite, .terminalExec], position: .zero),
+            OrgNode(id: commsID, name: "Comms Agent", title: "Status Reporter", department: "Comms", type: .agent, provider: .gemini, roleDescription: "Produces executive and customer updates.", inputSchema: DefaultSchema.taskResult, outputSchema: DefaultSchema.taskResult, outputSchemaDescription: DefaultSchema.defaultDescription(for: DefaultSchema.taskResult), selectedRoles: [.summarizer], securityAccess: [.workspaceRead], position: .zero),
+            OrgNode(id: forensicsID, name: "Forensics Agent", title: "Investigator", department: "Security", type: .agent, provider: .grok, roleDescription: "Collects traces and root-cause timeline.", inputSchema: DefaultSchema.taskResult, outputSchema: DefaultSchema.researchBrief, outputSchemaDescription: DefaultSchema.defaultDescription(for: DefaultSchema.researchBrief), selectedRoles: [.researcher, .reviewer], securityAccess: [.workspaceRead, .terminalExec], position: .zero),
+            OrgNode(id: approverID, name: "Approver", title: "Human Gate", department: "Leadership", type: .human, provider: .chatGPT, roleDescription: "Approves high-impact remediations.", inputSchema: DefaultSchema.buildPatch, outputSchema: DefaultSchema.releaseDecision, outputSchemaDescription: DefaultSchema.defaultDescription(for: DefaultSchema.releaseDecision), selectedRoles: [.decisionMaker], securityAccess: [.auditLogs], position: .zero)
         ]
 
         let links: [NodeLink] = [
@@ -5023,8 +5076,9 @@ private struct TeamStructureSynthesizer {
                 type: .agent,
                 provider: .chatGPT,
                 roleDescription: "Decomposes goal, routes work packets, enforces policy and schema contracts.",
-                inputSchema: .goalBriefV1,
-                outputSchema: .strategyPlanV1,
+                inputSchema: DefaultSchema.goalBrief,
+                outputSchema: DefaultSchema.strategyPlan,
+                outputSchemaDescription: DefaultSchema.defaultDescription(for: DefaultSchema.strategyPlan),
                 selectedRoles: [.coordinator, .planner],
                 securityAccess: [.workspaceRead, .workspaceWrite],
                 position: .zero
@@ -5040,8 +5094,8 @@ private struct TeamStructureSynthesizer {
             type: NodeType,
             provider: LLMProvider,
             roleDescription: String,
-            inputSchema: HandoffSchema,
-            outputSchema: HandoffSchema,
+            inputSchema: String,
+            outputSchema: String,
             roles: Set<PresetRole>,
             access: Set<SecurityAccess>,
             parentID: UUID,
@@ -5059,6 +5113,7 @@ private struct TeamStructureSynthesizer {
                     roleDescription: roleDescription,
                     inputSchema: inputSchema,
                     outputSchema: outputSchema,
+                    outputSchemaDescription: DefaultSchema.defaultDescription(for: outputSchema),
                     selectedRoles: roles,
                     securityAccess: access,
                     position: .zero
@@ -5075,8 +5130,8 @@ private struct TeamStructureSynthesizer {
             type: .agent,
             provider: .chatGPT,
             roleDescription: "Translates goals into executable tracks and success checkpoints.",
-            inputSchema: .strategyPlanV1,
-            outputSchema: .strategyPlanV1,
+            inputSchema: DefaultSchema.strategyPlan,
+            outputSchema: DefaultSchema.strategyPlan,
             roles: [.planner],
             access: [.workspaceRead, .workspaceWrite],
             parentID: coordinatorID,
@@ -5091,8 +5146,8 @@ private struct TeamStructureSynthesizer {
                 type: .agent,
                 provider: .gemini,
                 roleDescription: "Builds evidence brief and constraints from available data.",
-                inputSchema: .strategyPlanV1,
-                outputSchema: .researchBriefV1,
+                inputSchema: DefaultSchema.strategyPlan,
+                outputSchema: DefaultSchema.researchBrief,
                 roles: [.researcher],
                 access: [.workspaceRead, .webAccess],
                 parentID: coordinatorID,
@@ -5108,8 +5163,8 @@ private struct TeamStructureSynthesizer {
                 type: .agent,
                 provider: .claude,
                 roleDescription: "Implements scoped changes and returns patch artifacts.",
-                inputSchema: .strategyPlanV1,
-                outputSchema: .buildPatchV1,
+                inputSchema: DefaultSchema.strategyPlan,
+                outputSchema: DefaultSchema.buildPatch,
                 roles: [.executor],
                 access: [.workspaceRead, .workspaceWrite, .terminalExec],
                 parentID: strategyID,
@@ -5125,8 +5180,8 @@ private struct TeamStructureSynthesizer {
                 type: .agent,
                 provider: .grok,
                 roleDescription: "Validates outcomes and enforces quality gates.",
-                inputSchema: buildID == nil ? .strategyPlanV1 : .buildPatchV1,
-                outputSchema: .validationReportV1,
+                inputSchema: buildID == nil ? DefaultSchema.strategyPlan : DefaultSchema.buildPatch,
+                outputSchema: DefaultSchema.validationReport,
                 roles: [.reviewer],
                 access: [.workspaceRead, .terminalExec],
                 parentID: buildID ?? strategyID,
@@ -5142,8 +5197,8 @@ private struct TeamStructureSynthesizer {
                 type: .agent,
                 provider: .chatGPT,
                 roleDescription: "Checks policy, compliance, and sensitive-access boundaries.",
-                inputSchema: .buildPatchV1,
-                outputSchema: .validationReportV1,
+                inputSchema: DefaultSchema.buildPatch,
+                outputSchema: DefaultSchema.validationReport,
                 roles: [.reviewer],
                 access: [.workspaceRead, .auditLogs],
                 parentID: buildID ?? strategyID,
@@ -5159,8 +5214,8 @@ private struct TeamStructureSynthesizer {
                 type: .agent,
                 provider: .chatGPT,
                 roleDescription: "Produces clear updates for stakeholders and release notes.",
-                inputSchema: .strategyPlanV1,
-                outputSchema: .taskResultV1,
+                inputSchema: DefaultSchema.strategyPlan,
+                outputSchema: DefaultSchema.taskResult,
                 roles: [.summarizer],
                 access: [.workspaceRead],
                 parentID: coordinatorID,
@@ -5176,8 +5231,8 @@ private struct TeamStructureSynthesizer {
                 type: .human,
                 provider: .chatGPT,
                 roleDescription: "Approves or rejects high-impact actions before rollout.",
-                inputSchema: .validationReportV1,
-                outputSchema: .releaseDecisionV1,
+                inputSchema: DefaultSchema.validationReport,
+                outputSchema: DefaultSchema.releaseDecision,
                 roles: [.decisionMaker, .reviewer],
                 access: [.workspaceRead, .auditLogs],
                 parentID: securityID ?? qaID ?? buildID ?? strategyID,
@@ -5311,8 +5366,9 @@ private struct OrchestrationNode: Identifiable, Codable {
     let type: OrchestrationNodeKind
     let provider: String
     let roleDescription: String
-    let inputSchema: HandoffSchema
-    let outputSchema: HandoffSchema
+    let inputSchema: String
+    let outputSchema: String
+    let outputSchemaDescription: String
     let securityAccess: Set<String>
 }
 
@@ -5333,8 +5389,9 @@ private struct CoordinatorTaskPacket: Identifiable, Codable {
     let assignedNodeName: String
     let assignedNodeKind: OrchestrationNodeKind
     let objective: String
-    let requiredInputSchema: HandoffSchema
-    let requiredOutputSchema: HandoffSchema
+    let requiredInputSchema: String
+    let requiredOutputSchema: String
+    let outputSchemaDescription: String
     let requiredHandoffs: [CoordinatorHandoffRequirement]
     let allowedPermissions: [String]
 }
@@ -5371,11 +5428,11 @@ private struct CoordinatorHandoffRequirement: Identifiable, Codable, Hashable {
     var id: String { fromNodeID.uuidString }
     let fromNodeID: UUID
     let fromNodeName: String
-    let outputSchema: HandoffSchema
+    let outputSchema: String
 }
 
 private struct ProducedHandoff: Codable {
-    let schema: HandoffSchema
+    let schema: String
     let summary: String
 }
 
@@ -5408,7 +5465,7 @@ private struct CoordinatorPlan: Codable {
     let planID: String
     let coordinatorID: UUID
     let coordinatorName: String
-    let coordinatorOutputSchema: HandoffSchema
+    let coordinatorOutputSchema: String
     let goal: String
     let packets: [CoordinatorTaskPacket]
     let createdAt: Date
@@ -5417,8 +5474,8 @@ private struct CoordinatorPlan: Codable {
 private struct MCPTaskRequest: Codable {
     let packetID: String
     let objective: String
-    let inputSchema: HandoffSchema
-    let outputSchema: HandoffSchema
+    let inputSchema: String
+    let outputSchema: String
     let handoffSummaries: [String]
     let roleContext: String
 }
@@ -5460,7 +5517,7 @@ private struct MockMCPClient: MCPClient {
     func execute(_ request: MCPTaskRequest) async -> MCPTaskResponse {
         try? await Task.sleep(nanoseconds: 120_000_000)
         let normalizedObjective = request.objective.trimmingCharacters(in: .whitespacesAndNewlines)
-        let summary = "Completed: \(normalizedObjective). Input \(request.inputSchema.rawValue) -> output \(request.outputSchema.rawValue)."
+        let summary = "Completed: \(normalizedObjective). Input \(request.inputSchema) -> output \(request.outputSchema)."
         return MCPTaskResponse(summary: summary, confidence: 0.82, completed: true)
     }
 }
@@ -5511,8 +5568,9 @@ private struct CoordinatorOrchestrator {
                     assignedNodeName: node.name,
                     assignedNodeKind: node.type,
                     objective: objectiveForNode(node, globalGoal: goal),
-                    requiredInputSchema: node.inputSchema,
+                    requiredInputSchema: handoffs.first?.outputSchema ?? node.inputSchema,
                     requiredOutputSchema: node.outputSchema,
+                    outputSchemaDescription: node.outputSchemaDescription,
                     requiredHandoffs: handoffs,
                     allowedPermissions: node.securityAccess.sorted()
                 )
@@ -5694,33 +5752,35 @@ private func computePrimaryParentByChild(
     return primaryByChildID
 }
 
-private enum HandoffSchema: String, CaseIterable, Identifiable, Codable {
-    case goalBriefV1 = "goal_brief_v1"
-    case strategyPlanV1 = "strategy_plan_v1"
-    case researchBriefV1 = "research_brief_v1"
-    case taskResultV1 = "task_result_v1"
-    case buildPatchV1 = "build_patch_v1"
-    case validationReportV1 = "validation_report_v1"
-    case releaseDecisionV1 = "release_decision_v1"
+/// Common schema names used by built-in templates. Users can type any name they like.
+private enum DefaultSchema {
+    static let goalBrief = "Goal Brief"
+    static let strategyPlan = "Strategy Plan"
+    static let researchBrief = "Research Brief"
+    static let taskResult = "Task Result"
+    static let buildPatch = "Build Patch"
+    static let validationReport = "Validation Report"
+    static let releaseDecision = "Release Decision"
 
-    var id: String { rawValue }
-
-    var label: String {
-        switch self {
-        case .goalBriefV1:
-            return "Goal Brief v1"
-        case .strategyPlanV1:
-            return "Strategy Plan v1"
-        case .researchBriefV1:
-            return "Research Brief v1"
-        case .taskResultV1:
-            return "Task Result v1"
-        case .buildPatchV1:
-            return "Build Patch v1"
-        case .validationReportV1:
-            return "Validation Report v1"
-        case .releaseDecisionV1:
-            return "Release Decision v1"
+    /// Default output descriptions keyed by schema name.
+    static func defaultDescription(for schema: String) -> String {
+        switch schema {
+        case goalBrief:
+            return "A clear statement of the goal, success criteria, and any constraints or deadlines."
+        case strategyPlan:
+            return "A step-by-step plan breaking the goal into actionable tracks, with priorities and owners."
+        case researchBrief:
+            return "A summary of key findings (bulleted), sources consulted, confidence level (high/medium/low), and open questions."
+        case taskResult:
+            return "A concise summary of what was done, the outcome, and any follow-up actions needed."
+        case buildPatch:
+            return "A description of changes made, files affected, and any migration or deployment steps required."
+        case validationReport:
+            return "Test results (pass/fail), issues found with severity, and a recommendation on whether to proceed."
+        case releaseDecision:
+            return "A go/no-go decision with rationale, risk assessment, and any conditions or rollback plan."
+        default:
+            return ""
         }
     }
 }

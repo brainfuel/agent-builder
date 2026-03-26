@@ -51,11 +51,25 @@ struct OpenAIClient: GeminiServicing {
         modelID: String,
         systemInstruction: String,
         messages: [ChatMessage],
-        latestUserAttachments: [PendingAttachment]
+        latestUserAttachments: [PendingAttachment],
+        webSearchEnabled: Bool = false
     ) -> AsyncThrowingStream<ModelReply, Error> {
         AsyncThrowingStream { continuation in
             Task {
                 do {
+                    if webSearchEnabled {
+                        // Use the Responses API with native web_search_preview tool.
+                        let reply = try await fetchResponsesReply(
+                            modelID: modelID,
+                            systemInstruction: systemInstruction,
+                            messages: messages,
+                            webSearchEnabled: true
+                        )
+                        continuation.yield(reply)
+                        continuation.finish()
+                        return
+                    }
+
                     switch modelKind(for: modelID) {
                     case .imageGeneration:
                         let reply = try await generateImageReply(modelID: modelID, messages: messages)
@@ -232,6 +246,76 @@ struct OpenAIClient: GeminiServicing {
 
         return payloadMessages
     }
+
+    // MARK: - Responses API (used for web search)
+
+    private func fetchResponsesReply(
+        modelID: String,
+        systemInstruction: String,
+        messages: [ChatMessage],
+        webSearchEnabled: Bool
+    ) async throws -> ModelReply {
+        guard let url = URL(string: "https://api.openai.com/v1/responses") else {
+            throw GeminiError.invalidRequest
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 120
+
+        let tools: [OpenAIResponsesTool]? = webSearchEnabled
+            ? [OpenAIResponsesTool(type: "web_search_preview")]
+            : nil
+
+        var inputMessages: [OpenAIResponsesInputMessage] = []
+
+        let trimmedSystem = systemInstruction.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedSystem.isEmpty {
+            inputMessages.append(OpenAIResponsesInputMessage(role: "developer", content: trimmedSystem))
+        }
+
+        for message in messages {
+            let role = message.role == .assistant ? "assistant" : "user"
+            inputMessages.append(OpenAIResponsesInputMessage(role: role, content: message.text))
+        }
+
+        let payload = OpenAIResponsesCreateRequest(
+            model: modelID,
+            input: inputMessages,
+            tools: tools
+        )
+        request.httpBody = try JSONEncoder().encode(payload)
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw GeminiError.invalidResponse
+        }
+        guard (200...299).contains(http.statusCode) else {
+            if let apiError = try? JSONDecoder().decode(OpenAIErrorEnvelope.self, from: data) {
+                throw GeminiError.api(apiError.error.message)
+            }
+            throw GeminiError.api("OpenAI Responses request failed with status \(http.statusCode).")
+        }
+
+        let decoded = try JSONDecoder().decode(OpenAIResponsesResponse.self, from: data)
+        let outputText = decoded.outputText()?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        guard !outputText.isEmpty else {
+            throw GeminiError.emptyReply
+        }
+
+        return ModelReply(
+            text: outputText,
+            generatedMedia: [],
+            inputTokens: decoded.usage?.inputTokens ?? 0,
+            outputTokens: decoded.usage?.outputTokens ?? 0
+        )
+    }
+
+    // MARK: - Image Generation
 
     private func generateImageReply(modelID: String, messages: [ChatMessage]) async throws -> ModelReply {
         guard let prompt = messages.last(where: { $0.role == .user })?.text.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -446,4 +530,62 @@ private struct OpenAIErrorEnvelope: Decodable {
 
 private struct OpenAIErrorBody: Decodable {
     let message: String
+}
+
+// MARK: - OpenAI Responses API types (for web search)
+
+private struct OpenAIResponsesCreateRequest: Encodable {
+    let model: String
+    let input: [OpenAIResponsesInputMessage]
+    let tools: [OpenAIResponsesTool]?
+}
+
+private struct OpenAIResponsesInputMessage: Encodable {
+    let role: String
+    let content: String
+}
+
+/// Built-in tool for the Responses API. Use `type: "web_search_preview"` for web search.
+private struct OpenAIResponsesTool: Encodable {
+    let type: String
+}
+
+private struct OpenAIResponsesResponse: Decodable {
+    let output: [OpenAIResponsesOutputItem]?
+    let usage: OpenAIResponsesUsage?
+
+    /// Extracts the first message text from the output array.
+    func outputText() -> String? {
+        output?
+            .compactMap { item -> String? in
+                guard item.type == "message" else { return nil }
+                return item.content?
+                    .compactMap { block -> String? in
+                        guard block.type == "output_text" else { return nil }
+                        return block.text
+                    }
+                    .joined()
+            }
+            .joined()
+    }
+}
+
+private struct OpenAIResponsesOutputItem: Decodable {
+    let type: String
+    let content: [OpenAIResponsesContentBlock]?
+}
+
+private struct OpenAIResponsesContentBlock: Decodable {
+    let type: String
+    let text: String?
+}
+
+private struct OpenAIResponsesUsage: Decodable {
+    let inputTokens: Int?
+    let outputTokens: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case inputTokens = "input_tokens"
+        case outputTokens = "output_tokens"
+    }
 }

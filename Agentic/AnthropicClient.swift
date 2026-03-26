@@ -34,7 +34,8 @@ struct AnthropicClient: GeminiServicing {
         modelID: String,
         systemInstruction: String,
         messages: [ChatMessage],
-        latestUserAttachments: [PendingAttachment]
+        latestUserAttachments: [PendingAttachment],
+        webSearchEnabled: Bool = false
     ) -> AsyncThrowingStream<ModelReply, Error> {
         AsyncThrowingStream { continuation in
             Task {
@@ -50,6 +51,11 @@ struct AnthropicClient: GeminiServicing {
                     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
                     request.timeoutInterval = 120
 
+                    // Enable web search beta when the node has webAccess permission.
+                    if webSearchEnabled {
+                        request.setValue("web-search-2025-03-05", forHTTPHeaderField: "anthropic-beta")
+                    }
+
                     let payloadMessages = normalizedPayloadMessages(
                         from: messages,
                         latestUserAttachments: latestUserAttachments
@@ -58,11 +64,16 @@ struct AnthropicClient: GeminiServicing {
                         throw GeminiError.api("Cannot send an empty conversation to Anthropic.")
                     }
 
+                    let tools: [AnthropicWebSearchTool]? = webSearchEnabled
+                        ? [AnthropicWebSearchTool()]
+                        : nil
+
                     let payload = AnthropicMessagesRequest(
                         model: modelID,
-                        maxTokens: 1024,
+                        maxTokens: webSearchEnabled ? 4096 : 1024,
                         system: systemInstruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : systemInstruction,
-                        messages: payloadMessages
+                        messages: payloadMessages,
+                        tools: tools
                     )
                     request.httpBody = try JSONEncoder().encode(payload)
 
@@ -185,12 +196,28 @@ private struct AnthropicMessagesRequest: Encodable {
     let maxTokens: Int
     let system: String?
     let messages: [AnthropicMessage]
+    let tools: [AnthropicWebSearchTool]?
 
     enum CodingKeys: String, CodingKey {
         case model
         case maxTokens = "max_tokens"
         case system
         case messages
+        case tools
+    }
+}
+
+/// Anthropic server-side web search tool. The API performs searches automatically
+/// and returns results inline — no client-side callback loop required.
+private struct AnthropicWebSearchTool: Encodable {
+    let type = "web_search_20250305"
+    let name = "web_search"
+    let maxUses = 5
+
+    enum CodingKeys: String, CodingKey {
+        case type
+        case name
+        case maxUses = "max_uses"
     }
 }
 

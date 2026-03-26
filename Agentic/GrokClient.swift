@@ -33,18 +33,32 @@ struct GrokClient: GeminiServicing {
         modelID: String,
         systemInstruction: String,
         messages: [ChatMessage],
-        latestUserAttachments: [PendingAttachment]
+        latestUserAttachments: [PendingAttachment],
+        webSearchEnabled: Bool = false
     ) -> AsyncThrowingStream<ModelReply, Error> {
         AsyncThrowingStream { continuation in
             Task {
                 do {
-                    try await streamChatReply(
-                        modelID: modelID,
-                        systemInstruction: systemInstruction,
-                        messages: messages,
-                        latestUserAttachments: latestUserAttachments,
-                        continuation: continuation
-                    )
+                    if webSearchEnabled {
+                        // Use the Responses API with native web_search tool.
+                        let reply = try await fetchResponsesFallbackReply(
+                            modelID: modelID,
+                            systemInstruction: systemInstruction,
+                            messages: messages,
+                            latestUserAttachments: latestUserAttachments,
+                            webSearchEnabled: true
+                        )
+                        continuation.yield(reply)
+                        continuation.finish()
+                    } else {
+                        try await streamChatReply(
+                            modelID: modelID,
+                            systemInstruction: systemInstruction,
+                            messages: messages,
+                            latestUserAttachments: latestUserAttachments,
+                            continuation: continuation
+                        )
+                    }
                 } catch {
                     continuation.finish(throwing: error)
                 }
@@ -233,7 +247,8 @@ struct GrokClient: GeminiServicing {
         modelID: String,
         systemInstruction: String,
         messages: [ChatMessage],
-        latestUserAttachments: [PendingAttachment]
+        latestUserAttachments: [PendingAttachment],
+        webSearchEnabled: Bool = false
     ) async throws -> ModelReply {
         guard let url = URL(string: "https://api.x.ai/v1/responses") else {
             throw GeminiError.invalidRequest
@@ -248,7 +263,8 @@ struct GrokClient: GeminiServicing {
             modelID: modelID,
             systemInstruction: systemInstruction,
             messages: messages,
-            latestUserAttachments: latestUserAttachments
+            latestUserAttachments: latestUserAttachments,
+            webSearchEnabled: webSearchEnabled
         )
 
         let (data, response) = try await URLSession.shared.data(for: request)
@@ -277,15 +293,18 @@ struct GrokClient: GeminiServicing {
         modelID: String,
         systemInstruction: String,
         messages: [ChatMessage],
-        latestUserAttachments: [PendingAttachment]
+        latestUserAttachments: [PendingAttachment],
+        webSearchEnabled: Bool = false
     ) throws -> Data {
+        let tools: [GrokResponsesTool]? = webSearchEnabled ? [GrokResponsesTool(type: "web_search")] : nil
         let payload = GrokResponsesCreateRequest(
             model: modelID,
             input: buildResponsesInput(
                 systemInstruction: systemInstruction,
                 messages: messages,
                 latestUserAttachments: latestUserAttachments
-            )
+            ),
+            tools: tools
         )
         return try JSONEncoder().encode(payload)
     }
@@ -541,6 +560,12 @@ private struct GrokErrorBody: Decodable {
 private struct GrokResponsesCreateRequest: Encodable {
     let model: String
     let input: [GrokResponsesInputMessage]
+    let tools: [GrokResponsesTool]?
+}
+
+/// Grok Responses API built-in tool. Use `type: "web_search"` for native web search.
+private struct GrokResponsesTool: Encodable {
+    let type: String
 }
 
 private struct GrokResponsesInputMessage: Encodable {

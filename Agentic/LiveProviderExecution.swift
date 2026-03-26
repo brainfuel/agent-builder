@@ -6,6 +6,7 @@ struct LiveProviderTaskRequest {
     let roleContext: String
     let requiredInputSchema: String
     let requiredOutputSchema: String
+    let outputSchemaDescription: String
     let handoffSummaries: [String]
     let allowedPermissions: [String]
 }
@@ -41,6 +42,7 @@ enum LiveProviderExecutionService {
         let client = makeClient(for: provider, apiKey: apiKey)
         let systemPrompt = makeSystemPrompt(for: request)
         let userPrompt = makeUserPrompt(for: request)
+        let webSearchEnabled = request.allowedPermissions.contains("webAccess")
 
         let stream = client.generateReplyStream(
             modelID: modelID,
@@ -52,7 +54,8 @@ enum LiveProviderExecutionService {
                     attachments: []
                 )
             ],
-            latestUserAttachments: []
+            latestUserAttachments: [],
+            webSearchEnabled: webSearchEnabled
         )
 
         var combinedText = ""
@@ -72,7 +75,7 @@ enum LiveProviderExecutionService {
 
         let normalized = combinedText.trimmingCharacters(in: .whitespacesAndNewlines)
         if !normalized.isEmpty {
-            return String(normalized.prefix(5000))
+            return String(normalized.prefix(16000))
         }
 
         if sawText {
@@ -91,12 +94,17 @@ enum LiveProviderExecutionService {
     }
 
     private static func makeSystemPrompt(for request: LiveProviderTaskRequest) -> String {
-        [
+        var lines = [
             "You are \(request.roleContext) operating inside a coordinator-managed multi-agent workflow.",
             "Write actionable output, concise and decision-oriented.",
-            "Required output schema: \(request.requiredOutputSchema).",
-            "If you are blocked or missing required data, start your response with 'BLOCKED:' and explain exactly what is missing."
-        ].joined(separator: "\n")
+            "Required output schema: \(request.requiredOutputSchema)."
+        ]
+        let desc = request.outputSchemaDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !desc.isEmpty {
+            lines.append("Your output MUST conform to this format: \(desc)")
+        }
+        lines.append("If you are blocked or missing required data, start your response with 'BLOCKED:' and explain exactly what is missing.")
+        return lines.joined(separator: "\n")
     }
 
     private static func makeUserPrompt(for request: LiveProviderTaskRequest) -> String {
