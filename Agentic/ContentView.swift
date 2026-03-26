@@ -12,6 +12,7 @@ struct ContentView: View {
 
     @Environment(\.modelContext) private var modelContext
     @Environment(\.undoManager) private var undoManager
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Query private var graphDocuments: [GraphDocument]
     @State private var isShowingTaskList = true
     @State private var currentGraphKey: String?
@@ -50,6 +51,7 @@ struct ContentView: View {
     @State private var taskResultsDocumentKey: String?
     @State private var isShowingAPIKeys = false
     @State private var isShowingWipeDataConfirmation = false
+    @FocusState private var focusedDraftField: DraftField?
 
     init(
         apiKeyStore: any APIKeyStoring = KeychainAPIKeyStore(),
@@ -107,24 +109,51 @@ struct ContentView: View {
         return title.isEmpty ? "Task" : title
     }
 
+    private var usesTaskSplitView: Bool {
+#if targetEnvironment(macCatalyst)
+        true
+#else
+        horizontalSizeClass == .regular
+#endif
+    }
+
+    private enum DraftField: Hashable {
+        case title
+        case goal
+        case context
+    }
+
     var body: some View {
-        ZStack {
-            if isShowingTaskList {
-                taskListView
-                    .transition(
-                        .asymmetric(
-                            insertion: .move(edge: .leading).combined(with: .opacity),
-                            removal: .move(edge: .leading).combined(with: .opacity)
-                        )
-                    )
+        Group {
+            if usesTaskSplitView {
+                NavigationSplitView {
+                    taskListView
+                        .frame(minWidth: 360, idealWidth: 420, maxWidth: 480)
+                } detail: {
+                    editorWorkspace
+                        .toolbar(.hidden, for: .navigationBar)
+                }
+                .navigationSplitViewStyle(.balanced)
             } else {
-                editorWorkspace
-                    .transition(
-                        .asymmetric(
-                            insertion: .move(edge: .trailing).combined(with: .opacity),
-                            removal: .move(edge: .trailing).combined(with: .opacity)
-                        )
-                    )
+                ZStack {
+                    if isShowingTaskList {
+                        taskListView
+                            .transition(
+                                .asymmetric(
+                                    insertion: .move(edge: .leading).combined(with: .opacity),
+                                    removal: .move(edge: .leading).combined(with: .opacity)
+                                )
+                            )
+                    } else {
+                        editorWorkspace
+                            .transition(
+                                .asymmetric(
+                                    insertion: .move(edge: .trailing).combined(with: .opacity),
+                                    removal: .move(edge: .trailing).combined(with: .opacity)
+                                )
+                            )
+                    }
+                }
             }
         }
         .background(Color(uiColor: .systemGroupedBackground))
@@ -144,9 +173,7 @@ struct ContentView: View {
         .onChange(of: graphDocuments.count) { _, _ in
             if currentGraphKey == nil {
                 currentGraphKey = taskDocuments.first?.key
-                if !isShowingTaskList {
-                    syncGraphFromStore()
-                }
+                syncGraphFromStore()
             } else if let currentGraphKey, !graphDocuments.contains(where: { $0.key == currentGraphKey }) {
                 self.currentGraphKey = taskDocuments.first?.key
             }
@@ -230,33 +257,39 @@ struct ContentView: View {
 
     private var taskListView: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Coordinator Tasks")
-                        .font(.system(size: 30, weight: .bold, design: .rounded))
-                    Text("Manage top-level task structures and human inbox attention.")
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Button {
-                    isShowingAPIKeys = true
-                } label: {
-                    Label("API Keys", systemImage: "key.horizontal")
-                }
-                .buttonStyle(.bordered)
+            if !usesTaskSplitView {
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text("Coordinator Tasks")
+                            .font(.title2.weight(.bold))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.85)
+                    }
+                    Spacer()
+                    Button {
+                        isShowingAPIKeys = true
+                    } label: {
+                        Label("API Keys", systemImage: "key.horizontal")
+                    }
+                    .buttonStyle(.bordered)
 
-                Button(role: .destructive) {
-                    isShowingWipeDataConfirmation = true
-                } label: {
-                    Label("Wipe Data", systemImage: "trash")
+                    Button(role: .destructive) {
+                        isShowingWipeDataConfirmation = true
+                    } label: {
+                        Label("Wipe Data", systemImage: "trash")
+                    }
+                    .buttonStyle(.bordered)
                 }
-                .buttonStyle(.bordered)
+                .padding(.horizontal, 24)
+                .padding(.vertical, 18)
+                .background(Color(uiColor: .systemBackground))
+
+                Divider()
             }
-            .padding(.horizontal, 24)
-            .padding(.vertical, 18)
-            .background(Color(uiColor: .systemBackground))
 
-            Divider()
+            if usesTaskSplitView {
+                Divider()
+            }
 
             VStack(alignment: .leading, spacing: 10) {
                 Text("New Task Draft")
@@ -265,14 +298,9 @@ struct ContentView: View {
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
 
-                HStack(spacing: 10) {
-                    TextField("Task title", text: $newTaskTitle)
-                        .textFieldStyle(.roundedBorder)
-                    TextField("Goal", text: $newTaskGoal)
-                        .textFieldStyle(.roundedBorder)
-                    TextField("Context", text: $newTaskContext)
-                        .textFieldStyle(.roundedBorder)
-                }
+                draftTextField("Task title", text: $newTaskTitle, field: .title)
+                draftTextField("Goal", text: $newTaskGoal, field: .goal)
+                draftTextField("Context", text: $newTaskContext, field: .context)
 
                 HStack(spacing: 10) {
                     Picker("Template", selection: $newTaskTemplate) {
@@ -283,16 +311,6 @@ struct ContentView: View {
                     .pickerStyle(.menu)
 
                     Spacer()
-
-                    Button("Clear") {
-                        resetTaskDraft()
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(
-                        newTaskTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
-                        newTaskGoal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
-                        newTaskContext.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    )
 
                     Button {
                         presentTaskCreationOptions()
@@ -317,26 +335,57 @@ struct ContentView: View {
                 .padding(24)
             }
         }
+        .navigationTitle(usesTaskSplitView ? "Coordinator Tasks" : "")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if usesTaskSplitView {
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    Button {
+                        isShowingAPIKeys = true
+                    } label: {
+                        Label("API Keys", systemImage: "key.horizontal")
+                    }
+                    .labelStyle(.iconOnly)
+                    .accessibilityLabel("API Keys")
+                    .help("API Keys")
+
+                    Button(role: .destructive) {
+                        isShowingWipeDataConfirmation = true
+                    } label: {
+                        Label("Wipe Data", systemImage: "trash")
+                    }
+                    .labelStyle(.iconOnly)
+                    .accessibilityLabel("Wipe Data")
+                    .help("Wipe Data")
+                }
+            }
+        }
     }
 
     private func taskRow(_ document: GraphDocument) -> some View {
         let status = runStatus(for: document)
         let title = document.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let goal = document.goal?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let selectedKey = currentGraphKey ?? taskDocuments.first?.key
+        let isSelectedTask = document.key == selectedKey
         let isRunning = isTaskRunningFromList(document)
         let canRun = canRunTaskFromList(document)
         let inboxBadgeCount = pendingHumanApprovalCount(for: document)
         return VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top, spacing: 12) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(title.isEmpty ? "Untitled Task" : title)
-                        .font(.headline)
-                    Text(goal.isEmpty ? "No goal set." : goal)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                }
+            Text(title.isEmpty ? "Untitled Task" : title)
+                .font(.headline)
+                .lineLimit(1)
+                .truncationMode(.tail)
+
+            HStack(spacing: 10) {
+                Text(goal.isEmpty ? "No goal set." : goal)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+
                 Spacer()
+
                 Text(status.label)
                     .font(.caption.weight(.semibold))
                     .padding(.horizontal, 10)
@@ -346,12 +395,19 @@ struct ContentView: View {
                             .fill(status.color.opacity(0.18))
                     )
                     .foregroundStyle(status.color)
+                    .fixedSize(horizontal: true, vertical: false)
             }
 
             HStack(spacing: 10) {
-                Text("Updated \(document.updatedAt.formatted(date: .abbreviated, time: .shortened))")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Updated")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(document.updatedAt.formatted(date: .abbreviated, time: .shortened))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
 
                 Spacer()
 
@@ -359,40 +415,41 @@ struct ContentView: View {
                     Button {
                         openTaskResults(for: document.key)
                     } label: {
-                        Label("View Results", systemImage: "doc.text.magnifyingglass")
+                        Image(systemName: "doc.text.magnifyingglass")
                     }
                     .buttonStyle(.bordered)
+                    .accessibilityLabel("View Results")
                 }
 
                 Button {
                     runOrContinueTask(for: document.key)
                 } label: {
                     if isRunning {
-                        HStack(spacing: 6) {
-                            ProgressView()
-                                .controlSize(.small)
-                            Text("Working...")
-                        }
+                        ProgressView()
+                            .controlSize(.small)
                     } else {
-                        Label(taskRunButtonLabel(for: document), systemImage: "play.fill")
+                        Image(systemName: taskRunButtonIcon(for: document))
                     }
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(!canRun)
+                .accessibilityLabel(taskRunButtonLabel(for: document))
 
                 Button {
                     openHumanInbox(for: document.key)
                 } label: {
-                    HumanInboxButtonLabel(pendingCount: inboxBadgeCount)
+                    HumanInboxButtonLabel(pendingCount: inboxBadgeCount, showsTitle: false)
                 }
                 .buttonStyle(.bordered)
+                .accessibilityLabel("Human Inbox")
 
                 Button {
                     openTaskEditor(key: document.key)
                 } label: {
-                    Label("Edit", systemImage: "pencil")
+                    Image(systemName: "pencil")
                 }
                 .buttonStyle(.borderedProminent)
+                .accessibilityLabel("Edit Task")
             }
         }
         .padding(16)
@@ -402,12 +459,41 @@ struct ContentView: View {
         }
         .background(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color(uiColor: .secondarySystemBackground))
+                .fill(
+                    isSelectedTask
+                        ? AppTheme.brandTint.opacity(0.12)
+                        : Color(uiColor: .secondarySystemBackground)
+                )
         )
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(Color.black.opacity(0.06), lineWidth: 1)
+                .stroke(
+                    isSelectedTask
+                        ? AppTheme.brandTint.opacity(0.45)
+                        : Color.black.opacity(0.06),
+                    lineWidth: isSelectedTask ? 1.5 : 1
+                )
         )
+    }
+
+    private func draftTextField(_ placeholder: String, text: Binding<String>, field: DraftField) -> some View {
+        let isFocused = focusedDraftField == field
+        return TextField(placeholder, text: text)
+            .textFieldStyle(.plain)
+            .padding(.horizontal, 12)
+            .frame(height: 38)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color(uiColor: .systemBackground))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(
+                        isFocused ? AppTheme.brandTint.opacity(0.9) : Color.black.opacity(0.12),
+                        lineWidth: isFocused ? 2 : 1
+                    )
+            )
+            .focused($focusedDraftField, equals: field)
     }
 
     private func runStatus(for document: GraphDocument) -> TaskRunStatus {
@@ -463,6 +549,17 @@ struct ContentView: View {
         return bundle.pendingExecution == nil ? "Run" : "Continue"
     }
 
+    private func taskRunButtonIcon(for document: GraphDocument) -> String {
+        let label = taskRunButtonLabel(for: document)
+        if label == "Continue" {
+            return "arrow.clockwise"
+        }
+        if label == "Waiting Human" {
+            return "pause.fill"
+        }
+        return "play.fill"
+    }
+
     private func pendingHumanApprovalCount(for document: GraphDocument) -> Int {
         guard let bundle = executionBundle(for: document) else { return 0 }
         return bundle.pendingExecution?.awaitingHumanPacketID == nil ? 0 : 1
@@ -472,24 +569,30 @@ struct ContentView: View {
         let headerControlHeight: CGFloat = 42
         let canUndo = undoManager?.canUndo ?? false
         let canRedo = undoManager?.canRedo ?? false
-        let canDelete = selectedNodeID != nil || selectedLinkID != nil
+        let selectedNode = selectedNodeID.flatMap { id in
+            nodes.first(where: { $0.id == id })
+        }
+        let canDeleteNode = selectedNode.map { $0.type != .input && $0.type != .output } ?? false
+        let canDelete = canDeleteNode || selectedLinkID != nil
 
         return VStack(spacing: 12) {
             HStack(spacing: 12) {
-                Button {
-                    withAnimation(.snappy(duration: 0.28, extraBounce: 0.02)) {
-                        isShowingTaskList = true
+                if !usesTaskSplitView {
+                    Button {
+                        withAnimation(.snappy(duration: 0.28, extraBounce: 0.02)) {
+                            isShowingTaskList = true
+                        }
+                    } label: {
+                        headerControlLabel(
+                            title: "Tasks",
+                            systemImage: "chevron.left",
+                            height: headerControlHeight,
+                            prominent: false,
+                            enabled: true
+                        )
                     }
-                } label: {
-                    headerControlLabel(
-                        title: "Tasks",
-                        systemImage: "chevron.left",
-                        height: headerControlHeight,
-                        prominent: false,
-                        enabled: true
-                    )
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
 
                 VStack(alignment: .leading, spacing: 4) {
                     Text(activeTaskTitle)
@@ -583,7 +686,7 @@ struct ContentView: View {
                 .padding(.bottom, 2)
             }
         }
-        .padding(.top, 18)
+        .padding(.top, usesTaskSplitView ? 4 : 18)
         .padding(.bottom, 14)
         .background(Color(uiColor: .systemBackground))
     }
@@ -2767,8 +2870,10 @@ struct ContentView: View {
     private func openTaskEditor(key: String) {
         currentGraphKey = key
         isShowingHumanInbox = false
-        withAnimation(.snappy(duration: 0.28, extraBounce: 0.02)) {
-            isShowingTaskList = false
+        if !usesTaskSplitView {
+            withAnimation(.snappy(duration: 0.28, extraBounce: 0.02)) {
+                isShowingTaskList = false
+            }
         }
         syncGraphFromStore()
     }
@@ -2891,8 +2996,10 @@ struct ContentView: View {
         try? modelContext.save()
 
         currentGraphKey = document.key
-        withAnimation(.snappy(duration: 0.28, extraBounce: 0.02)) {
-            isShowingTaskList = false
+        if !usesTaskSplitView {
+            withAnimation(.snappy(duration: 0.28, extraBounce: 0.02)) {
+                isShowingTaskList = false
+            }
         }
         syncGraphFromStore()
     }
@@ -2930,7 +3037,9 @@ struct ContentView: View {
         synthesizedStructure = nil
         synthesisStatusMessage = nil
         resetTaskDraft()
-        isShowingTaskList = true
+        if !usesTaskSplitView {
+            isShowingTaskList = true
+        }
     }
 
     private func simpleTaskSnapshot() -> HierarchySnapshot {
@@ -3875,21 +3984,13 @@ private struct TaskResultsPanel: View {
     let document: GraphDocument?
     let onClose: () -> Void
 
-    private var bundle: CoordinatorExecutionStateBundle? {
-        guard
-            let data = document?.executionStateData,
-            let decoded = try? JSONDecoder().decode(CoordinatorExecutionStateBundle.self, from: data)
-        else {
-            return nil
-        }
-        return decoded
-    }
-
-    private var latestRun: CoordinatorRun? {
-        bundle?.latestRun
-    }
-
     var body: some View {
+        // Access executionStateData directly in body so SwiftData observation
+        // picks up changes that arrive after the sheet opens.
+        let stateData = document?.executionStateData
+        let bundle = stateData.flatMap { try? JSONDecoder().decode(CoordinatorExecutionStateBundle.self, from: $0) }
+        let latestRun = bundle?.latestRun
+
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
@@ -3918,23 +4019,7 @@ private struct TaskResultsPanel: View {
                         }
 
                         ForEach(run.results) { result in
-                            VStack(alignment: .leading, spacing: 6) {
-                                HStack {
-                                    Text(result.assignedNodeName)
-                                        .font(.subheadline.weight(.semibold))
-                                    Spacer()
-                                    Text(result.completed ? "Succeeded" : "Failed")
-                                        .font(.caption.weight(.semibold))
-                                        .foregroundStyle(result.completed ? .green : .red)
-                                }
-                                Text(result.summary)
-                                    .font(.caption)
-                            }
-                            .padding(10)
-                            .background(
-                                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                    .fill(Color(uiColor: .secondarySystemBackground))
-                            )
+                            TaskResultCard(result: result)
                         }
                     } else {
                         Text("No completed results for this task yet.")
@@ -3958,6 +4043,45 @@ private struct TaskResultsPanel: View {
                 }
             }
         }
+    }
+}
+
+private struct TaskResultCard: View {
+    let result: CoordinatorTaskResult
+    @State private var isExpanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(result.assignedNodeName)
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                Text(result.completed ? "Succeeded" : "Failed")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(result.completed ? .green : .red)
+            }
+
+            Text(markdownAttributedString(from: result.summary))
+                .font(.caption)
+                .lineLimit(isExpanded ? nil : 6)
+                .textSelection(.enabled)
+
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    isExpanded.toggle()
+                }
+            } label: {
+                Text(isExpanded ? "Show less" : "Show more")
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(.blue)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color(uiColor: .secondarySystemBackground))
+        )
     }
 }
 
@@ -3990,6 +4114,7 @@ private struct InboxAttentionBadge: View {
 
 private struct HumanInboxButtonLabel: View {
     let pendingCount: Int
+    var showsTitle: Bool = true
 
     var body: some View {
         HStack(spacing: 8) {
@@ -4003,7 +4128,9 @@ private struct HumanInboxButtonLabel: View {
             }
             .frame(width: 18, height: 18)
 
-            Text("Human Inbox")
+            if showsTitle {
+                Text("Human Inbox")
+            }
         }
     }
 }
