@@ -3646,6 +3646,7 @@ private struct CoordinatorTraceRow: View {
     let step: CoordinatorTraceStep
     let resolution: CoordinatorTraceResolutionPresentation?
     let onResolve: (() -> Void)?
+    @State private var isExpanded = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -3711,9 +3712,23 @@ private struct CoordinatorTraceRow: View {
             }
 
             if let summary = step.summary {
-                Text(summary)
-                    .font(.caption)
-                    .lineLimit(4)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(markdownAttributedString(from: summary))
+                        .font(.caption)
+                        .lineLimit(isExpanded ? nil : 4)
+                        .textSelection(.enabled)
+
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            isExpanded.toggle()
+                        }
+                    } label: {
+                        Text(isExpanded ? "Show less" : "Show more")
+                            .font(.caption2.weight(.medium))
+                            .foregroundStyle(.blue)
+                    }
+                    .buttonStyle(.plain)
+                }
             }
         }
         .padding(.horizontal, 10)
@@ -4839,6 +4854,12 @@ private struct HierarchySnapshotLink: Codable {
         tone = try container.decode(LinkTone.self, forKey: .tone)
         edgeType = try container.decodeIfPresent(EdgeType.self, forKey: .edgeType) ?? .primary
     }
+}
+
+/// Converts a markdown string to an `AttributedString` for rich rendering in SwiftUI `Text`.
+/// Falls back to plain text if parsing fails.
+private func markdownAttributedString(from source: String) -> AttributedString {
+    (try? AttributedString(markdown: source, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(source)
 }
 
 private func makeHierarchySnapshot(nodes: [OrgNode], links: [NodeLink]) -> HierarchySnapshot {
