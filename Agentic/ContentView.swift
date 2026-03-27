@@ -51,6 +51,7 @@ struct ContentView: View {
     @State private var taskResultsDocumentKey: String?
     @State private var isShowingAPIKeys = false
     @State private var isShowingWipeDataConfirmation = false
+    @State private var detailSectionTab: DetailSectionTab = .schema
     @FocusState private var focusedDraftField: DraftField?
 
     init(
@@ -121,6 +122,13 @@ struct ContentView: View {
         case title
         case goal
         case context
+    }
+
+    private enum DetailSectionTab: String, CaseIterable, Identifiable {
+        case schema = "Schema"
+        case results = "Results"
+
+        var id: String { rawValue }
     }
 
     var body: some View {
@@ -241,18 +249,52 @@ struct ContentView: View {
         VStack(spacing: 0) {
             header
             Divider()
-            orchestrationBar
+            sectionTabs
             Divider()
-            HStack(spacing: 0) {
-                chartCanvas
-                if inspectorNodeBinding != nil {
-                    Divider()
-                    inspectorPanel
-                        .frame(minWidth: 320, idealWidth: 360, maxWidth: 420)
+            if detailSectionTab == .schema {
+                HStack(spacing: 0) {
+                    chartCanvas
+                    if inspectorNodeBinding != nil {
+                        Divider()
+                        inspectorPanel
+                            .frame(minWidth: 320, idealWidth: 360, maxWidth: 420)
                         .transition(.move(edge: .trailing).combined(with: .opacity))
+                    }
                 }
+            } else {
+                orchestrationBar
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background {
+#if targetEnvironment(macCatalyst)
+            Button("") {
+                deleteCurrentSelection()
+            }
+            .keyboardShortcut(.delete, modifiers: [])
+            .opacity(0.001)
+            .allowsHitTesting(false)
+#else
+            EmptyView()
+#endif
+        }
+    }
+
+    private var sectionTabs: some View {
+        HStack {
+            Spacer()
+            Picker("Detail Section", selection: $detailSectionTab) {
+                ForEach(DetailSectionTab.allCases) { tab in
+                    Text(tab.rawValue).tag(tab)
+                }
+            }
+            .pickerStyle(.segmented)
+            .frame(width: 240)
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 8)
+        .background(Color(uiColor: .secondarySystemBackground))
     }
 
     private var taskListView: some View {
@@ -569,11 +611,7 @@ struct ContentView: View {
         let headerControlHeight: CGFloat = 42
         let canUndo = undoManager?.canUndo ?? false
         let canRedo = undoManager?.canRedo ?? false
-        let selectedNode = selectedNodeID.flatMap { id in
-            nodes.first(where: { $0.id == id })
-        }
-        let canDeleteNode = selectedNode.map { $0.type != .input && $0.type != .output } ?? false
-        let canDelete = canDeleteNode || selectedLinkID != nil
+        let canDeleteTask = activeGraphDocument != nil
 
         return VStack(spacing: 12) {
             HStack(spacing: 12) {
@@ -667,26 +705,25 @@ struct ContentView: View {
                     .keyboardShortcut("Z", modifiers: [.command, .shift])
 
                     Button(role: .destructive) {
-                        deleteCurrentSelection()
+                        deleteCurrentTask()
                     } label: {
                         headerControlLabel(
-                            title: selectedLinkID == nil ? "Delete Node" : "Delete Link",
+                            title: "Delete Task",
                             systemImage: "trash",
                             height: headerControlHeight,
                             prominent: false,
-                            enabled: canDelete,
+                            enabled: canDeleteTask,
                             destructive: true
                         )
                     }
                     .buttonStyle(.plain)
-                    .disabled(!canDelete)
-                    .keyboardShortcut(.delete, modifiers: [])
+                    .disabled(!canDeleteTask)
                 }
                 .padding(.horizontal, 24)
                 .padding(.bottom, 2)
             }
         }
-        .padding(.top, usesTaskSplitView ? 4 : 18)
+        .padding(.top, usesTaskSplitView ? 0 : 18)
         .padding(.bottom, 14)
         .background(Color(uiColor: .systemBackground))
     }
@@ -925,22 +962,30 @@ struct ContentView: View {
                 }
             }
 
-            if !coordinatorTrace.isEmpty {
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text("Run Trace")
-                            .font(.footnote.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Button("Clear") {
-                            coordinatorTrace = []
-                            persistCoordinatorExecutionState()
-                        }
-                        .buttonStyle(.borderless)
-                        .font(.footnote)
-                        .disabled(isExecutingCoordinator)
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("Run Trace")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Clear") {
+                        coordinatorTrace = []
+                        persistCoordinatorExecutionState()
                     }
+                    .buttonStyle(.borderless)
+                    .font(.footnote)
+                    .disabled(isExecutingCoordinator)
+                }
 
+                if coordinatorTrace.isEmpty {
+                    ContentUnavailableView(
+                        "No Results Yet",
+                        systemImage: "doc.text.magnifyingglass",
+                        description: Text("Run the coordinator to generate trace results.")
+                    )
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 8)
+                } else {
                     ScrollView {
                         VStack(spacing: 8) {
                             ForEach(Array(coordinatorTrace.enumerated()), id: \.element.id) { index, step in
@@ -957,9 +1002,11 @@ struct ContentView: View {
                         }
                         .padding(.vertical, 2)
                     }
-                    .frame(maxHeight: 200)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .layoutPriority(1)
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 12)
@@ -967,13 +1014,25 @@ struct ContentView: View {
     }
 
     private var inspectorPanel: some View {
-        ScrollView {
-            if let inspectorNodeBinding {
-                if inspectorNodeBinding.wrappedValue.type == .input || inspectorNodeBinding.wrappedValue.type == .output {
-                    FixedNodeInspector(node: inspectorNodeBinding)
-                        .padding(20)
+        return VStack(spacing: 0) {
+            ScrollView {
+                if let inspectorNodeBinding {
+                    if inspectorNodeBinding.wrappedValue.type == .input || inspectorNodeBinding.wrappedValue.type == .output {
+                        FixedNodeInspector(node: inspectorNodeBinding)
+                            .padding(20)
+                    } else {
+                        NodeInspector(
+                            node: inspectorNodeBinding,
+                            onDelete: { deleteSelectedNode() }
+                        )
+                            .padding(20)
+                    }
                 } else {
-                    NodeInspector(node: inspectorNodeBinding)
+                    ContentUnavailableView(
+                        "No Node Selected",
+                        systemImage: "cursorarrow.click",
+                        description: Text("Select a node to edit schema and details.")
+                    )
                         .padding(20)
                 }
             }
@@ -3004,6 +3063,27 @@ struct ContentView: View {
         syncGraphFromStore()
     }
 
+    private func deleteCurrentTask() {
+        guard let document = activeGraphDocument else { return }
+        let fallbackKey = taskDocuments.first(where: { $0.key != document.key })?.key
+
+        modelContext.delete(document)
+        try? modelContext.save()
+
+        currentGraphKey = fallbackKey
+        selectedNodeID = nil
+        selectedLinkID = nil
+        clearLinkDragState()
+
+        if currentGraphKey == nil {
+            ensureAnyGraphDocument()
+            if currentGraphKey == nil {
+                currentGraphKey = taskDocuments.first?.key
+            }
+        }
+        syncGraphFromStore()
+    }
+
     private func wipeAllDataForTesting() {
         // Clear persisted graph documents.
         for document in graphDocuments {
@@ -3485,6 +3565,7 @@ struct ContentView: View {
 
 private struct NodeInspector: View {
     @Binding var node: OrgNode
+    let onDelete: () -> Void
 
     private let editableTypes: [NodeType] = [.human, .agent]
     private let allRoles = PresetRole.allCases
@@ -3500,8 +3581,19 @@ private struct NodeInspector: View {
                 EmptyView()
             } else {
                 VStack(alignment: .leading, spacing: 18) {
-                    Text("Node Details")
-                        .font(.title2.bold())
+                    HStack(spacing: 10) {
+                        Text("Node Details")
+                            .font(.title2.bold())
+                        Spacer()
+                        Button(role: .destructive) {
+                            onDelete()
+                        } label: {
+                            Image(systemName: "trash")
+                                .font(.body.weight(.semibold))
+                        }
+                        .buttonStyle(.bordered)
+                        .accessibilityLabel("Delete Node")
+                    }
 
                     GroupBox {
                         VStack(alignment: .leading, spacing: 14) {
