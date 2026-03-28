@@ -1,5 +1,10 @@
 import SwiftUI
 import SwiftData
+#if canImport(UIKit)
+import UIKit
+#elseif canImport(AppKit)
+import AppKit
+#endif
 
 struct ContentView: View {
     private let cardSize = CGSize(width: 264, height: 88)
@@ -51,7 +56,9 @@ struct ContentView: View {
     @State private var taskResultsDocumentKey: String?
     @State private var isShowingAPIKeys = false
     @State private var isShowingWipeDataConfirmation = false
-    @State private var detailSectionTab: DetailSectionTab = .schema
+    @State private var isShowingDeleteTaskConfirmation = false
+    @State private var detailSectionTab: DetailSectionTab = .edit
+    @State private var splitViewVisibility: NavigationSplitViewVisibility = .all
     @FocusState private var focusedDraftField: DraftField?
 
     init(
@@ -125,8 +132,8 @@ struct ContentView: View {
     }
 
     private enum DetailSectionTab: String, CaseIterable, Identifiable {
-        case schema = "Schema"
         case results = "Results"
+        case edit = "Edit"
 
         var id: String { rawValue }
     }
@@ -134,12 +141,13 @@ struct ContentView: View {
     var body: some View {
         Group {
             if usesTaskSplitView {
-                NavigationSplitView {
+                NavigationSplitView(columnVisibility: $splitViewVisibility) {
                     taskListView
                         .frame(minWidth: 360, idealWidth: 420, maxWidth: 480)
                 } detail: {
                     editorWorkspace
-                        .toolbar(.hidden, for: .navigationBar)
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbarBackground(.hidden, for: .navigationBar)
                 }
                 .navigationSplitViewStyle(.balanced)
             } else {
@@ -217,6 +225,14 @@ struct ContentView: View {
         } message: {
             Text("This temporary testing action will delete all tasks and execution history. API keys and provider model preferences are preserved.")
         }
+        .confirmationDialog("Delete Task?", isPresented: $isShowingDeleteTaskConfirmation) {
+            Button("Delete Task", role: .destructive) {
+                deleteCurrentTask()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This will permanently delete the selected task and its run history.")
+        }
         .sheet(isPresented: $isShowingHumanInbox) {
             HumanInboxPanel(
                 pendingPacket: pendingHumanPacket,
@@ -250,18 +266,21 @@ struct ContentView: View {
             header
             Divider()
             sectionTabs
-            Divider()
-            if detailSectionTab == .schema {
+            if detailSectionTab == .edit {
+                Divider()
+                schemaControlsBar
+                Divider()
                 HStack(spacing: 0) {
                     chartCanvas
                     if inspectorNodeBinding != nil {
                         Divider()
                         inspectorPanel
                             .frame(minWidth: 320, idealWidth: 360, maxWidth: 420)
-                        .transition(.move(edge: .trailing).combined(with: .opacity))
+                            .transition(.move(edge: .trailing).combined(with: .opacity))
                     }
                 }
             } else {
+                Divider()
                 orchestrationBar
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
@@ -291,10 +310,98 @@ struct ContentView: View {
             }
             .pickerStyle(.segmented)
             .frame(width: 240)
+            Spacer()
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 8)
         .background(Color(uiColor: .secondarySystemBackground))
+    }
+
+    private var schemaControlsBar: some View {
+        let headerControlHeight: CGFloat = 42
+        let canUndo = undoManager?.canUndo ?? false
+        let canRedo = undoManager?.canRedo ?? false
+
+        return HStack(spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+                TextField("Search node", text: $searchText)
+                    .textFieldStyle(.plain)
+            }
+            .padding(.horizontal, 14)
+            .frame(width: 300, height: headerControlHeight)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color(uiColor: .secondarySystemBackground))
+            )
+
+            Menu {
+                ForEach(PresetHierarchyTemplate.allCases) { template in
+                    Button(template.title) {
+                        applyStructureSnapshot(template.snapshot())
+                    }
+                }
+            } label: {
+                headerControlLabel(
+                    title: "Templates",
+                    systemImage: "square.grid.2x2",
+                    height: headerControlHeight,
+                    prominent: false,
+                    enabled: true
+                )
+            }
+            .buttonStyle(.plain)
+
+            Button {
+                generateSuggestedStructure()
+            } label: {
+                headerControlLabel(
+                    title: "Generate Structure",
+                    systemImage: "wand.and.stars",
+                    height: headerControlHeight,
+                    prominent: false,
+                    enabled: !orchestrationGoal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                )
+            }
+            .buttonStyle(.plain)
+            .disabled(orchestrationGoal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+            Spacer(minLength: 0)
+
+            Button {
+                undo()
+            } label: {
+                headerControlLabel(
+                    title: "Undo",
+                    systemImage: "arrow.uturn.backward",
+                    height: headerControlHeight,
+                    prominent: false,
+                    enabled: canUndo
+                )
+            }
+            .buttonStyle(.plain)
+            .disabled(!canUndo)
+            .keyboardShortcut("z", modifiers: [.command])
+
+            Button {
+                redo()
+            } label: {
+                headerControlLabel(
+                    title: "Redo",
+                    systemImage: "arrow.uturn.forward",
+                    height: headerControlHeight,
+                    prominent: false,
+                    enabled: canRedo
+                )
+            }
+            .buttonStyle(.plain)
+            .disabled(!canRedo)
+            .keyboardShortcut("Z", modifiers: [.command, .shift])
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 10)
+        .background(Color(uiColor: .systemBackground))
     }
 
     private var taskListView: some View {
@@ -609,9 +716,8 @@ struct ContentView: View {
 
     private var header: some View {
         let headerControlHeight: CGFloat = 42
-        let canUndo = undoManager?.canUndo ?? false
-        let canRedo = undoManager?.canRedo ?? false
         let canDeleteTask = activeGraphDocument != nil
+        let canRunCoordinator = !isExecutingCoordinator && !orchestrationGraph.nodes.isEmpty && pendingCoordinatorExecution == nil
 
         return VStack(spacing: 12) {
             HStack(spacing: 12) {
@@ -639,89 +745,83 @@ struct ContentView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
+
+                
+                
+               
+                
+                Picker("Execution Mode", selection: $coordinatorRunMode) {
+                    ForEach(CoordinatorExecutionMode.allCases) { mode in
+                        Text(mode.label).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 220)
+
+                Button {
+                    isShowingHumanInbox = true
+                } label: {
+                    headerControlLabel(
+                        title: "Human Inbox",
+                        systemImage: "tray.full",
+                        height: headerControlHeight,
+                        prominent: false,
+                        enabled: true
+                    )
+                    .overlay(alignment: .topTrailing) {
+                        let pendingCount = pendingHumanPacket == nil ? 0 : 1
+                        if pendingCount > 0 {
+                            InboxAttentionBadge(count: pendingCount)
+                                .offset(x: 6, y: -6)
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+                
+                Button(role: .destructive) {
+                    isShowingDeleteTaskConfirmation = true
+                } label: {
+                    headerControlLabel(
+                        title: "Delete Task",
+                        systemImage: "trash",
+                        height: headerControlHeight,
+                        prominent: false,
+                        enabled: canDeleteTask,
+                        destructive: true
+                    )
+                }
+                .buttonStyle(.plain)
+                .disabled(!canDeleteTask)
+
+
+                Button {
+                    runCoordinatorPipeline()
+                } label: {
+                    if isExecutingCoordinator {
+                        ProgressView()
+                            .controlSize(.small)
+                            .frame(height: headerControlHeight)
+                            .padding(.horizontal, 16)
+                            .background(
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .fill(AppTheme.brandTint.opacity(0.15))
+                            )
+                    } else {
+                        headerControlLabel(
+                            title: coordinatorRunMode == .simulation ? "Simulate" : "Run Live",
+                            systemImage: "play.fill",
+                            height: headerControlHeight,
+                            prominent: true,
+                            enabled: canRunCoordinator
+                        )
+                    }
+                }
+                .buttonStyle(.plain)
+                .disabled(!canRunCoordinator)
+
+                
             }
             .padding(.horizontal, 24)
-
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 10) {
-                    HStack(spacing: 8) {
-                        Image(systemName: "magnifyingglass")
-                            .foregroundStyle(.secondary)
-                        TextField("Search node", text: $searchText)
-                            .textFieldStyle(.plain)
-                    }
-                    .padding(.horizontal, 14)
-                    .frame(width: 300, height: headerControlHeight)
-                    .background(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill(Color(uiColor: .secondarySystemBackground))
-                    )
-
-                    Menu {
-                        ForEach(PresetHierarchyTemplate.allCases) { template in
-                            Button(template.title) {
-                                applyStructureSnapshot(template.snapshot())
-                            }
-                        }
-                    } label: {
-                        headerControlLabel(
-                            title: "Templates",
-                            systemImage: "square.grid.2x2",
-                            height: headerControlHeight,
-                            prominent: false,
-                            enabled: true
-                        )
-                    }
-                    .buttonStyle(.plain)
-
-                    Button {
-                        undo()
-                    } label: {
-                        headerControlLabel(
-                            title: "Undo",
-                            systemImage: "arrow.uturn.backward",
-                            height: headerControlHeight,
-                            prominent: false,
-                            enabled: canUndo
-                        )
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(!canUndo)
-                    .keyboardShortcut("z", modifiers: [.command])
-
-                    Button {
-                        redo()
-                    } label: {
-                        headerControlLabel(
-                            title: "Redo",
-                            systemImage: "arrow.uturn.forward",
-                            height: headerControlHeight,
-                            prominent: false,
-                            enabled: canRedo
-                        )
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(!canRedo)
-                    .keyboardShortcut("Z", modifiers: [.command, .shift])
-
-                    Button(role: .destructive) {
-                        deleteCurrentTask()
-                    } label: {
-                        headerControlLabel(
-                            title: "Delete Task",
-                            systemImage: "trash",
-                            height: headerControlHeight,
-                            prominent: false,
-                            enabled: canDeleteTask,
-                            destructive: true
-                        )
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(!canDeleteTask)
-                }
-                .padding(.horizontal, 24)
-                .padding(.bottom, 2)
-            }
         }
         .padding(.top, usesTaskSplitView ? 0 : 18)
         .padding(.bottom, 14)
@@ -780,48 +880,12 @@ struct ContentView: View {
                 TextField("Describe what the coordinator should delegate...", text: $orchestrationGoal)
                     .textFieldStyle(.roundedBorder)
                     .lineLimit(1)
-
-                Picker("Execution Mode", selection: $coordinatorRunMode) {
-                    ForEach(CoordinatorExecutionMode.allCases) { mode in
-                        Text(mode.label).tag(mode)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 220)
-
-                Button {
-                    runCoordinatorPipeline()
-                } label: {
-                    if isExecutingCoordinator {
-                        ProgressView()
-                            .controlSize(.small)
-                    } else {
-                        Text(coordinatorRunMode == .simulation ? "Simulate" : "Run Live")
-                    }
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(isExecutingCoordinator || orchestrationGraph.nodes.isEmpty || pendingCoordinatorExecution != nil)
-
-                Button {
-                    isShowingHumanInbox = true
-                } label: {
-                    HumanInboxButtonLabel(pendingCount: pendingHumanPacket == nil ? 0 : 1)
-                }
-                .buttonStyle(.bordered)
             }
 
             HStack(spacing: 10) {
                 TextField("Optional context (data sources, constraints, risk tolerance)...", text: $synthesisContext)
                     .textFieldStyle(.roundedBorder)
                     .lineLimit(1)
-
-                Button {
-                    generateSuggestedStructure()
-                } label: {
-                    Label("Generate Structure", systemImage: "wand.and.stars")
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(orchestrationGoal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
 
             let orphanCount = orphanNodeIDsInCurrentGraph.count
@@ -3868,6 +3932,16 @@ private struct CoordinatorTraceRow: View {
                     )
                     .foregroundStyle(step.status.color)
 
+                Button {
+                    copyTextToClipboard(stepClipboardText)
+                } label: {
+                    Image(systemName: "doc.on.doc")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Copy trace section")
+
                 if let durationText = step.durationText {
                     Text(durationText)
                         .font(.caption2)
@@ -3942,6 +4016,16 @@ private struct CoordinatorTraceRow: View {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .stroke(Color.black.opacity(0.06), lineWidth: 1)
         )
+    }
+
+    private var stepClipboardText: String {
+        var sections: [String] = []
+        sections.append("\(step.assignedNodeName) • \(step.status.label)")
+        sections.append(step.objective)
+        if let summary = step.summary, !summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            sections.append(summary)
+        }
+        return sections.joined(separator: "\n\n")
     }
 }
 
@@ -4151,6 +4235,15 @@ private struct TaskResultCard: View {
                 Text(result.completed ? "Succeeded" : "Failed")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(result.completed ? .green : .red)
+                Button {
+                    copyTextToClipboard(resultClipboardText)
+                } label: {
+                    Image(systemName: "doc.on.doc")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Copy result section")
             }
 
             Text(markdownAttributedString(from: result.summary))
@@ -4174,6 +4267,10 @@ private struct TaskResultCard: View {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(Color(uiColor: .secondarySystemBackground))
         )
+    }
+
+    private var resultClipboardText: String {
+        "\(result.assignedNodeName) • \(result.completed ? "Succeeded" : "Failed")\n\n\(result.summary)"
     }
 }
 
@@ -5079,6 +5176,15 @@ private struct HierarchySnapshotLink: Codable {
 /// Falls back to plain text if parsing fails.
 private func markdownAttributedString(from source: String) -> AttributedString {
     (try? AttributedString(markdown: source, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(source)
+}
+
+private func copyTextToClipboard(_ text: String) {
+#if canImport(UIKit)
+    UIPasteboard.general.string = text
+#elseif canImport(AppKit)
+    NSPasteboard.general.clearContents()
+    NSPasteboard.general.setString(text, forType: .string)
+#endif
 }
 
 private func makeHierarchySnapshot(nodes: [OrgNode], links: [NodeLink]) -> HierarchySnapshot {
