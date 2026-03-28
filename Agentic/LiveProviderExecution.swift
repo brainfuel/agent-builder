@@ -84,6 +84,20 @@ enum LiveProviderExecutionService {
         throw LiveProviderExecutionError.emptyResponse
     }
 
+    /// Public access to model resolution for direct client usage.
+    static func resolveModelPublic(
+        for provider: APIKeyProvider,
+        apiKey: String,
+        preferredModelID: String?
+    ) async throws -> String {
+        try await resolveModel(for: provider, apiKey: apiKey, preferredModelID: preferredModelID)
+    }
+
+    /// Public access to client creation for direct usage.
+    static func makeClientPublic(for provider: APIKeyProvider, apiKey: String) -> any GeminiServicing {
+        makeClient(for: provider, apiKey: apiKey)
+    }
+
     static func fetchModels(provider: APIKeyProvider, apiKey: String) async throws -> [String] {
         let client = makeClient(for: provider, apiKey: apiKey)
         do {

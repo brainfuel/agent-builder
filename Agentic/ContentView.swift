@@ -59,6 +59,9 @@ struct ContentView: View {
     @State private var isShowingDeleteTaskConfirmation = false
     @State private var detailSectionTab: DetailSectionTab = .edit
     @State private var splitViewVisibility: NavigationSplitViewVisibility = .all
+    @State private var isShowingGenerateProviderPicker = false
+    @State private var isGeneratingStructure = false
+    @State private var generateStructureError: String?
     @FocusState private var focusedDraftField: DraftField?
 
     init(
@@ -353,19 +356,51 @@ struct ContentView: View {
             }
             .buttonStyle(.plain)
 
-            Button {
-                generateSuggestedStructure()
+            Menu {
+                let availableProviders = availableGenerateProviders()
+                if availableProviders.isEmpty {
+                    Button("No API keys configured") {}
+                        .disabled(true)
+                    Button("Open API Keys…") {
+                        isShowingAPIKeys = true
+                    }
+                } else {
+                    ForEach(availableProviders, id: \.self) { provider in
+                        Button {
+                            Task {
+                                await generateStructureWithLLM(provider: provider)
+                            }
+                        } label: {
+                            Label(provider.label, systemImage: providerIcon(for: provider))
+                        }
+                    }
+                    Divider()
+                    Button("Keyword-based (offline)") {
+                        generateSuggestedStructure()
+                    }
+                }
             } label: {
-                headerControlLabel(
-                    title: "Generate Structure",
-                    systemImage: "wand.and.stars",
-                    height: headerControlHeight,
-                    prominent: false,
-                    enabled: !orchestrationGoal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                )
+                if isGeneratingStructure {
+                    HStack(spacing: 6) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Generating…")
+                            .font(.caption.weight(.semibold))
+                    }
+                    .padding(.horizontal, 10)
+                    .frame(height: headerControlHeight)
+                } else {
+                    headerControlLabel(
+                        title: "Generate Structure",
+                        systemImage: "wand.and.stars",
+                        height: headerControlHeight,
+                        prominent: false,
+                        enabled: !orchestrationGoal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    )
+                }
             }
             .buttonStyle(.plain)
-            .disabled(orchestrationGoal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .disabled(orchestrationGoal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isGeneratingStructure)
 
             Spacer(minLength: 0)
 
@@ -953,6 +988,12 @@ struct ContentView: View {
                 Text(synthesisStatusMessage)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+            }
+
+            if let generateStructureError {
+                Text(generateStructureError)
+                    .font(.footnote)
+                    .foregroundStyle(.red)
             }
 
             if let latestCoordinatorPlan {
@@ -1886,6 +1927,271 @@ struct ContentView: View {
         } else {
             synthesisStatusMessage = "Suggested structure generated from goal, context, and discovery answers."
         }
+    }
+
+    private func availableGenerateProviders() -> [APIKeyProvider] {
+        APIKeyProvider.allCases.filter { provider in
+            (try? apiKeyStore.key(for: provider))?.isEmpty == false
+        }
+    }
+
+    private func providerIcon(for provider: APIKeyProvider) -> String {
+        switch provider {
+        case .chatGPT: return "brain.head.profile"
+        case .gemini:  return "diamond"
+        case .claude:  return "text.bubble"
+        case .grok:    return "bolt"
+        }
+    }
+
+    @MainActor
+    private func generateStructureWithLLM(provider: APIKeyProvider) async {
+        let normalizedGoal = orchestrationGoal.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedGoal.isEmpty else {
+            synthesisStatusMessage = "Enter a coordinator goal first."
+            return
+        }
+
+        guard let apiKey = try? apiKeyStore.key(for: provider), !apiKey.isEmpty else {
+            generateStructureError = "No API key found for \(provider.label)."
+            return
+        }
+
+        isGeneratingStructure = true
+        generateStructureError = nil
+        synthesisStatusMessage = "Generating structure with \(provider.label)…"
+
+        let contextText = synthesisContext.trimmingCharacters(in: .whitespacesAndNewlines)
+        let preferredModelID = providerModelStore.defaultModel(for: provider)
+
+        let configuredProviders = availableGenerateProviders().map { $0.rawValue }
+        let systemPrompt = buildGenerateStructureSystemPrompt(availableProviders: configuredProviders)
+        let userPrompt = buildGenerateStructureUserPrompt(goal: normalizedGoal, context: contextText)
+
+        print("[GenerateStructure] Provider: \(provider.label)")
+        print("[GenerateStructure] Model: \(preferredModelID ?? "auto")")
+        print("[GenerateStructure] Goal: \(normalizedGoal)")
+        print("[GenerateStructure] System prompt length: \(systemPrompt.count) chars")
+        print("[GenerateStructure] User prompt length: \(userPrompt.count) chars")
+
+        do {
+            let modelID = try await LiveProviderExecutionService.resolveModelPublic(
+                for: provider, apiKey: apiKey, preferredModelID: preferredModelID
+            )
+            print("[GenerateStructure] Resolved model: \(modelID)")
+
+            let client = LiveProviderExecutionService.makeClientPublic(for: provider, apiKey: apiKey)
+            let stream = client.generateReplyStream(
+                modelID: modelID,
+                systemInstruction: systemPrompt,
+                messages: [
+                    ChatMessage(role: .user, text: userPrompt, attachments: [])
+                ],
+                latestUserAttachments: []
+            )
+
+            var combinedText = ""
+            for try await chunk in stream {
+                if !chunk.text.isEmpty {
+                    combinedText += chunk.text
+                }
+            }
+
+            let raw = combinedText.trimmingCharacters(in: .whitespacesAndNewlines)
+            print("[GenerateStructure] Raw response length: \(raw.count) chars")
+            print("[GenerateStructure] Raw response preview: \(String(raw.prefix(500)))")
+
+            guard !raw.isEmpty else {
+                throw LiveProviderExecutionError.emptyResponse
+            }
+
+            var snapshot = try parseGeneratedStructure(from: raw)
+            print("[GenerateStructure] Parsed \(snapshot.nodes.count) nodes, \(snapshot.links.count) links")
+
+            // Enforce: only use providers with configured API keys
+            let validProviders = Set(configuredProviders.compactMap { LLMProvider(rawValue: $0) })
+            let fallbackProvider = LLMProvider(rawValue: provider.rawValue) ?? .chatGPT
+            snapshot.nodes = snapshot.nodes.map { node in
+                var fixed = node
+                if !validProviders.contains(node.provider) {
+                    print("[GenerateStructure] Fixing provider for \(node.name): \(node.provider.rawValue) → \(fallbackProvider.rawValue)")
+                    fixed.provider = fallbackProvider
+                }
+                return fixed
+            }
+
+            // Auto-apply the generated structure directly onto the canvas
+            applyStructureSnapshot(snapshot)
+            let nodeNames = snapshot.nodes.map { $0.name }.joined(separator: ", ")
+            synthesisStatusMessage = "Applied \(snapshot.nodes.count) nodes from \(provider.label): \(nodeNames). Use Undo to revert."
+            print("[GenerateStructure] Applied to canvas: \(nodeNames)")
+        } catch {
+            print("[GenerateStructure] ERROR: \(error)")
+            generateStructureError = "Generation failed: \(error.localizedDescription)"
+            synthesisStatusMessage = nil
+        }
+
+        isGeneratingStructure = false
+    }
+
+    private func buildGenerateStructureSystemPrompt(availableProviders: [String]) -> String {
+        let nodeTemplateDescriptions = NodeTemplate.allCases.map { t in
+            "  - \(t.label): \(t.roleDescription) [type: \(t.nodeType.rawValue), department: \(t.department)]"
+        }.joined(separator: "\n")
+
+        let schemaDescriptions = DefaultSchema.allSchemas.map { schema in
+            "  - \"\(schema)\": \(DefaultSchema.defaultDescription(for: schema))"
+        }.joined(separator: "\n")
+
+        let securityOptions = SecurityAccess.allCases.map { "  - \($0.rawValue): \($0.label)" }.joined(separator: "\n")
+
+        let providerList = availableProviders.joined(separator: ", ")
+        let providerRule: String
+        if availableProviders.count == 1 {
+            providerRule = "- The ONLY available provider is \"\(availableProviders[0])\". You MUST set provider to \"\(availableProviders[0])\" for EVERY node. Do NOT use any other provider."
+        } else {
+            providerRule = "- Available providers are: \(providerList). You MUST only use these providers — no others are configured. Distribute nodes across them for diversity."
+        }
+
+        return """
+        You are designing a multi-agent orchestration graph. The app supports these node types:
+        - agent: An LLM-powered autonomous agent
+        - human: A human review/approval gate
+        - input: The entry point node (exactly one, always included automatically)
+        - output: The exit point node (exactly one, always included automatically)
+
+        Available node templates for inspiration:
+        \(nodeTemplateDescriptions)
+
+        Available output schema types:
+        \(schemaDescriptions)
+        You can also use custom schema names with a description.
+
+        Available security permissions:
+        \(securityOptions)
+
+        Available link tones: blue, orange, teal, green, indigo
+
+        IMPORTANT RULES:
+        \(providerRule)
+        - Do NOT include input or output nodes — the app adds those automatically
+        - Create between 2-8 agent/human nodes depending on task complexity
+        - The first node should be a coordinator or primary agent
+        - Each non-root node must have exactly one parent link
+        - Links go from parent (fromID) to child (toID)
+        - Every node needs a unique UUID (use v4 format)
+        - Position nodes in a logical hierarchy (x: 0-1000, y: 0-800)
+        - Give each node a detailed roleDescription and outputSchemaDescription
+
+        Respond with ONLY valid JSON matching this exact schema (no markdown, no explanation):
+        {
+          "nodes": [
+            {
+              "id": "uuid-string",
+              "name": "Agent Name",
+              "title": "Role Title",
+              "department": "Department",
+              "type": "agent",
+              "provider": "\(availableProviders.first ?? "chatGPT")",
+              "roleDescription": "Detailed description of what this agent does...",
+              "outputSchema": "Schema Name",
+              "outputSchemaDescription": "Detailed format description...",
+              "securityAccess": ["workspaceRead"],
+              "positionX": 400,
+              "positionY": 0
+            }
+          ],
+          "links": [
+            {
+              "fromID": "parent-uuid",
+              "toID": "child-uuid",
+              "tone": "blue"
+            }
+          ]
+        }
+        """
+    }
+
+    private func buildGenerateStructureUserPrompt(goal: String, context: String) -> String {
+        var prompt = "Design a multi-agent team structure for this goal:\n\n\(goal)"
+        if !context.isEmpty {
+            prompt += "\n\nAdditional context: \(context)"
+        }
+        prompt += "\n\nRespond with ONLY the JSON structure. No markdown code fences, no explanation."
+        return prompt
+    }
+
+    private func parseGeneratedStructure(from raw: String) throws -> HierarchySnapshot {
+        // Strip markdown code fences if the LLM wrapped the response
+        var cleaned = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if cleaned.hasPrefix("```json") {
+            cleaned = String(cleaned.dropFirst(7))
+        } else if cleaned.hasPrefix("```") {
+            cleaned = String(cleaned.dropFirst(3))
+        }
+        if cleaned.hasSuffix("```") {
+            cleaned = String(cleaned.dropLast(3))
+        }
+        cleaned = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+        print("[GenerateStructure] Cleaned JSON length: \(cleaned.count)")
+        print("[GenerateStructure] JSON starts with: \(String(cleaned.prefix(100)))")
+
+        guard let data = cleaned.data(using: .utf8) else {
+            throw GenerateStructureError.invalidJSON("Response was not valid UTF-8 text.")
+        }
+
+        // Decode through an intermediate type that's more lenient
+        let decoded: GeneratedStructureResponse
+        do {
+            decoded = try JSONDecoder().decode(GeneratedStructureResponse.self, from: data)
+        } catch {
+            print("[GenerateStructure] JSON decode error: \(error)")
+            throw GenerateStructureError.invalidJSON("Could not parse JSON: \(error.localizedDescription)")
+        }
+
+        print("[GenerateStructure] Decoded \(decoded.nodes.count) nodes, \(decoded.links.count) links")
+        for node in decoded.nodes {
+            print("[GenerateStructure]   Node: \(node.name) (\(node.type)) id=\(node.id)")
+        }
+        for link in decoded.links {
+            print("[GenerateStructure]   Link: \(link.fromID) -> \(link.toID)")
+        }
+
+        guard !decoded.nodes.isEmpty else {
+            throw GenerateStructureError.emptyStructure
+        }
+
+        // Convert to HierarchySnapshot
+        let snapshotNodes = decoded.nodes.map { node in
+            HierarchySnapshotNode(
+                id: node.parsedID,
+                name: node.name,
+                title: node.title,
+                department: node.department,
+                type: NodeType(rawValue: node.type) ?? .agent,
+                provider: LLMProvider(rawValue: node.provider) ?? .chatGPT,
+                roleDescription: node.roleDescription,
+                inputSchema: nil,
+                outputSchema: node.outputSchema,
+                outputSchemaDescription: node.outputSchemaDescription,
+                selectedRoles: [],
+                securityAccess: (node.securityAccess ?? []).compactMap { SecurityAccess(rawValue: $0) },
+                positionX: node.positionX ?? 400,
+                positionY: node.positionY ?? 0
+            )
+        }
+
+        let nodeIDMap = Dictionary(uniqueKeysWithValues: decoded.nodes.map { ($0.id, $0.parsedID) })
+
+        let snapshotLinks = decoded.links.compactMap { link -> HierarchySnapshotLink? in
+            guard let fromID = nodeIDMap[link.fromID], let toID = nodeIDMap[link.toID] else {
+                return nil
+            }
+            let tone = LinkTone(rawValue: link.tone ?? "blue") ?? .blue
+            return HierarchySnapshotLink(fromID: fromID, toID: toID, tone: tone)
+        }
+
+        return HierarchySnapshot(nodes: snapshotNodes, links: snapshotLinks)
     }
 
     private func applySynthesizedStructure() {
@@ -5121,6 +5427,53 @@ private struct HierarchySnapshotLink: Codable {
     }
 }
 
+// MARK: - LLM Structure Generation Types
+
+private enum GenerateStructureError: LocalizedError {
+    case invalidJSON(String)
+    case emptyStructure
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidJSON(let detail):
+            return "Invalid response format: \(detail)"
+        case .emptyStructure:
+            return "The model returned an empty structure with no nodes."
+        }
+    }
+}
+
+private struct GeneratedStructureResponse: Decodable {
+    let nodes: [GeneratedNode]
+    let links: [GeneratedLink]
+}
+
+private struct GeneratedNode: Decodable {
+    let id: String
+    let name: String
+    let title: String
+    let department: String
+    let type: String
+    let provider: String
+    let roleDescription: String
+    let outputSchema: String?
+    let outputSchemaDescription: String?
+    let securityAccess: [String]?
+    let positionX: CGFloat?
+    let positionY: CGFloat?
+
+    /// Parse the string UUID, falling back to a deterministic new UUID.
+    var parsedID: UUID {
+        UUID(uuidString: id) ?? UUID()
+    }
+}
+
+private struct GeneratedLink: Decodable {
+    let fromID: String
+    let toID: String
+    let tone: String?
+}
+
 /// Converts a markdown string to an `AttributedString` for rich rendering in SwiftUI `Text`.
 /// Falls back to plain text if parsing fails.
 private func markdownAttributedString(from source: String) -> AttributedString {
@@ -6056,6 +6409,12 @@ private enum DefaultSchema {
     static let buildPatch = "Build Patch"
     static let validationReport = "Validation Report"
     static let releaseDecision = "Release Decision"
+
+    /// All known schema names, used for dynamic enumeration.
+    static let allSchemas: [String] = [
+        goalBrief, strategyPlan, researchBrief, taskResult,
+        buildPatch, validationReport, releaseDecision
+    ]
 
     /// Default output descriptions keyed by schema name.
     static func defaultDescription(for schema: String) -> String {
