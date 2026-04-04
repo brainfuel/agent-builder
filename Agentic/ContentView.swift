@@ -1134,7 +1134,6 @@ struct ContentView: View {
                         }
                         .padding(.vertical, 2)
                     }
-                    .textSelection(.enabled)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 }
             }
@@ -4322,8 +4321,6 @@ private struct CoordinatorTraceRow: View {
     let onResolve: (() -> Void)?
     let onRetryWithFeedback: ((String) -> Void)?
     @State private var isExpanded = false
-    @State private var isShowingSelectionSheet = false
-
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -4399,10 +4396,10 @@ private struct CoordinatorTraceRow: View {
 
             if let summary = step.summary {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(markdownAttributedString(from: summary))
-                        .font(.caption)
-                        .lineLimit(isExpanded ? nil : 4)
-                        .textSelection(.enabled)
+                    SelectableText(markdown: summary, font: .preferredFont(forTextStyle: .caption1))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .frame(maxHeight: isExpanded ? .none : 72, alignment: .top)
+                        .clipped()
 
                     HStack(spacing: 12) {
                         Button {
@@ -4413,14 +4410,6 @@ private struct CoordinatorTraceRow: View {
                             Text(isExpanded ? "Show less" : "Show more")
                                 .font(.caption2.weight(.medium))
                                 .foregroundStyle(.blue)
-                        }
-                        .buttonStyle(.plain)
-
-                        Button {
-                            isShowingSelectionSheet = true
-                        } label: {
-                            Label("Select Text", systemImage: "text.cursor")
-                                .font(.caption2.weight(.medium))
                         }
                         .buttonStyle(.plain)
 
@@ -4449,13 +4438,6 @@ private struct CoordinatorTraceRow: View {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .stroke(Color.black.opacity(0.06), lineWidth: 1)
         )
-        .textSelection(.enabled)
-        .sheet(isPresented: $isShowingSelectionSheet) {
-            SelectableResponsePanel(
-                title: "\(step.assignedNodeName) Response",
-                markdown: step.summary ?? ""
-            )
-        }
     }
 
     /// Extracts actionable feedback from a BLOCKED / Recommendation response.
@@ -4694,8 +4676,6 @@ private struct TaskResultCard: View {
     let result: CoordinatorTaskResult
     let onRetryWithFeedback: ((String) -> Void)?
     @State private var isExpanded = false
-    @State private var isShowingSelectionSheet = false
-
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
@@ -4716,10 +4696,10 @@ private struct TaskResultCard: View {
                 .accessibilityLabel("Copy result section")
             }
 
-            Text(markdownAttributedString(from: result.summary))
-                .font(.caption)
-                .lineLimit(isExpanded ? nil : 6)
-                .textSelection(.enabled)
+            SelectableText(markdown: result.summary, font: .preferredFont(forTextStyle: .caption1))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(maxHeight: isExpanded ? .none : 100, alignment: .top)
+                .clipped()
 
             HStack(spacing: 12) {
                 Button {
@@ -4730,14 +4710,6 @@ private struct TaskResultCard: View {
                     Text(isExpanded ? "Show less" : "Show more")
                         .font(.caption2.weight(.medium))
                         .foregroundStyle(.blue)
-                }
-                .buttonStyle(.plain)
-
-                Button {
-                    isShowingSelectionSheet = true
-                } label: {
-                    Label("Select Text", systemImage: "text.cursor")
-                        .font(.caption2.weight(.medium))
                 }
                 .buttonStyle(.plain)
 
@@ -4759,13 +4731,6 @@ private struct TaskResultCard: View {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(Color(uiColor: .secondarySystemBackground))
         )
-        .textSelection(.enabled)
-        .sheet(isPresented: $isShowingSelectionSheet) {
-            SelectableResponsePanel(
-                title: "\(result.assignedNodeName) Response",
-                markdown: result.summary
-            )
-        }
     }
 
     private func extractFeedback(from summary: String) -> String? {
@@ -4798,9 +4763,8 @@ private struct SelectableResponsePanel: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    Text(markdownAttributedString(from: markdown))
+                    SelectableText(markdown: markdown)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .textSelection(.enabled)
                 }
                 .padding(16)
             }
@@ -5774,6 +5738,75 @@ private struct GeneratedLink: Decodable {
 /// Falls back to plain text if parsing fails.
 private func markdownAttributedString(from source: String) -> AttributedString {
     (try? AttributedString(markdown: source, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(source)
+}
+
+/// A UITextView-backed selectable text view that reliably supports text selection
+/// inside ScrollViews on iOS and Mac Catalyst (where SwiftUI's `.textSelection(.enabled)`
+/// on `Text` views is unreliable due to gesture conflicts with the scroll view).
+/// UITextView subclass that writes rich text (HTML + RTF) to the pasteboard on copy,
+/// using the original markdown source so formatting is preserved when pasting into
+/// apps like Apple Notes.
+private final class RichCopyTextView: UITextView {
+    /// The full markdown source. When the user copies a selection, we find the
+    /// corresponding markdown substring and run it through `markdownToHTML`.
+    var markdownSource: String = ""
+
+    override func copy(_ sender: Any?) {
+        guard let selectedRange = self.selectedTextRange else {
+            super.copy(sender)
+            return
+        }
+        let selectedText = self.text(in: selectedRange) ?? ""
+
+        // Find the markdown that corresponds to the selected plain text.
+        // If the full text is selected (or nearly), use the full markdown.
+        // Otherwise fall back to the selected plain text as markdown input
+        // (inline markers like **bold** won't be present, but structure is kept).
+        let markdownForCopy: String
+        let fullPlain = self.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let selectedPlain = selectedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if selectedPlain == fullPlain || selectedPlain.count >= fullPlain.count - 2 {
+            markdownForCopy = markdownSource
+        } else {
+            markdownForCopy = selectedText
+        }
+        copyMarkdownToClipboard(markdownForCopy)
+    }
+}
+
+private struct SelectableText: UIViewRepresentable {
+    let markdown: String
+    var font: UIFont = .preferredFont(forTextStyle: .caption1)
+    var textColor: UIColor = .label
+
+    func makeUIView(context: Context) -> RichCopyTextView {
+        let textView = RichCopyTextView()
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.isScrollEnabled = false
+        textView.backgroundColor = .clear
+        textView.textContainerInset = .zero
+        textView.textContainer.lineFragmentPadding = 0
+        textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        textView.setContentHuggingPriority(.defaultHigh, for: .vertical)
+        return textView
+    }
+
+    func updateUIView(_ textView: RichCopyTextView, context: Context) {
+        textView.markdownSource = markdown
+        let base = markdown.replacingOccurrences(of: "\r\n", with: "\n")
+        if let parsed = try? AttributedString(markdown: base, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)) {
+            let ns = NSMutableAttributedString(parsed)
+            ns.addAttribute(.font, value: font, range: NSRange(location: 0, length: ns.length))
+            ns.addAttribute(.foregroundColor, value: textColor, range: NSRange(location: 0, length: ns.length))
+            textView.attributedText = ns
+        } else {
+            textView.text = base
+            textView.font = font
+            textView.textColor = textColor
+        }
+        textView.invalidateIntrinsicContentSize()
+    }
 }
 
 /// Converts markdown to plain text for clipboard/export use.
