@@ -6,7 +6,8 @@
       "WebFetch(domain:ai.google.dev)",
       "Bash(xcodebuild -scheme Agentic -destination 'platform=macOS' build)",
       "Bash(swift build:*)",
-      "Bash(xcodebuild -scheme Agentic -destination 'platform=iOS Simulator,name=iPhone 16' build)"
+      "Bash(xcodebuild -scheme Agentic -destination 'platform=iOS Simulator,name=iPhone 16' build)",
+      "Bash(xcodebuild -scheme Agentic -destination 'platform=iOS Simulator,name=iPhone 17 Pro' build)"
     ]
   }
 }

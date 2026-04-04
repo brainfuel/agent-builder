@@ -1,5 +1,8 @@
 import SwiftUI
 import SwiftData
+#if canImport(UniformTypeIdentifiers)
+import UniformTypeIdentifiers
+#endif
 #if canImport(UIKit)
 import UIKit
 #elseif canImport(AppKit)
@@ -1131,6 +1134,7 @@ struct ContentView: View {
                         }
                         .padding(.vertical, 2)
                     }
+                    .textSelection(.enabled)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 }
             }
@@ -4318,6 +4322,7 @@ private struct CoordinatorTraceRow: View {
     let onResolve: (() -> Void)?
     let onRetryWithFeedback: ((String) -> Void)?
     @State private var isExpanded = false
+    @State private var isShowingSelectionSheet = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -4339,7 +4344,7 @@ private struct CoordinatorTraceRow: View {
                     .foregroundStyle(step.status.color)
 
                 Button {
-                    copyTextToClipboard(stepClipboardText)
+                    copyMarkdownToClipboard(stepClipboardMarkdown)
                 } label: {
                     Image(systemName: "doc.on.doc")
                         .font(.caption2.weight(.semibold))
@@ -4411,6 +4416,14 @@ private struct CoordinatorTraceRow: View {
                         }
                         .buttonStyle(.plain)
 
+                        Button {
+                            isShowingSelectionSheet = true
+                        } label: {
+                            Label("Select Text", systemImage: "text.cursor")
+                                .font(.caption2.weight(.medium))
+                        }
+                        .buttonStyle(.plain)
+
                         if let onRetryWithFeedback, let feedback = extractFeedback(from: summary) {
                             Button {
                                 onRetryWithFeedback(feedback)
@@ -4436,6 +4449,13 @@ private struct CoordinatorTraceRow: View {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .stroke(Color.black.opacity(0.06), lineWidth: 1)
         )
+        .textSelection(.enabled)
+        .sheet(isPresented: $isShowingSelectionSheet) {
+            SelectableResponsePanel(
+                title: "\(step.assignedNodeName) Response",
+                markdown: step.summary ?? ""
+            )
+        }
     }
 
     /// Extracts actionable feedback from a BLOCKED / Recommendation response.
@@ -4464,9 +4484,9 @@ private struct CoordinatorTraceRow: View {
         return nil
     }
 
-    private var stepClipboardText: String {
+    private var stepClipboardMarkdown: String {
         var sections: [String] = []
-        sections.append("\(step.assignedNodeName) • \(step.status.label)")
+        sections.append("**\(step.assignedNodeName) • \(step.status.label)**")
         sections.append(step.objective)
         if let summary = step.summary, !summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             sections.append(summary)
@@ -4652,6 +4672,7 @@ private struct TaskResultsPanel: View {
                 }
                 .padding(16)
             }
+            .textSelection(.enabled)
             .navigationTitle("Task Results")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -4673,6 +4694,7 @@ private struct TaskResultCard: View {
     let result: CoordinatorTaskResult
     let onRetryWithFeedback: ((String) -> Void)?
     @State private var isExpanded = false
+    @State private var isShowingSelectionSheet = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -4684,7 +4706,7 @@ private struct TaskResultCard: View {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(result.completed ? .green : .red)
                 Button {
-                    copyTextToClipboard(resultClipboardText)
+                    copyMarkdownToClipboard(resultClipboardMarkdown)
                 } label: {
                     Image(systemName: "doc.on.doc")
                         .font(.caption2.weight(.semibold))
@@ -4711,6 +4733,14 @@ private struct TaskResultCard: View {
                 }
                 .buttonStyle(.plain)
 
+                Button {
+                    isShowingSelectionSheet = true
+                } label: {
+                    Label("Select Text", systemImage: "text.cursor")
+                        .font(.caption2.weight(.medium))
+                }
+                .buttonStyle(.plain)
+
                 if let onRetryWithFeedback, !result.completed, let feedback = extractFeedback(from: result.summary) {
                     Button {
                         onRetryWithFeedback(feedback)
@@ -4729,6 +4759,13 @@ private struct TaskResultCard: View {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(Color(uiColor: .secondarySystemBackground))
         )
+        .textSelection(.enabled)
+        .sheet(isPresented: $isShowingSelectionSheet) {
+            SelectableResponsePanel(
+                title: "\(result.assignedNodeName) Response",
+                markdown: result.summary
+            )
+        }
     }
 
     private func extractFeedback(from summary: String) -> String? {
@@ -4747,8 +4784,44 @@ private struct TaskResultCard: View {
         return text
     }
 
-    private var resultClipboardText: String {
-        "\(result.assignedNodeName) • \(result.completed ? "Succeeded" : "Failed")\n\n\(result.summary)"
+    private var resultClipboardMarkdown: String {
+        "**\(result.assignedNodeName) • \(result.completed ? "Succeeded" : "Failed")**\n\n\(result.summary)"
+    }
+}
+
+private struct SelectableResponsePanel: View {
+    let title: String
+    let markdown: String
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(markdownAttributedString(from: markdown))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                }
+                .padding(16)
+            }
+            .navigationTitle(title)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        copyMarkdownToClipboard(markdown)
+                    } label: {
+                        Label("Copy", systemImage: "doc.on.doc")
+                    }
+                }
+
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Close") {
+                        dismiss()
+                    }
+                    .keyboardShortcut(.escape, modifiers: [])
+                }
+            }
+        }
     }
 }
 
@@ -5703,12 +5776,157 @@ private func markdownAttributedString(from source: String) -> AttributedString {
     (try? AttributedString(markdown: source, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(source)
 }
 
+/// Converts markdown to plain text for clipboard/export use.
+/// Note: We intentionally keep the raw markdown text (with formatting markers like `**`, `-`)
+/// rather than parsing through AttributedString, because the markdown parser collapses
+/// paragraph and list structure into PresentationIntent attributes — and
+/// String(parsed.characters) loses all line breaks between them.
+private func plainText(fromMarkdown source: String) -> String {
+    source.replacingOccurrences(of: "\r\n", with: "\n")
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
 private func copyTextToClipboard(_ text: String) {
 #if canImport(UIKit)
     UIPasteboard.general.string = text
 #elseif canImport(AppKit)
     NSPasteboard.general.clearContents()
     NSPasteboard.general.setString(text, forType: .string)
+#endif
+}
+
+/// Converts a markdown string to simple HTML for pasteboard use.
+/// Handles bold, italic, headers, list items, and paragraphs.
+private func markdownToHTML(_ markdown: String) -> String {
+    let lines = markdown.components(separatedBy: "\n")
+    var html = "<div style=\"font-family: -apple-system, sans-serif; font-size: 14px;\">"
+    var inList = false
+
+    for line in lines {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+
+        if trimmed.isEmpty {
+            if inList { html += "</ul>"; inList = false }
+            html += "<br>"
+            continue
+        }
+
+        // Apply inline formatting: bold and italic
+        var content = trimmed
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+        // Bold: **text** or __text__
+        content = content.replacingOccurrences(
+            of: "\\*\\*(.+?)\\*\\*",
+            with: "<strong>$1</strong>",
+            options: .regularExpression
+        )
+        content = content.replacingOccurrences(
+            of: "__(.+?)__",
+            with: "<strong>$1</strong>",
+            options: .regularExpression
+        )
+        // Italic: *text* or _text_ (but not inside bold markers)
+        content = content.replacingOccurrences(
+            of: "(?<!\\*)\\*(?!\\*)(.+?)(?<!\\*)\\*(?!\\*)",
+            with: "<em>$1</em>",
+            options: .regularExpression
+        )
+
+        // Headers
+        if let match = trimmed.range(of: "^(#{1,6})\\s+", options: .regularExpression) {
+            let level = trimmed[match].filter({ $0 == "#" }).count
+            if inList { html += "</ul>"; inList = false }
+            let headerContent = String(trimmed[match.upperBound...])
+                .replacingOccurrences(of: "&", with: "&amp;")
+                .replacingOccurrences(of: "<", with: "&lt;")
+                .replacingOccurrences(of: ">", with: "&gt;")
+                .replacingOccurrences(of: "\\*\\*(.+?)\\*\\*", with: "<strong>$1</strong>", options: .regularExpression)
+            html += "<h\(level)>\(headerContent)</h\(level)>"
+            continue
+        }
+
+        // Unordered list items: - or *
+        if trimmed.hasPrefix("- ") || trimmed.hasPrefix("* ") {
+            if !inList { html += "<ul>"; inList = true }
+            let itemContent = String(content.dropFirst(2))
+            html += "<li>\(itemContent)</li>"
+            continue
+        }
+
+        // Regular paragraph line
+        if inList { html += "</ul>"; inList = false }
+        html += "<p style=\"margin: 0;\">\(content)</p>"
+    }
+
+    if inList { html += "</ul>" }
+    html += "</div>"
+    return html
+}
+
+/// Copies markdown as rich text where supported, with plain text fallback.
+private func copyMarkdownToClipboard(_ markdown: String) {
+    let normalized = markdown.replacingOccurrences(of: "\r\n", with: "\n")
+    let plain = plainText(fromMarkdown: normalized)
+    let html = markdownToHTML(normalized)
+    let htmlData = html.data(using: .utf8)
+
+    // Build RTF from the HTML via NSAttributedString for apps that prefer RTF
+    let rtfData: Data? = {
+        guard let data = htmlData else { return nil }
+        guard let richText = try? NSAttributedString(
+            data: data,
+            options: [.documentType: NSAttributedString.DocumentType.html,
+                      .characterEncoding: String.Encoding.utf8.rawValue],
+            documentAttributes: nil
+        ) else { return nil }
+        let range = NSRange(location: 0, length: richText.length)
+        return try? richText.data(
+            from: range,
+            documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]
+        )
+    }()
+
+#if canImport(UIKit)
+    var item: [String: Any] = [:]
+#if canImport(UniformTypeIdentifiers)
+    item[UTType.plainText.identifier] = plain
+#else
+    item["public.utf8-plain-text"] = plain
+#endif
+    if let rtfData {
+#if canImport(UniformTypeIdentifiers)
+        item[UTType.rtf.identifier] = rtfData
+#else
+        item["public.rtf"] = rtfData
+#endif
+    }
+    if let htmlData {
+#if canImport(UniformTypeIdentifiers)
+        item[UTType.html.identifier] = htmlData
+#else
+        item["public.html"] = htmlData
+#endif
+    }
+    UIPasteboard.general.setItems([item], options: [:])
+#elseif canImport(AppKit)
+    let pasteboard = NSPasteboard.general
+    pasteboard.clearContents()
+
+    var types: [NSPasteboard.PasteboardType] = [.string]
+    if rtfData != nil { types.append(.rtf) }
+    if htmlData != nil { types.append(.html) }
+    pasteboard.declareTypes(types, owner: nil)
+    pasteboard.setString(plain, forType: .string)
+    if let rtfData {
+        pasteboard.setData(rtfData, forType: .rtf)
+    }
+    if let htmlData {
+        pasteboard.setData(htmlData, forType: .html)
+    }
+#else
+    copyTextToClipboard(plain)
 #endif
 }
 
