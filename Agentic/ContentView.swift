@@ -6487,44 +6487,61 @@ private struct CoordinatorOrchestrator {
         outgoingByParentID: [UUID: [OrchestrationEdge]],
         reachableIDs: Set<UUID>
     ) -> [OrchestrationNode] {
-        var orderedIDs: [UUID] = []
-        var visited: Set<UUID> = []
-        var recursionStack: Set<UUID> = []
+        func sortNodeIDs(_ lhs: UUID, _ rhs: UUID) -> Bool {
+            if lhs == coordinatorID { return true }
+            if rhs == coordinatorID { return false }
 
-        func dfs(_ nodeID: UUID) {
-            guard reachableIDs.contains(nodeID) else { return }
-            guard !visited.contains(nodeID) else { return }
-            guard !recursionStack.contains(nodeID) else { return }
-            recursionStack.insert(nodeID)
-            visited.insert(nodeID)
-            orderedIDs.append(nodeID)
-
-            let children = (outgoingByParentID[nodeID] ?? [])
-                .map(\.childID)
-                .filter { reachableIDs.contains($0) }
-                .sorted { lhs, rhs in
-                    let left = nodeByID[lhs]?.name ?? lhs.uuidString
-                    let right = nodeByID[rhs]?.name ?? rhs.uuidString
-                    if left == right { return lhs.uuidString < rhs.uuidString }
-                    return left.localizedCaseInsensitiveCompare(right) == .orderedAscending
-                }
-
-            for childID in children {
-                dfs(childID)
-            }
-
-            recursionStack.remove(nodeID)
+            let left = nodeByID[lhs]?.name ?? lhs.uuidString
+            let right = nodeByID[rhs]?.name ?? rhs.uuidString
+            if left == right { return lhs.uuidString < rhs.uuidString }
+            return left.localizedCaseInsensitiveCompare(right) == .orderedAscending
         }
 
-        dfs(coordinatorID)
+        var indegreeByID: [UUID: Int] = Dictionary(uniqueKeysWithValues: reachableIDs.map { ($0, 0) })
+        var childrenByParentID: [UUID: [UUID]] = [:]
 
-        if orderedIDs.isEmpty {
-            orderedIDs = reachableIDs.sorted { lhs, rhs in
-                let left = nodeByID[lhs]?.name ?? lhs.uuidString
-                let right = nodeByID[rhs]?.name ?? rhs.uuidString
-                if left == right { return lhs.uuidString < rhs.uuidString }
-                return left.localizedCaseInsensitiveCompare(right) == .orderedAscending
+        for parentID in reachableIDs {
+            let children = (outgoingByParentID[parentID] ?? [])
+                .map(\.childID)
+                .filter { reachableIDs.contains($0) }
+            if !children.isEmpty {
+                childrenByParentID[parentID] = children
             }
+            for childID in children {
+                indegreeByID[childID, default: 0] += 1
+            }
+        }
+
+        var availableIDs = indegreeByID
+            .filter { $0.value == 0 }
+            .map(\.key)
+            .sorted(by: sortNodeIDs)
+
+        var orderedIDs: [UUID] = []
+        orderedIDs.reserveCapacity(reachableIDs.count)
+
+        while !availableIDs.isEmpty {
+            let nodeID = availableIDs.removeFirst()
+            orderedIDs.append(nodeID)
+
+            let sortedChildren = (childrenByParentID[nodeID] ?? []).sorted(by: sortNodeIDs)
+            for childID in sortedChildren {
+                let newValue = (indegreeByID[childID] ?? 0) - 1
+                indegreeByID[childID] = newValue
+                if newValue == 0 {
+                    availableIDs.append(childID)
+                }
+            }
+
+            availableIDs.sort(by: sortNodeIDs)
+        }
+
+        if orderedIDs.count < reachableIDs.count {
+            let visited = Set(orderedIDs)
+            let unresolved = reachableIDs
+                .filter { !visited.contains($0) }
+                .sorted(by: sortNodeIDs)
+            orderedIDs.append(contentsOf: unresolved)
         }
 
         return orderedIDs.compactMap { nodeByID[$0] }
