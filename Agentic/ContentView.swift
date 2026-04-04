@@ -254,7 +254,13 @@ struct ContentView: View {
                 onClose: {
                     isShowingTaskResults = false
                     taskResultsDocumentKey = nil
-                }
+                },
+                onRetryWithFeedback: isExecutingCoordinator
+                    ? nil
+                    : { feedback in
+                        isShowingTaskResults = false
+                        retryPipelineWithFeedback(feedback, from: nil)
+                    }
             )
             .presentationDetents([.medium, .large])
         }
@@ -753,6 +759,7 @@ struct ContentView: View {
         let headerControlHeight: CGFloat = 42
         let canDeleteTask = activeGraphDocument != nil
         let canRunCoordinator = !isExecutingCoordinator && !orchestrationGraph.nodes.isEmpty && pendingCoordinatorExecution == nil
+        let canCopyDebugPayload = !nodes.isEmpty
 
         return VStack(spacing: 12) {
             HStack(spacing: 12) {
@@ -812,7 +819,21 @@ struct ContentView: View {
                     }
                 }
                 .buttonStyle(.plain)
-                
+
+                Button {
+                    copyTextToClipboard(debugClipboardText)
+                } label: {
+                    headerControlLabel(
+                        title: "Copy Debug",
+                        systemImage: "ladybug",
+                        height: headerControlHeight,
+                        prominent: false,
+                        enabled: canCopyDebugPayload
+                    )
+                }
+                .buttonStyle(.plain)
+                .disabled(!canCopyDebugPayload)
+
                 Button(role: .destructive) {
                     isShowingDeleteTaskConfirmation = true
                 } label: {
@@ -1101,7 +1122,10 @@ struct ContentView: View {
                                     resolution: resolution.map { $0.presentation },
                                     onResolve: resolution == nil
                                         ? nil
-                                        : { applyTraceResolution(for: step) }
+                                        : { applyTraceResolution(for: step) },
+                                    onRetryWithFeedback: isExecutingCoordinator
+                                        ? nil
+                                        : { feedback in retryPipelineWithFeedback(feedback, from: step) }
                                 )
                             }
                         }
@@ -1354,48 +1378,7 @@ struct ContentView: View {
     }
 
     private func runCoordinatorPipeline() {
-        guard !orchestrationGraph.nodes.isEmpty else { return }
-        let normalizedGoal = orchestrationGoal.trimmingCharacters(in: .whitespacesAndNewlines)
-        let planner = CoordinatorOrchestrator()
-        let plan = planner.plan(
-            goal: normalizedGoal.isEmpty
-                ? "Execute coordinator objective"
-                : normalizedGoal,
-            graph: orchestrationGraph
-        )
-        let mode = coordinatorRunMode
-        latestCoordinatorPlan = plan
-        latestCoordinatorRun = nil
-        humanDecisionNote = ""
-        coordinatorTrace = plan.packets.map {
-            CoordinatorTraceStep(
-                packetID: $0.id,
-                assignedNodeID: $0.assignedNodeID,
-                assignedNodeName: $0.assignedNodeName,
-                objective: $0.objective,
-                status: .queued,
-                summary: nil,
-                confidence: nil,
-                startedAt: nil,
-                finishedAt: nil
-            )
-        }
-
-        pendingCoordinatorExecution = PendingCoordinatorExecution(
-            runID: "RUN-\(UUID().uuidString.prefix(8))",
-            plan: plan,
-            mode: mode,
-            nextPacketIndex: 0,
-            results: [],
-            outputsByNodeID: [:],
-            startedAt: Date(),
-            awaitingHumanPacketID: nil
-        )
-        isExecutingCoordinator = true
-        persistCoordinatorExecutionState()
-        Task {
-            await continueCoordinatorExecution()
-        }
+        runCoordinatorPipelineWithFeedback(nil)
     }
 
     @MainActor
@@ -1514,6 +1497,69 @@ struct ContentView: View {
         pendingCoordinatorExecution = nil
         isExecutingCoordinator = false
         persistCoordinatorExecutionState()
+    }
+
+    /// Re-runs the coordinator pipeline, injecting feedback from a failed/blocked step
+    /// so upstream agents can address the issues on the next pass.
+    private func retryPipelineWithFeedback(_ feedback: String, from step: CoordinatorTraceStep?) {
+        guard !isExecutingCoordinator else { return }
+
+        let source = step?.assignedNodeName ?? "previous run"
+        let feedbackText = "FEEDBACK FROM \(source): \(feedback)"
+        print("[RetryWithFeedback] Injecting feedback from \(source), length: \(feedback.count) chars")
+
+        runCoordinatorPipelineWithFeedback(feedbackText)
+    }
+
+    /// Runs the coordinator pipeline with optional retry feedback injected into the goal.
+    private func runCoordinatorPipelineWithFeedback(_ feedback: String?) {
+        guard !orchestrationGraph.nodes.isEmpty else { return }
+        var normalizedGoal = orchestrationGoal.trimmingCharacters(in: .whitespacesAndNewlines)
+        if normalizedGoal.isEmpty {
+            normalizedGoal = "Execute coordinator objective"
+        }
+
+        // Inject feedback into the goal so every agent sees it
+        if let feedback, !feedback.isEmpty {
+            normalizedGoal += "\n\n\(feedback)"
+        }
+
+        let planner = CoordinatorOrchestrator()
+        let plan = planner.plan(goal: normalizedGoal, graph: orchestrationGraph)
+        let mode = coordinatorRunMode
+        latestCoordinatorPlan = plan
+        latestCoordinatorRun = nil
+        humanDecisionNote = ""
+        coordinatorTrace = plan.packets.map {
+            CoordinatorTraceStep(
+                packetID: $0.id,
+                assignedNodeID: $0.assignedNodeID,
+                assignedNodeName: $0.assignedNodeName,
+                objective: $0.objective,
+                status: .queued,
+                summary: nil,
+                confidence: nil,
+                startedAt: nil,
+                finishedAt: nil
+            )
+        }
+
+        pendingCoordinatorExecution = PendingCoordinatorExecution(
+            runID: "RUN-\(UUID().uuidString.prefix(8))",
+            plan: plan,
+            mode: mode,
+            nextPacketIndex: 0,
+            results: [],
+            outputsByNodeID: [:],
+            startedAt: Date(),
+            awaitingHumanPacketID: nil,
+            retryFeedback: feedback
+        )
+        isExecutingCoordinator = true
+        persistCoordinatorExecutionState()
+        Task {
+            await continueCoordinatorExecution()
+        }
     }
 
     @MainActor
@@ -3540,6 +3586,110 @@ struct ContentView: View {
         }
     }
 
+    private var debugClipboardText: String {
+        let activeDocument = activeGraphDocument
+        let formatter = ISO8601DateFormatter()
+        let generatedAt = formatter.string(from: Date())
+        let nodeByID = Dictionary(uniqueKeysWithValues: nodes.map { ($0.id, $0) })
+        let outgoingByNodeID = Dictionary(grouping: links, by: \.fromID)
+        let incomingByNodeID = Dictionary(grouping: links, by: \.toID)
+        let selectedNodeSummary = selectedNodeID
+            .flatMap { id in nodes.first(where: { $0.id == id }) }
+            .map { "\(debugInlineText($0.name, fallback: "Unnamed")) (\($0.id.uuidString))" }
+            ?? "none"
+
+        var lines: [String] = [
+            "Agentic Debug Context",
+            "Generated At: \(generatedAt)",
+            "",
+            "Task",
+            "- Key: \(activeDocument?.key ?? "none")",
+            "- Title: \(activeTaskTitle)",
+            "- Goal: \(debugInlineText(orchestrationGoal, fallback: "No goal set"))",
+            "- Context: \(debugInlineText(synthesisContext, fallback: "No extra context"))",
+            "- Execution Mode: \(coordinatorRunMode.label)",
+            "- Is Executing: \(isExecutingCoordinator ? "yes" : "no")",
+            "- Selected Node: \(selectedNodeSummary)"
+        ]
+
+        if let latestCoordinatorPlan {
+            lines.append("- Latest Plan: \(latestCoordinatorPlan.planID), \(latestCoordinatorPlan.packets.count) packets")
+        } else {
+            lines.append("- Latest Plan: none")
+        }
+
+        if let pendingCoordinatorExecution {
+            let nextPacketNumber = min(pendingCoordinatorExecution.nextPacketIndex + 1, pendingCoordinatorExecution.plan.packets.count)
+            let waitState = pendingCoordinatorExecution.awaitingHumanPacketID == nil ? "no" : "yes"
+            lines.append("- Pending Run: \(pendingCoordinatorExecution.runID), next packet \(nextPacketNumber)/\(pendingCoordinatorExecution.plan.packets.count), awaiting human \(waitState)")
+        } else {
+            lines.append("- Pending Run: none")
+        }
+
+        if let latestCoordinatorRun {
+            lines.append("- Latest Run: \(latestCoordinatorRun.runID), succeeded \(latestCoordinatorRun.succeededCount)/\(latestCoordinatorRun.results.count)")
+        } else {
+            lines.append("- Latest Run: none")
+        }
+
+        lines.append("")
+        lines.append("Nodes (\(nodes.count))")
+
+        let sortedNodes = nodes.sorted { lhs, rhs in
+            if lhs.position.y != rhs.position.y { return lhs.position.y < rhs.position.y }
+            if lhs.position.x != rhs.position.x { return lhs.position.x < rhs.position.x }
+            return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+        }
+
+        for (index, node) in sortedNodes.enumerated() {
+            let roleList = node.selectedRoles
+                .map(\.label)
+                .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+            let permissionList = node.securityAccess
+                .map(\.label)
+                .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+
+            let parentNames = (incomingByNodeID[node.id] ?? []).compactMap { edge in
+                nodeByID[edge.fromID].map { debugInlineText($0.name, fallback: edge.fromID.uuidString) }
+            }
+            let childNames = (outgoingByNodeID[node.id] ?? []).compactMap { edge in
+                nodeByID[edge.toID].map { debugInlineText($0.name, fallback: edge.toID.uuidString) }
+            }
+
+            lines.append("\(index + 1). \(debugInlineText(node.name, fallback: "Unnamed")) [\(node.type.label)]")
+            lines.append("   ID: \(node.id.uuidString)")
+            lines.append("   Title: \(debugInlineText(node.title, fallback: "n/a"))")
+            lines.append("   Department: \(debugInlineText(node.department, fallback: "n/a"))")
+            lines.append("   Provider: \(node.provider.label)")
+            lines.append("   Roles: \(roleList.isEmpty ? "none" : roleList.joined(separator: ", "))")
+            lines.append("   Permissions: \(permissionList.isEmpty ? "none" : permissionList.joined(separator: ", "))")
+            lines.append("   Schemas: \(debugInlineText(node.inputSchema, fallback: "n/a")) -> \(debugInlineText(node.outputSchema, fallback: "n/a"))")
+            lines.append("   Role Description: \(debugInlineText(node.roleDescription, fallback: "n/a"))")
+            lines.append("   Output Description: \(debugInlineText(node.outputSchemaDescription, fallback: "n/a"))")
+            lines.append("   Parents: \(parentNames.isEmpty ? "none" : parentNames.joined(separator: ", "))")
+            lines.append("   Children: \(childNames.isEmpty ? "none" : childNames.joined(separator: ", "))")
+            lines.append("   Position: x=\(Int(node.position.x.rounded())), y=\(Int(node.position.y.rounded()))")
+            lines.append("")
+        }
+
+        lines.append("Links (\(links.count))")
+        for (index, link) in links.enumerated() {
+            let fromName = debugInlineText(nodeByID[link.fromID]?.name ?? link.fromID.uuidString, fallback: link.fromID.uuidString)
+            let toName = debugInlineText(nodeByID[link.toID]?.name ?? link.toID.uuidString, fallback: link.toID.uuidString)
+            lines.append("\(index + 1). \(fromName) -> \(toName) [tone: \(link.tone.rawValue), type: \(link.edgeType.rawValue)]")
+        }
+
+        return lines.joined(separator: "\n")
+    }
+
+    private func debugInlineText(_ text: String, fallback: String) -> String {
+        let collapsed = text
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return collapsed.isEmpty ? fallback : collapsed
+    }
+
     private func syncGraphFromStore() {
         guard
             let document = activeGraphDocument,
@@ -4166,6 +4316,7 @@ private struct CoordinatorTraceRow: View {
     let step: CoordinatorTraceStep
     let resolution: CoordinatorTraceResolutionPresentation?
     let onResolve: (() -> Void)?
+    let onRetryWithFeedback: ((String) -> Void)?
     @State private var isExpanded = false
 
     var body: some View {
@@ -4248,16 +4399,30 @@ private struct CoordinatorTraceRow: View {
                         .lineLimit(isExpanded ? nil : 4)
                         .textSelection(.enabled)
 
-                    Button {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            isExpanded.toggle()
+                    HStack(spacing: 12) {
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                isExpanded.toggle()
+                            }
+                        } label: {
+                            Text(isExpanded ? "Show less" : "Show more")
+                                .font(.caption2.weight(.medium))
+                                .foregroundStyle(.blue)
                         }
-                    } label: {
-                        Text(isExpanded ? "Show less" : "Show more")
-                            .font(.caption2.weight(.medium))
-                            .foregroundStyle(.blue)
+                        .buttonStyle(.plain)
+
+                        if let onRetryWithFeedback, let feedback = extractFeedback(from: summary) {
+                            Button {
+                                onRetryWithFeedback(feedback)
+                            } label: {
+                                Label("Retry with Feedback", systemImage: "arrow.counterclockwise")
+                                    .font(.caption2.weight(.semibold))
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
+                            .tint(.orange)
+                        }
                     }
-                    .buttonStyle(.plain)
                 }
             }
         }
@@ -4271,6 +4436,32 @@ private struct CoordinatorTraceRow: View {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .stroke(Color.black.opacity(0.06), lineWidth: 1)
         )
+    }
+
+    /// Extracts actionable feedback from a BLOCKED / Recommendation response.
+    private func extractFeedback(from summary: String) -> String? {
+        // Only show for failed/blocked steps
+        guard step.status == .failed || step.status == .blocked else { return nil }
+
+        let text = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Look for explicit recommendation sections
+        if let range = text.range(of: "Recommendation:", options: .caseInsensitive) {
+            let recommendation = String(text[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !recommendation.isEmpty { return recommendation }
+        }
+        if let range = text.range(of: "Follow-up:", options: .caseInsensitive) {
+            let followUp = String(text[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !followUp.isEmpty { return followUp }
+        }
+        // For BLOCKED responses, the whole message is useful feedback
+        if text.hasPrefix("BLOCKED:") || text.contains("BLOCKED:") {
+            return text
+        }
+        // Generic failed result — use the full summary as feedback
+        if step.status == .failed {
+            return text
+        }
+        return nil
     }
 
     private var stepClipboardText: String {
@@ -4414,6 +4605,7 @@ private struct HumanInboxPanel: View {
 private struct TaskResultsPanel: View {
     let document: GraphDocument?
     let onClose: () -> Void
+    let onRetryWithFeedback: ((String) -> Void)?
 
     var body: some View {
         // Access executionStateData directly in body so SwiftData observation
@@ -4450,7 +4642,7 @@ private struct TaskResultsPanel: View {
                         }
 
                         ForEach(run.results) { result in
-                            TaskResultCard(result: result)
+                            TaskResultCard(result: result, onRetryWithFeedback: onRetryWithFeedback)
                         }
                     } else {
                         Text("No completed results for this task yet.")
@@ -4479,6 +4671,7 @@ private struct TaskResultsPanel: View {
 
 private struct TaskResultCard: View {
     let result: CoordinatorTaskResult
+    let onRetryWithFeedback: ((String) -> Void)?
     @State private var isExpanded = false
 
     var body: some View {
@@ -4506,22 +4699,52 @@ private struct TaskResultCard: View {
                 .lineLimit(isExpanded ? nil : 6)
                 .textSelection(.enabled)
 
-            Button {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    isExpanded.toggle()
+            HStack(spacing: 12) {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        isExpanded.toggle()
+                    }
+                } label: {
+                    Text(isExpanded ? "Show less" : "Show more")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.blue)
                 }
-            } label: {
-                Text(isExpanded ? "Show less" : "Show more")
-                    .font(.caption2.weight(.medium))
-                    .foregroundStyle(.blue)
+                .buttonStyle(.plain)
+
+                if let onRetryWithFeedback, !result.completed, let feedback = extractFeedback(from: result.summary) {
+                    Button {
+                        onRetryWithFeedback(feedback)
+                    } label: {
+                        Label("Retry with Feedback", systemImage: "arrow.counterclockwise")
+                            .font(.caption2.weight(.semibold))
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .tint(.orange)
+                }
             }
-            .buttonStyle(.plain)
         }
         .padding(10)
         .background(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(Color(uiColor: .secondarySystemBackground))
         )
+    }
+
+    private func extractFeedback(from summary: String) -> String? {
+        let text = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let range = text.range(of: "Recommendation:", options: .caseInsensitive) {
+            let recommendation = String(text[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !recommendation.isEmpty { return recommendation }
+        }
+        if let range = text.range(of: "Follow-up:", options: .caseInsensitive) {
+            let followUp = String(text[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !followUp.isEmpty { return followUp }
+        }
+        if text.hasPrefix("BLOCKED:") || text.contains("BLOCKED:") {
+            return text
+        }
+        return text
     }
 
     private var resultClipboardText: String {
@@ -6053,6 +6276,7 @@ private struct PendingCoordinatorExecution: Codable {
     var outputsByNodeID: [UUID: ProducedHandoff]
     let startedAt: Date
     var awaitingHumanPacketID: String?
+    var retryFeedback: String?
 }
 
 private enum HumanTaskDecision: String, Codable {
