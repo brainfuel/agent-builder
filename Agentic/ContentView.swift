@@ -10,6 +10,7 @@ import AppKit
 #endif
 
 struct ContentView: View {
+    private static let defaultStructureStrategy = "Design a structure that best answers the task question, compares candidate outputs when useful, and returns one clear final response."
     private let cardSize = CGSize(width: 264, height: 88)
     private let minimumCanvasSize = CGSize(width: 1900, height: 1200)
     private let minZoom: CGFloat = 0.6
@@ -36,6 +37,7 @@ struct ContentView: View {
     @State private var linkingPointer: CGPoint?
     @State private var linkHoverTargetNodeID: UUID?
     @State private var orchestrationGoal = "Prepare a safe v1 launch plan"
+    @State private var orchestrationStrategy = ContentView.defaultStructureStrategy
     @State private var latestCoordinatorPlan: CoordinatorPlan?
     @State private var latestCoordinatorRun: CoordinatorRun?
     @State private var isExecutingCoordinator = false
@@ -123,6 +125,25 @@ struct ContentView: View {
         return title.isEmpty ? "Task" : title
     }
 
+    private var normalizedTaskQuestion: String {
+        orchestrationGoal.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var normalizedStructureStrategy: String {
+        orchestrationStrategy.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var effectiveStructureStrategy: String {
+        if !normalizedStructureStrategy.isEmpty {
+            return normalizedStructureStrategy
+        }
+        return normalizedTaskQuestion
+    }
+
+    private var canGenerateStructurePrompt: Bool {
+        !effectiveStructureStrategy.isEmpty
+    }
+
     private var usesTaskSplitView: Bool {
 #if targetEnvironment(macCatalyst)
         true
@@ -204,6 +225,9 @@ struct ContentView: View {
             persistGraphIfNeeded(for: newValue)
         }
         .onChange(of: orchestrationGoal) { _, _ in
+            persistActiveTaskMetadata()
+        }
+        .onChange(of: orchestrationStrategy) { _, _ in
             persistActiveTaskMetadata()
         }
         .onChange(of: humanActorIdentity) { _, _ in
@@ -404,12 +428,12 @@ struct ContentView: View {
                         systemImage: "wand.and.stars",
                         height: headerControlHeight,
                         prominent: false,
-                        enabled: !orchestrationGoal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        enabled: canGenerateStructurePrompt
                     )
                 }
             }
             .buttonStyle(.plain)
-            .disabled(orchestrationGoal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isGeneratingStructure)
+            .disabled(!canGenerateStructurePrompt || isGeneratingStructure)
 
             Spacer(minLength: 0)
 
@@ -487,12 +511,12 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 10) {
                 Text("New Task Draft")
                     .font(.headline)
-                Text("Set title, goal, context, and template, then create.")
+                Text("Set title, question, context, and template, then create.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
 
                 draftTextField("Task title", text: $newTaskTitle, field: .title)
-                draftTextField("Goal", text: $newTaskGoal, field: .goal)
+                draftTextField("Question", text: $newTaskGoal, field: .goal)
                 draftTextField("Context", text: $newTaskContext, field: .context)
 
                 HStack(spacing: 10) {
@@ -932,11 +956,21 @@ struct ContentView: View {
     private var orchestrationBar: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
-                Label("Coordinator Goal", systemImage: "point.3.filled.connected.trianglepath.dotted")
+                Label("Task Question", systemImage: "text.bubble")
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.secondary)
 
-                TextField("Describe what the coordinator should delegate...", text: $orchestrationGoal)
+                TextField("What should the team answer?", text: $orchestrationGoal)
+                    .textFieldStyle(.roundedBorder)
+                    .lineLimit(1)
+            }
+
+            HStack(spacing: 10) {
+                Label("Structure Strategy", systemImage: "point.3.filled.connected.trianglepath.dotted")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+
+                TextField("How should the team solve and synthesize this?", text: $orchestrationStrategy)
                     .textFieldStyle(.roundedBorder)
                     .lineLimit(1)
             }
@@ -1943,14 +1977,22 @@ struct ContentView: View {
     }
 
     private func generateSuggestedStructure() {
-        let normalizedGoal = orchestrationGoal.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !normalizedGoal.isEmpty else {
-            synthesisStatusMessage = "Enter a coordinator goal first."
+        let structureStrategy = effectiveStructureStrategy
+        let taskQuestion = normalizedTaskQuestion
+        guard !structureStrategy.isEmpty else {
+            synthesisStatusMessage = "Enter a task question or structure strategy first."
             return
         }
 
+        let synthesizerInputGoal: String
+        if taskQuestion.isEmpty {
+            synthesizerInputGoal = structureStrategy
+        } else {
+            synthesizerInputGoal = "Task question: \(taskQuestion)\nStructure strategy: \(structureStrategy)"
+        }
+
         let synthesizer = TeamStructureSynthesizer()
-        let requiredQuestions = synthesizer.discoveryQuestions(goal: normalizedGoal, context: synthesisContext)
+        let requiredQuestions = synthesizer.discoveryQuestions(goal: synthesizerInputGoal, context: synthesisContext)
         let previousAnswers = Dictionary(uniqueKeysWithValues: synthesisQuestions.map { ($0.key, $0.answer) })
         synthesisQuestions = requiredQuestions.map {
             SynthesisQuestionState(key: $0, answer: previousAnswers[$0] ?? "")
@@ -1961,7 +2003,7 @@ struct ContentView: View {
         })
 
         synthesizedStructure = synthesizer.synthesize(
-            goal: normalizedGoal,
+            goal: synthesizerInputGoal,
             context: synthesisContext,
             answers: answers
         )
@@ -1974,7 +2016,7 @@ struct ContentView: View {
             synthesisStatusMessage =
                 "Draft generated. \(unansweredCount) discovery question(s) are unanswered; fill them and re-generate for a tighter team plan."
         } else {
-            synthesisStatusMessage = "Suggested structure generated from goal, context, and discovery answers."
+            synthesisStatusMessage = "Suggested structure generated from question, strategy, context, and discovery answers."
         }
     }
 
@@ -1995,9 +2037,10 @@ struct ContentView: View {
 
     @MainActor
     private func generateStructureWithLLM(provider: APIKeyProvider) async {
-        let normalizedGoal = orchestrationGoal.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !normalizedGoal.isEmpty else {
-            synthesisStatusMessage = "Enter a coordinator goal first."
+        let questionText = normalizedTaskQuestion
+        let strategyText = effectiveStructureStrategy
+        guard !strategyText.isEmpty else {
+            synthesisStatusMessage = "Enter a task question or structure strategy first."
             return
         }
 
@@ -2015,11 +2058,16 @@ struct ContentView: View {
 
         let configuredProviders = availableGenerateProviders().map { $0.rawValue }
         let systemPrompt = buildGenerateStructureSystemPrompt(availableProviders: configuredProviders)
-        let userPrompt = buildGenerateStructureUserPrompt(goal: normalizedGoal, context: contextText)
+        let userPrompt = buildGenerateStructureUserPrompt(
+            taskQuestion: questionText,
+            structureStrategy: strategyText,
+            context: contextText
+        )
 
         print("[GenerateStructure] Provider: \(provider.label)")
         print("[GenerateStructure] Model: \(preferredModelID ?? "auto")")
-        print("[GenerateStructure] Goal: \(normalizedGoal)")
+        print("[GenerateStructure] Task question: \(questionText)")
+        print("[GenerateStructure] Structure strategy: \(strategyText)")
         print("[GenerateStructure] System prompt length: \(systemPrompt.count) chars")
         print("[GenerateStructure] User prompt length: \(userPrompt.count) chars")
 
@@ -2161,8 +2209,16 @@ struct ContentView: View {
         """
     }
 
-    private func buildGenerateStructureUserPrompt(goal: String, context: String) -> String {
-        var prompt = "Design a multi-agent team structure for this goal:\n\n\(goal)"
+    private func buildGenerateStructureUserPrompt(
+        taskQuestion: String,
+        structureStrategy: String,
+        context: String
+    ) -> String {
+        var prompt = "Design a multi-agent team structure."
+        if !taskQuestion.isEmpty {
+            prompt += "\n\nTask question:\n\n\(taskQuestion)"
+        }
+        prompt += "\n\nStructure strategy:\n\n\(structureStrategy)"
         if !context.isEmpty {
             prompt += "\n\nAdditional context: \(context)"
         }
@@ -3294,6 +3350,7 @@ struct ContentView: View {
         let document = GraphDocument(
             title: "New Coordinator Task",
             goal: orchestrationGoal,
+            structureStrategy: orchestrationStrategy,
             snapshotData: data,
             executionStateData: nil,
             createdAt: Date(),
@@ -3348,6 +3405,7 @@ struct ContentView: View {
         createTaskDocument(
             title: title,
             goal: goal,
+            structureStrategy: orchestrationStrategy,
             snapshot: simpleTaskSnapshot()
         )
         resetTaskDraft()
@@ -3368,6 +3426,7 @@ struct ContentView: View {
         createTaskDocument(
             title: title.isEmpty ? "Generated Task" : title,
             goal: goal,
+            structureStrategy: orchestrationStrategy,
             snapshot: snapshot
         )
         resetTaskDraft()
@@ -3379,6 +3438,7 @@ struct ContentView: View {
         createTaskDocument(
             title: title.isEmpty ? newTaskTemplate.title : title,
             goal: goal.isEmpty ? orchestrationGoal : goal,
+            structureStrategy: orchestrationStrategy,
             snapshot: newTaskTemplate.snapshot()
         )
         resetTaskDraft()
@@ -3412,7 +3472,12 @@ struct ContentView: View {
         runCoordinatorPipeline()
     }
 
-    private func createTaskDocument(title: String, goal: String, snapshot: HierarchySnapshot) {
+    private func createTaskDocument(
+        title: String,
+        goal: String,
+        structureStrategy: String? = nil,
+        snapshot: HierarchySnapshot
+    ) {
         let restoredNodes = snapshot.nodes.map { entry in
             OrgNode(
                 id: entry.id,
@@ -3441,6 +3506,7 @@ struct ContentView: View {
         let document = GraphDocument(
             title: title,
             goal: goal,
+            structureStrategy: (structureStrategy ?? goal).trimmingCharacters(in: .whitespacesAndNewlines),
             snapshotData: data,
             executionStateData: nil,
             createdAt: Date(),
@@ -3507,6 +3573,7 @@ struct ContentView: View {
         isShowingTaskResults = false
         taskResultsDocumentKey = nil
         isExecutingCoordinator = false
+        orchestrationStrategy = ContentView.defaultStructureStrategy
         synthesisContext = ""
         synthesisQuestions = []
         synthesizedStructure = nil
@@ -3582,8 +3649,20 @@ struct ContentView: View {
 
     private func persistActiveTaskMetadata() {
         guard let document = activeGraphDocument else { return }
-        if (document.goal ?? "") != orchestrationGoal {
-            document.goal = orchestrationGoal
+        let normalizedQuestion = orchestrationGoal.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedStrategy = orchestrationStrategy.trimmingCharacters(in: .whitespacesAndNewlines)
+        var changed = false
+
+        if (document.goal ?? "") != normalizedQuestion {
+            document.goal = normalizedQuestion
+            changed = true
+        }
+        if (document.structureStrategy ?? "") != normalizedStrategy {
+            document.structureStrategy = normalizedStrategy
+            changed = true
+        }
+
+        if changed {
             document.updatedAt = Date()
             try? modelContext.save()
         }
@@ -3608,7 +3687,8 @@ struct ContentView: View {
             "Task",
             "- Key: \(activeDocument?.key ?? "none")",
             "- Title: \(activeTaskTitle)",
-            "- Goal: \(debugInlineText(orchestrationGoal, fallback: "No goal set"))",
+            "- Task Question: \(debugInlineText(orchestrationGoal, fallback: "No question set"))",
+            "- Structure Strategy: \(debugInlineText(orchestrationStrategy, fallback: "No strategy set"))",
             "- Context: \(debugInlineText(synthesisContext, fallback: "No extra context"))",
             "- Execution Mode: \(coordinatorRunMode.label)",
             "- Is Executing: \(isExecutingCoordinator ? "yes" : "no")",
@@ -3707,8 +3787,17 @@ struct ContentView: View {
         suppressStoreSync = true
         setGraph(from: snapshot, resetViewState: false)
         suppressStoreSync = false
-        if orchestrationGoal != (document.goal ?? "") {
-            orchestrationGoal = document.goal ?? ""
+        let storedQuestion = document.goal ?? ""
+        if orchestrationGoal != storedQuestion {
+            orchestrationGoal = storedQuestion
+        }
+        let fallbackStrategy = storedQuestion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? ContentView.defaultStructureStrategy
+            : storedQuestion
+        let storedStrategy = (document.structureStrategy ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedStrategy = storedStrategy.isEmpty ? fallbackStrategy : storedStrategy
+        if orchestrationStrategy != resolvedStrategy {
+            orchestrationStrategy = resolvedStrategy
         }
         syncCoordinatorExecutionState(from: document)
         lastPersistedFingerprint = semanticFingerprint
