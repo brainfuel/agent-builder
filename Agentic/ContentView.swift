@@ -23,6 +23,8 @@ struct ContentView: View {
     @Environment(\.undoManager) private var undoManager
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Query private var graphDocuments: [GraphDocument]
+    @Query(sort: \UserNodeTemplate.updatedAt, order: .reverse)
+    private var userNodeTemplates: [UserNodeTemplate]
     @State private var isShowingTaskList = true
     @State private var currentGraphKey: String?
     @State private var nodes = OrgNode.sample
@@ -60,6 +62,8 @@ struct ContentView: View {
     @State private var isShowingTaskResults = false
     @State private var taskResultsDocumentKey: String?
     @State private var isShowingAPIKeys = false
+    @State private var isShowingNodeTemplateLibrary = false
+    @State private var templateSavedName: String?
     @State private var isShowingWipeDataConfirmation = false
     @State private var isShowingDeleteTaskConfirmation = false
     @State private var detailSectionTab: DetailSectionTab = .edit
@@ -200,6 +204,19 @@ struct ContentView: View {
             }
         }
         .background(Color(uiColor: .systemGroupedBackground))
+        .overlay(alignment: .bottom) {
+            if let templateSavedName {
+                Text("Saved \"\(templateSavedName)\" as node template")
+                    .font(.footnote.weight(.semibold))
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .background(.ultraThinMaterial, in: Capsule())
+                    .shadow(color: .black.opacity(0.1), radius: 8, y: 4)
+                    .padding(.bottom, 24)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(.easeInOut(duration: 0.25), value: templateSavedName)
         .animation(.easeInOut(duration: 0.18), value: selectedNodeID)
         .animation(.snappy(duration: 0.28, extraBounce: 0.02), value: isShowingTaskList)
         .onAppear {
@@ -294,6 +311,13 @@ struct ContentView: View {
         .sheet(isPresented: $isShowingAPIKeys) {
             APIKeysSheet(store: apiKeyStore, modelStore: providerModelStore)
                 .presentationDetents([.medium, .large])
+        }
+        .sheet(isPresented: $isShowingNodeTemplateLibrary) {
+            NodeTemplateLibrarySheet(onInsert: { userTemplate in
+                isShowingNodeTemplateLibrary = false
+                addNodeFromUserTemplate(userTemplate)
+            })
+            .presentationDetents([.medium, .large])
         }
     }
 
@@ -434,6 +458,19 @@ struct ContentView: View {
             }
             .buttonStyle(.plain)
             .disabled(!canGenerateStructurePrompt || isGeneratingStructure)
+
+            Button {
+                isShowingNodeTemplateLibrary = true
+            } label: {
+                headerControlLabel(
+                    title: "Node Templates",
+                    systemImage: "rectangle.stack.badge.person.crop",
+                    height: headerControlHeight,
+                    prominent: false,
+                    enabled: true
+                )
+            }
+            .buttonStyle(.plain)
 
             Spacer(minLength: 0)
 
@@ -1189,7 +1226,9 @@ struct ContentView: View {
                     } else {
                         NodeInspector(
                             node: inspectorNodeBinding,
-                            onDelete: { deleteSelectedNode() }
+                            onDelete: { deleteSelectedNode() },
+                            onSaveAsTemplate: { saveNodeAsTemplate(inspectorNodeBinding.wrappedValue) },
+                            headerTitle: "Node Details"
                         )
                             .padding(20)
                     }
@@ -1271,11 +1310,31 @@ struct ContentView: View {
                                 )
 
                             Menu {
-                                ForEach(NodeTemplate.allCases) { template in
+                                if !userNodeTemplates.isEmpty {
+                                    Section("My Node Templates") {
+                                        ForEach(userNodeTemplates) { userTemplate in
+                                            Button {
+                                                addNodeFromUserTemplate(userTemplate, forcedParentID: selectedNodeID)
+                                            } label: {
+                                                Label(userTemplate.label, systemImage: userTemplate.icon)
+                                            }
+                                        }
+                                    }
+                                }
+                                Section("Built-in") {
+                                    ForEach(NodeTemplate.allCases) { template in
+                                        Button {
+                                            addNode(template: template, forcedParentID: selectedNodeID)
+                                        } label: {
+                                            Label(template.label, systemImage: template.icon)
+                                        }
+                                    }
+                                }
+                                Section {
                                     Button {
-                                        addNode(template: template, forcedParentID: selectedNodeID)
+                                        isShowingNodeTemplateLibrary = true
                                     } label: {
-                                        Label(template.label, systemImage: template.icon)
+                                        Label("Edit Node Templates…", systemImage: "rectangle.stack.badge.person.crop")
                                     }
                                 }
                             } label: {
@@ -2832,6 +2891,167 @@ struct ContentView: View {
         }
     }
 
+    private func saveNodeAsTemplate(_ node: OrgNode) {
+        let template = UserNodeTemplate(
+            label: node.name,
+            icon: "star",
+            name: node.name,
+            title: node.title,
+            department: node.department,
+            nodeTypeRaw: node.type.rawValue,
+            providerRaw: node.provider.rawValue,
+            roleDescription: node.roleDescription,
+            outputSchema: node.outputSchema,
+            outputSchemaDescription: node.outputSchemaDescription,
+            securityAccessRaw: node.securityAccess.map(\.rawValue)
+        )
+        modelContext.insert(template)
+        templateSavedName = node.name
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+            if templateSavedName == node.name {
+                templateSavedName = nil
+            }
+        }
+    }
+
+    private func addNodeFromUserTemplate(_ userTemplate: UserNodeTemplate, forcedParentID: UUID? = nil) {
+        let type = NodeType(rawValue: userTemplate.nodeTypeRaw) ?? .agent
+        let fallbackPosition = CGPoint(
+            x: CGFloat(Int.random(in: 400...1700)),
+            y: CGFloat(Int.random(in: 120...1080))
+        )
+
+        var newPosition = fallbackPosition
+        var parentIDForNewNode: UUID?
+        var parentLinkToneForNewNode: LinkTone = .blue
+        var inheritedInputSchemaForNewNode: String?
+
+        let requestedParentID = forcedParentID ?? selectedNodeID
+        let resolvedParentID: UUID? = {
+            guard
+                let requestedParentID,
+                let requestedNode = nodes.first(where: { $0.id == requestedParentID })
+            else {
+                return nil
+            }
+            switch requestedNode.type {
+            case .input:
+                return anchorAttachmentNodeIDs(nodes: nodes, links: links).rootID
+            case .output:
+                return anchorAttachmentNodeIDs(nodes: nodes, links: links).sinkID
+            case .agent, .human:
+                return requestedParentID
+            }
+        }()
+
+        if
+            let parentSeedID = resolvedParentID,
+            let selectedNode = nodes.first(where: { $0.id == parentSeedID })
+        {
+            let childIDs = Set(
+                links
+                    .filter { $0.fromID == parentSeedID }
+                    .map(\.toID)
+            )
+            let children = nodes.filter {
+                childIDs.contains($0.id) && $0.type != .input && $0.type != .output
+            }
+
+            let preferredChildY: CGFloat? = {
+                guard let parentParentID = links.first(where: { $0.toID == parentSeedID })?.fromID else {
+                    return nil
+                }
+
+                let siblingIDs = Set(
+                    links
+                        .filter { $0.fromID == parentParentID && $0.toID != parentSeedID }
+                        .map(\.toID)
+                )
+
+                let cousinChildLinks = links.filter { siblingIDs.contains($0.fromID) }
+                let cousinChildYs: [CGFloat] = cousinChildLinks.compactMap { link -> CGFloat? in
+                    guard let childNode = nodes.first(where: { $0.id == link.toID }) else {
+                        return nil
+                    }
+                    guard childNode.type != .input && childNode.type != .output else {
+                        return nil
+                    }
+                    return childNode.position.y
+                }
+
+                return cousinChildYs.sorted().first
+            }()
+
+            newPosition = nextChildPosition(
+                parent: selectedNode,
+                existingChildren: children,
+                preferredY: preferredChildY
+            )
+            parentIDForNewNode = parentSeedID
+            inheritedInputSchemaForNewNode = selectedNode.outputSchema
+            parentLinkToneForNewNode =
+                links.first(where: { $0.fromID == parentSeedID })?.tone
+                ?? links.first(where: { $0.toID == parentSeedID })?.tone
+                ?? .blue
+        }
+
+        let newNodeID = UUID()
+        let newNode = OrgNode(
+            id: newNodeID,
+            name: userTemplate.name,
+            title: userTemplate.title,
+            department: userTemplate.department,
+            type: type,
+            provider: LLMProvider(rawValue: userTemplate.providerRaw) ?? .chatGPT,
+            roleDescription: userTemplate.roleDescription,
+            inputSchema: inheritedInputSchemaForNewNode ?? defaultInputSchema(for: type),
+            outputSchema: userTemplate.outputSchema,
+            outputSchemaDescription: userTemplate.outputSchemaDescription,
+            selectedRoles: [],
+            securityAccess: Set(userTemplate.securityAccessRaw.compactMap { SecurityAccess(rawValue: $0) }),
+            position: newPosition
+        )
+
+        performSemanticMutation {
+            nodes.append(newNode)
+
+            if let parentIDForNewNode {
+                links.append(
+                    NodeLink(
+                        fromID: parentIDForNewNode,
+                        toID: newNodeID,
+                        tone: parentLinkToneForNewNode
+                    )
+                )
+
+                if
+                    let outputID = nodes.first(where: { $0.type == .output })?.id,
+                    let parentToOutputIndex = links.firstIndex(where: {
+                        $0.fromID == parentIDForNewNode && $0.toID == outputID
+                    })
+                {
+                    let redirectedLink = links[parentToOutputIndex]
+                    links.remove(at: parentToOutputIndex)
+
+                    if !links.contains(where: { $0.fromID == newNodeID && $0.toID == outputID }) {
+                        links.append(
+                            NodeLink(
+                                fromID: newNodeID,
+                                toID: outputID,
+                                tone: redirectedLink.tone,
+                                edgeType: redirectedLink.edgeType
+                            )
+                        )
+                    }
+                }
+            }
+
+            stabilizeLayout(afterAddingAtY: newPosition.y, parentID: parentIDForNewNode)
+            selectedLinkID = nil
+            selectedNodeID = newNode.id
+        }
+    }
+
     private func nextChildPosition(
         parent: OrgNode,
         existingChildren: [OrgNode],
@@ -4154,6 +4374,8 @@ struct ContentView: View {
 private struct NodeInspector: View {
     @Binding var node: OrgNode
     let onDelete: () -> Void
+    var onSaveAsTemplate: (() -> Void)?
+    var headerTitle: String = "Node Details"
 
     private let editableTypes: [NodeType] = [.human, .agent]
     // allRoles removed — preset roles replaced by node templates.
@@ -4170,9 +4392,19 @@ private struct NodeInspector: View {
             } else {
                 VStack(alignment: .leading, spacing: 18) {
                     HStack(spacing: 10) {
-                        Text("Node Details")
+                        Text(headerTitle)
                             .font(.title2.bold())
                         Spacer()
+                        if let onSaveAsTemplate {
+                            Button {
+                                onSaveAsTemplate()
+                            } label: {
+                                Image(systemName: "square.and.arrow.down")
+                                    .font(.body.weight(.semibold))
+                            }
+                            .buttonStyle(.bordered)
+                            .accessibilityLabel("Save as Node Template")
+                        }
                         Button(role: .destructive) {
                             onDelete()
                         } label: {
@@ -4180,7 +4412,7 @@ private struct NodeInspector: View {
                                 .font(.body.weight(.semibold))
                         }
                         .buttonStyle(.bordered)
-                        .accessibilityLabel("Delete Node")
+                        .accessibilityLabel("Delete")
                     }
 
                     GroupBox {
@@ -4563,6 +4795,253 @@ private struct CoordinatorTraceRow: View {
             sections.append(summary)
         }
         return sections.joined(separator: "\n\n")
+    }
+}
+
+// MARK: - Node Template Library
+
+private struct NodeTemplateLibrarySheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
+    @Query(sort: \UserNodeTemplate.updatedAt, order: .reverse)
+    private var templates: [UserNodeTemplate]
+    let onInsert: ((UserNodeTemplate) -> Void)?
+
+    init(onInsert: ((UserNodeTemplate) -> Void)? = nil) {
+        self.onInsert = onInsert
+    }
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if templates.isEmpty {
+                    ContentUnavailableView(
+                        "No Node Templates",
+                        systemImage: "rectangle.stack",
+                        description: Text("Select a node in the editor and tap the save button to create a reusable node template.")
+                    )
+                } else {
+                    List {
+                        Section {
+                            ForEach(templates) { template in
+                                NavigationLink {
+                                    NodeTemplateEditorForm(template: template)
+                                } label: {
+                                    nodeTemplateRow(template)
+                                }
+                                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                    Button(role: .destructive) {
+                                        modelContext.delete(template)
+                                    } label: {
+                                        Label("Delete", systemImage: "trash")
+                                    }
+                                }
+                                .contextMenu {
+                                    if let onInsert {
+                                        Button {
+                                            onInsert(template)
+                                        } label: {
+                                            Label("Insert into Graph", systemImage: "plus.circle")
+                                        }
+                                    }
+                                    Button {
+                                        duplicateTemplate(template)
+                                    } label: {
+                                        Label("Duplicate", systemImage: "plus.square.on.square")
+                                    }
+                                    Button(role: .destructive) {
+                                        modelContext.delete(template)
+                                    } label: {
+                                        Label("Delete", systemImage: "trash")
+                                    }
+                                }
+                            }
+                        } header: {
+                            Text("My Node Templates")
+                        }
+
+                        Section {
+                            ForEach(NodeTemplate.allCases) { builtIn in
+                                HStack(spacing: 12) {
+                                    Image(systemName: builtIn.icon)
+                                        .font(.body.weight(.semibold))
+                                        .foregroundStyle(.secondary)
+                                        .frame(width: 28)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(builtIn.label)
+                                            .font(.subheadline.weight(.medium))
+                                        Text(builtIn.title)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                            }
+                        } header: {
+                            Text("Built-in")
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Node Templates")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.body.weight(.semibold))
+                    }
+                }
+            }
+        }
+    }
+
+    private func nodeTemplateRow(_ template: UserNodeTemplate) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: template.icon)
+                .font(.body.weight(.semibold))
+                .foregroundStyle(Color.accentColor)
+                .frame(width: 28)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(template.label)
+                    .font(.subheadline.weight(.medium))
+                HStack(spacing: 6) {
+                    Text(template.title)
+                    Text("·")
+                    Text(template.department)
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func duplicateTemplate(_ source: UserNodeTemplate) {
+        let copy = UserNodeTemplate(
+            label: "\(source.label) Copy",
+            icon: source.icon,
+            name: source.name,
+            title: source.title,
+            department: source.department,
+            nodeTypeRaw: source.nodeTypeRaw,
+            providerRaw: source.providerRaw,
+            roleDescription: source.roleDescription,
+            outputSchema: source.outputSchema,
+            outputSchemaDescription: source.outputSchemaDescription,
+            securityAccessRaw: source.securityAccessRaw
+        )
+        modelContext.insert(copy)
+    }
+}
+
+/// Wraps NodeInspector to edit a UserNodeTemplate by maintaining a transient OrgNode
+/// and syncing changes back to the SwiftData model.
+private struct NodeTemplateEditorForm: View {
+    @Bindable var template: UserNodeTemplate
+    @Environment(\.modelContext) private var modelContext
+    @Environment(\.dismiss) private var dismiss
+    @State private var node: OrgNode
+    @State private var isShowingDeleteConfirmation = false
+
+    private static let iconChoices = [
+        "star", "bolt", "shield.checkered", "magnifyingglass",
+        "exclamationmark.bubble", "checkmark.seal", "text.justify.left",
+        "arrow.triangle.branch", "person.badge.clock", "gearshape",
+        "brain.head.profile", "doc.text", "network", "cpu",
+        "lock.shield", "eye", "lightbulb", "wrench.and.screwdriver"
+    ]
+
+    init(template: UserNodeTemplate) {
+        self.template = template
+        self._node = State(initialValue: OrgNode(
+            id: UUID(),
+            name: template.name,
+            title: template.title,
+            department: template.department,
+            type: NodeType(rawValue: template.nodeTypeRaw) ?? .agent,
+            provider: LLMProvider(rawValue: template.providerRaw) ?? .chatGPT,
+            roleDescription: template.roleDescription,
+            inputSchema: "",
+            outputSchema: template.outputSchema,
+            outputSchemaDescription: template.outputSchemaDescription,
+            selectedRoles: [],
+            securityAccess: Set(template.securityAccessRaw.compactMap { SecurityAccess(rawValue: $0) }),
+            position: .zero
+        ))
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                // Template-specific fields: icon picker and label
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 14) {
+                        HStack(spacing: 12) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Icon")
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                                Menu {
+                                    ForEach(Self.iconChoices, id: \.self) { icon in
+                                        Button {
+                                            template.icon = icon
+                                            template.updatedAt = Date()
+                                        } label: {
+                                            Label(icon, systemImage: icon)
+                                        }
+                                    }
+                                } label: {
+                                    Image(systemName: template.icon)
+                                        .font(.title3)
+                                        .frame(width: 36, height: 36)
+                                        .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+                                }
+                            }
+                            Spacer()
+                        }
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Node Template Label")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            TextField("Node Template Label", text: $template.label)
+                                .textFieldStyle(.roundedBorder)
+                                .onChange(of: template.label) { _, _ in template.updatedAt = Date() }
+                        }
+                    }
+                } label: {
+                    Text("Node Template Identity")
+                }
+
+                // Reuse the NodeInspector for all node properties
+                NodeInspector(
+                    node: $node,
+                    onDelete: { isShowingDeleteConfirmation = true },
+                    headerTitle: "Node Template Details"
+                )
+            }
+            .padding(20)
+        }
+        .navigationTitle("Edit Node Template")
+        .navigationBarTitleDisplayMode(.inline)
+        .confirmationDialog("Delete Node Template?", isPresented: $isShowingDeleteConfirmation) {
+            Button("Delete Node Template", role: .destructive) {
+                modelContext.delete(template)
+                dismiss()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This will permanently delete the \"\(template.label)\" node template.")
+        }
+        .onChange(of: node.name) { _, val in template.name = val; template.updatedAt = Date() }
+        .onChange(of: node.title) { _, val in template.title = val; template.updatedAt = Date() }
+        .onChange(of: node.department) { _, val in template.department = val; template.updatedAt = Date() }
+        .onChange(of: node.type) { _, val in template.nodeTypeRaw = val.rawValue; template.updatedAt = Date() }
+        .onChange(of: node.provider) { _, val in template.providerRaw = val.rawValue; template.updatedAt = Date() }
+        .onChange(of: node.roleDescription) { _, val in template.roleDescription = val; template.updatedAt = Date() }
+        .onChange(of: node.outputSchema) { _, val in template.outputSchema = val; template.updatedAt = Date() }
+        .onChange(of: node.outputSchemaDescription) { _, val in template.outputSchemaDescription = val; template.updatedAt = Date() }
+        .onChange(of: node.securityAccess) { _, val in template.securityAccessRaw = val.map(\.rawValue); template.updatedAt = Date() }
     }
 }
 

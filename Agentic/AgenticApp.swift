@@ -13,6 +13,7 @@ struct AgenticApp: App {
     var sharedModelContainer: ModelContainer = {
         let schema = Schema([
             GraphDocument.self,
+            UserNodeTemplate.self,
         ])
         let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
 
