@@ -8,7 +8,9 @@
       "Bash(swift build:*)",
       "Bash(xcodebuild -scheme Agentic -destination 'platform=iOS Simulator,name=iPhone 16' build)",
       "Bash(xcodebuild -scheme Agentic -destination 'platform=iOS Simulator,name=iPhone 17 Pro' build)",
-      "Bash(xcodebuild -scheme Agentic -destination 'platform=macOS,variant=Mac Catalyst' build)"
+      "Bash(xcodebuild -scheme Agentic -destination 'platform=macOS,variant=Mac Catalyst' build)",
+      "Bash(wc -l /Users/benmilford/Documents/Projects/Agentic/Agentic/*.swift)",
+      "Bash(grep -n \"enum.*Error\\\\|struct.*Provider\" /Users/benmilford/Documents/Projects/Agentic/Agentic/*.swift)"
     ]
   }
 }
