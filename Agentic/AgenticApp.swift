@@ -14,6 +14,7 @@ struct AgenticApp: App {
         let schema = Schema([
             GraphDocument.self,
             UserNodeTemplate.self,
+            MCPServerConnection.self,
         ])
         let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
 

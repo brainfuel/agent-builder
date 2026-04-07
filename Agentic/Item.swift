@@ -54,6 +54,7 @@ final class UserNodeTemplate {
     var outputSchema: String
     var outputSchemaDescription: String
     var securityAccessRaw: [String]
+    var assignedToolsRaw: [String] = []
     var createdAt: Date
     var updatedAt: Date
 
@@ -70,6 +71,7 @@ final class UserNodeTemplate {
         outputSchema: String,
         outputSchemaDescription: String,
         securityAccessRaw: [String],
+        assignedToolsRaw: [String] = [],
         createdAt: Date = Date(),
         updatedAt: Date = Date()
     ) {
@@ -85,7 +87,43 @@ final class UserNodeTemplate {
         self.outputSchema = outputSchema
         self.outputSchemaDescription = outputSchemaDescription
         self.securityAccessRaw = securityAccessRaw
+        self.assignedToolsRaw = assignedToolsRaw
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+    }
+}
+
+@Model
+final class MCPServerConnection {
+    @Attribute(.unique) var id: UUID
+    var name: String
+    var url: String
+    var apiKey: String
+    var icon: String
+    var category: String
+    var serverDescription: String
+    var isEnabled: Bool
+    var addedAt: Date
+
+    init(
+        id: UUID = UUID(),
+        name: String,
+        url: String,
+        apiKey: String = "",
+        icon: String = "server.rack",
+        category: String = "General",
+        serverDescription: String = "",
+        isEnabled: Bool = false,
+        addedAt: Date = Date()
+    ) {
+        self.id = id
+        self.name = name
+        self.url = url
+        self.apiKey = apiKey
+        self.icon = icon
+        self.category = category
+        self.serverDescription = serverDescription
+        self.isEnabled = isEnabled
+        self.addedAt = addedAt
     }
 }

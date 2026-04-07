@@ -10,7 +10,10 @@
       "Bash(xcodebuild -scheme Agentic -destination 'platform=iOS Simulator,name=iPhone 17 Pro' build)",
       "Bash(xcodebuild -scheme Agentic -destination 'platform=macOS,variant=Mac Catalyst' build)",
       "Bash(wc -l /Users/benmilford/Documents/Projects/Agentic/Agentic/*.swift)",
-      "Bash(grep -n \"enum.*Error\\\\|struct.*Provider\" /Users/benmilford/Documents/Projects/Agentic/Agentic/*.swift)"
+      "Bash(grep -n \"enum.*Error\\\\|struct.*Provider\" /Users/benmilford/Documents/Projects/Agentic/Agentic/*.swift)",
+      "mcp__mcp-registry__search_mcp_registry",
+      "WebFetch(domain:github.com)",
+      "Bash(ls /Users/benmilford/Documents/Projects/Agentic/Agentic/*.swift)"
     ]
   }
 }

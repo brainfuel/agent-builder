@@ -62,6 +62,7 @@ struct ContentView: View {
     @State private var isShowingTaskResults = false
     @State private var taskResultsDocumentKey: String?
     @State private var isShowingAPIKeys = false
+    @State private var isShowingToolCatalog = false
     @State private var isShowingNodeTemplateLibrary = false
     @State private var templateSavedName: String?
     @State private var isShowingWipeDataConfirmation = false
@@ -310,6 +311,10 @@ struct ContentView: View {
         }
         .sheet(isPresented: $isShowingAPIKeys) {
             APIKeysSheet(store: apiKeyStore, modelStore: providerModelStore)
+                .presentationDetents([.medium, .large])
+        }
+        .sheet(isPresented: $isShowingToolCatalog) {
+            ToolCatalogSheet()
                 .presentationDetents([.medium, .large])
         }
         .sheet(isPresented: $isShowingNodeTemplateLibrary) {
@@ -594,6 +599,15 @@ struct ContentView: View {
         .toolbar {
             if usesTaskSplitView {
                 ToolbarItemGroup(placement: .topBarTrailing) {
+                    Button {
+                        isShowingToolCatalog = true
+                    } label: {
+                        Label("Tools", systemImage: "wrench.and.screwdriver")
+                    }
+                    .labelStyle(.iconOnly)
+                    .accessibilityLabel("Tool Catalog")
+                    .help("Tool Catalog")
+
                     Button {
                         isShowingAPIKeys = true
                     } label: {
@@ -1461,7 +1475,8 @@ struct ContentView: View {
                 inputSchema: node.inputSchema,
                 outputSchema: node.outputSchema,
                 outputSchemaDescription: node.outputSchemaDescription,
-                securityAccess: Set(node.securityAccess.map(\.rawValue))
+                securityAccess: Set(node.securityAccess.map(\.rawValue)),
+                assignedTools: node.assignedTools
             )
         }
         let validNodeIDs = Set(graphNodes.map(\.id))
@@ -1610,6 +1625,7 @@ struct ContentView: View {
     /// Runs the coordinator pipeline with optional retry feedback injected into the goal.
     private func runCoordinatorPipelineWithFeedback(_ feedback: String?) {
         guard !orchestrationGraph.nodes.isEmpty else { return }
+        ToolExecutionEngine.shared.resetMemory()
         var normalizedGoal = orchestrationGoal.trimmingCharacters(in: .whitespacesAndNewlines)
         if normalizedGoal.isEmpty {
             normalizedGoal = "Execute coordinator objective"
@@ -1815,7 +1831,9 @@ struct ContentView: View {
             requiredOutputSchema: packet.requiredOutputSchema,
             outputSchemaDescription: packet.outputSchemaDescription,
             handoffSummaries: handoffSummaries,
-            allowedPermissions: packet.allowedPermissions
+            allowedPermissions: packet.allowedPermissions,
+            assignedTools: packet.assignedTools,
+            assignedToolNames: packet.assignedTools.compactMap { MCPToolRegistry.toolsByID[$0]?.name }
         )
 
         do {
@@ -1827,10 +1845,11 @@ struct ContentView: View {
                 preferredModelID: preferredModel
             )
             let normalized = output.trimmingCharacters(in: .whitespacesAndNewlines)
-            let completed = !normalized.lowercased().hasPrefix("blocked")
+            let needsHumanReview = normalized.contains("HUMAN_REVIEW_REQUESTED")
+            let completed = !normalized.lowercased().hasPrefix("blocked") && !needsHumanReview
             return MCPTaskResponse(
                 summary: normalized,
-                confidence: completed ? 0.9 : 0.4,
+                confidence: completed ? 0.9 : (needsHumanReview ? 0.7 : 0.4),
                 completed: completed
             )
         } catch {
@@ -2340,6 +2359,7 @@ struct ContentView: View {
                 outputSchemaDescription: node.outputSchemaDescription,
                 selectedRoles: [],
                 securityAccess: (node.securityAccess ?? []).compactMap { SecurityAccess(rawValue: $0) },
+                assignedTools: nil,
                 positionX: node.positionX ?? 400,
                 positionY: node.positionY ?? 0
             )
@@ -2846,6 +2866,7 @@ struct ContentView: View {
             outputSchemaDescription: template.outputSchemaDescription,
             selectedRoles: [],
             securityAccess: template.securityAccess,
+            assignedTools: template.defaultTools,
             position: newPosition
         )
 
@@ -2903,7 +2924,8 @@ struct ContentView: View {
             roleDescription: node.roleDescription,
             outputSchema: node.outputSchema,
             outputSchemaDescription: node.outputSchemaDescription,
-            securityAccessRaw: node.securityAccess.map(\.rawValue)
+            securityAccessRaw: node.securityAccess.map(\.rawValue),
+            assignedToolsRaw: node.assignedTools.sorted()
         )
         modelContext.insert(template)
         templateSavedName = node.name
@@ -3009,6 +3031,7 @@ struct ContentView: View {
             outputSchemaDescription: userTemplate.outputSchemaDescription,
             selectedRoles: [],
             securityAccess: Set(userTemplate.securityAccessRaw.compactMap { SecurityAccess(rawValue: $0) }),
+            assignedTools: Set(userTemplate.assignedToolsRaw),
             position: newPosition
         )
 
@@ -3144,6 +3167,7 @@ struct ContentView: View {
                 outputSchemaDescription: entry.outputSchemaDescription ?? DefaultSchema.defaultDescription(for: entry.outputSchema ?? defaultOutputSchema(for: entry.type)),
                 selectedRoles: Set(entry.selectedRoles),
                 securityAccess: Set(entry.securityAccess),
+                assignedTools: Set(entry.assignedTools ?? []),
                 position: CGPoint(x: entry.positionX, y: entry.positionY)
             )
         }
@@ -3712,6 +3736,7 @@ struct ContentView: View {
                 outputSchemaDescription: entry.outputSchemaDescription ?? DefaultSchema.defaultDescription(for: entry.outputSchema ?? defaultOutputSchema(for: entry.type)),
                 selectedRoles: Set(entry.selectedRoles),
                 securityAccess: Set(entry.securityAccess),
+                assignedTools: Set(entry.assignedTools ?? []),
                 position: CGPoint(x: entry.positionX, y: entry.positionY)
             )
         }
@@ -4549,6 +4574,40 @@ private struct NodeInspector: View {
                     } label: {
                         Text("Security Access")
                     }
+
+                    GroupBox {
+                        VStack(alignment: .leading, spacing: 12) {
+                            ForEach(MCPToolRegistry.categories, id: \.self) { category in
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text(category)
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(.secondary)
+                                    ForEach(MCPToolRegistry.tools(in: category)) { tool in
+                                        Toggle(isOn: Binding(
+                                            get: { node.assignedTools.contains(tool.id) },
+                                            set: { enabled in
+                                                if enabled {
+                                                    node.assignedTools.insert(tool.id)
+                                                } else {
+                                                    node.assignedTools.remove(tool.id)
+                                                }
+                                            }
+                                        )) {
+                                            VStack(alignment: .leading, spacing: 2) {
+                                                Text(tool.name)
+                                                    .font(.callout)
+                                                Text(tool.description)
+                                                    .font(.caption2)
+                                                    .foregroundStyle(.tertiary)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } label: {
+                        Text("Tools")
+                    }
                 }
             }
         }
@@ -4928,7 +4987,8 @@ private struct NodeTemplateLibrarySheet: View {
             roleDescription: source.roleDescription,
             outputSchema: source.outputSchema,
             outputSchemaDescription: source.outputSchemaDescription,
-            securityAccessRaw: source.securityAccessRaw
+            securityAccessRaw: source.securityAccessRaw,
+            assignedToolsRaw: source.assignedToolsRaw
         )
         modelContext.insert(copy)
     }
@@ -4966,6 +5026,7 @@ private struct NodeTemplateEditorForm: View {
             outputSchemaDescription: template.outputSchemaDescription,
             selectedRoles: [],
             securityAccess: Set(template.securityAccessRaw.compactMap { SecurityAccess(rawValue: $0) }),
+            assignedTools: Set(template.assignedToolsRaw),
             position: .zero
         ))
     }
@@ -5042,6 +5103,7 @@ private struct NodeTemplateEditorForm: View {
         .onChange(of: node.outputSchema) { _, val in template.outputSchema = val; template.updatedAt = Date() }
         .onChange(of: node.outputSchemaDescription) { _, val in template.outputSchemaDescription = val; template.updatedAt = Date() }
         .onChange(of: node.securityAccess) { _, val in template.securityAccessRaw = val.map(\.rawValue); template.updatedAt = Date() }
+        .onChange(of: node.assignedTools) { _, val in template.assignedToolsRaw = val.sorted(); template.updatedAt = Date() }
     }
 }
 
@@ -5934,6 +5996,7 @@ private struct OrgNode: Identifiable {
     var outputSchemaDescription: String
     var selectedRoles: Set<PresetRole>
     var securityAccess: Set<SecurityAccess>
+    var assignedTools: Set<String> = []
     var position: CGPoint
 
     var initials: String {
@@ -6020,6 +6083,7 @@ private struct OrgNode: Identifiable {
             outputSchemaDescription: DefaultSchema.defaultDescription(for: DefaultSchema.researchBrief),
             selectedRoles: [.researcher],
             securityAccess: [.workspaceRead, .webAccess],
+            assignedTools: ["web_search"],
             position: CGPoint(x: 940, y: 280)
         ),
         OrgNode(
@@ -6222,6 +6286,7 @@ private struct HierarchySnapshotNode: Codable {
     var outputSchemaDescription: String?
     var selectedRoles: [PresetRole]
     var securityAccess: [SecurityAccess]
+    var assignedTools: [String]?
     var positionX: CGFloat
     var positionY: CGFloat
 }
@@ -6546,6 +6611,7 @@ private func makeHierarchySnapshot(nodes: [OrgNode], links: [NodeLink]) -> Hiera
             outputSchemaDescription: node.outputSchemaDescription,
             selectedRoles: node.selectedRoles.sorted { $0.rawValue < $1.rawValue },
             securityAccess: node.securityAccess.sorted { $0.rawValue < $1.rawValue },
+            assignedTools: node.assignedTools.sorted(),
             positionX: node.position.x,
             positionY: node.position.y
         )
@@ -7060,6 +7126,7 @@ private struct OrchestrationNode: Identifiable, Codable {
     let outputSchema: String
     let outputSchemaDescription: String
     let securityAccess: Set<String>
+    let assignedTools: Set<String>
 }
 
 private struct OrchestrationEdge: Codable {
@@ -7084,6 +7151,7 @@ private struct CoordinatorTaskPacket: Identifiable, Codable {
     let outputSchemaDescription: String
     let requiredHandoffs: [CoordinatorHandoffRequirement]
     let allowedPermissions: [String]
+    let assignedTools: [String]
 }
 
 private struct PendingCoordinatorExecution: Codable {
@@ -7263,7 +7331,8 @@ private struct CoordinatorOrchestrator {
                     requiredOutputSchema: node.outputSchema,
                     outputSchemaDescription: node.outputSchemaDescription,
                     requiredHandoffs: handoffs,
-                    allowedPermissions: node.securityAccess.sorted()
+                    allowedPermissions: node.securityAccess.sorted(),
+                    assignedTools: node.assignedTools.sorted()
                 )
             )
             packetIndex += 1
@@ -7732,6 +7801,869 @@ private enum NodeTemplate: String, CaseIterable, Identifiable {
         case .humanReviewGate:  return [.workspaceRead]
         default:                return [.workspaceRead]
         }
+    }
+
+    var defaultTools: Set<String> {
+        switch self {
+        case .researcher:       return ["web_search"]
+        case .factChecker:      return ["web_search"]
+        default:                return []
+        }
+    }
+}
+
+// MARK: - Curated MCP Server Catalog
+
+private struct CuratedMCPServer: Identifiable {
+    let id: String
+    let name: String
+    let url: String
+    let icon: String
+    let category: String
+    let description: String
+    let requiresAPIKey: Bool
+}
+
+private enum CuratedMCPCatalog {
+    static let servers: [CuratedMCPServer] = [
+        CuratedMCPServer(
+            id: "github",
+            name: "GitHub",
+            url: "https://api.githubcopilot.com/mcp",
+            icon: "chevron.left.forwardslash.chevron.right",
+            category: "Development",
+            description: "Access repositories, issues, pull requests, and code search.",
+            requiresAPIKey: false
+        ),
+        CuratedMCPServer(
+            id: "notion",
+            name: "Notion",
+            url: "https://mcp.notion.com/mcp",
+            icon: "doc.richtext",
+            category: "Productivity",
+            description: "Read and search Notion pages, databases, and workspaces.",
+            requiresAPIKey: false
+        ),
+        CuratedMCPServer(
+            id: "linear",
+            name: "Linear",
+            url: "https://mcp.linear.app/sse",
+            icon: "target",
+            category: "Productivity",
+            description: "Manage issues, projects, and cycles in Linear.",
+            requiresAPIKey: false
+        ),
+        CuratedMCPServer(
+            id: "stripe",
+            name: "Stripe",
+            url: "https://mcp.stripe.com/",
+            icon: "creditcard",
+            category: "Business",
+            description: "Search transactions, customers, invoices, and payment data.",
+            requiresAPIKey: false
+        ),
+        CuratedMCPServer(
+            id: "supabase",
+            name: "Supabase",
+            url: "https://mcp.supabase.com/mcp",
+            icon: "cylinder",
+            category: "Development",
+            description: "Query and manage your Supabase PostgreSQL databases.",
+            requiresAPIKey: false
+        ),
+        CuratedMCPServer(
+            id: "exa",
+            name: "Exa Search",
+            url: "https://mcp.exa.ai/mcp",
+            icon: "magnifyingglass.circle",
+            category: "Search",
+            description: "Semantic web search with AI-powered result ranking.",
+            requiresAPIKey: true
+        ),
+        CuratedMCPServer(
+            id: "cloudinary",
+            name: "Cloudinary",
+            url: "https://asset-management.mcp.cloudinary.com/sse",
+            icon: "photo.on.rectangle",
+            category: "Media",
+            description: "Upload, transform, and manage images and media assets.",
+            requiresAPIKey: false
+        ),
+        CuratedMCPServer(
+            id: "vercel",
+            name: "Vercel",
+            url: "https://mcp.vercel.com/",
+            icon: "arrowtriangle.up.fill",
+            category: "Development",
+            description: "Manage deployments, domains, and serverless functions.",
+            requiresAPIKey: false
+        ),
+    ]
+
+    static var categories: [String] {
+        servers.map(\.category).reduce(into: [String]()) { result, cat in
+            if !result.contains(cat) { result.append(cat) }
+        }
+    }
+
+    static func servers(in category: String) -> [CuratedMCPServer] {
+        servers.filter { $0.category == category }
+    }
+}
+
+// MARK: - Tool Catalog Sheet
+
+private struct ToolCatalogSheet: View {
+    private struct ServerToolListSelection: Identifiable, Hashable {
+        let id: UUID
+        let name: String
+        let tools: [MCPRemoteTool]
+    }
+
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
+    @Query private var savedServers: [MCPServerConnection]
+    @ObservedObject private var mcpManager = MCPServerManager.shared
+    @State private var configuringServer: CuratedMCPServer?
+    @State private var serverAPIKey = ""
+    @State private var addingCustomServer = false
+    @State private var customName = ""
+    @State private var customURL = ""
+    @State private var customAPIKey = ""
+    @State private var selectedServerTools: ServerToolListSelection?
+    @State private var navigationPath = NavigationPath()
+
+    var body: some View {
+        NavigationStack(path: $navigationPath) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    // MARK: Built-in Tools
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("BUILT-IN TOOLS")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 20)
+
+                        Text("Always available. Assign per-node in the Node Details inspector.")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                            .padding(.horizontal, 20)
+                            .padding(.bottom, 4)
+
+                        VStack(spacing: 1) {
+                            ForEach(MCPToolRegistry.allTools) { tool in
+                                HStack(spacing: 14) {
+                                    Image(systemName: toolIcon(for: tool.id))
+                                        .font(.title3)
+                                        .foregroundStyle(Color.accentColor)
+                                        .frame(width: 32, height: 32)
+
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(tool.name)
+                                            .font(.body.weight(.medium))
+                                        Text(tool.description)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(2)
+                                    }
+
+                                    Spacer()
+
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .foregroundStyle(.green)
+                                }
+                                .padding(.horizontal, 20)
+                                .padding(.vertical, 10)
+                                .background(Color(.secondarySystemGroupedBackground))
+                            }
+                        }
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                        .padding(.horizontal, 16)
+                    }
+
+                    // MARK: MCP Servers
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("MCP SERVERS")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 20)
+
+                        Text("Connect external services via the Model Context Protocol. Tools from connected servers become available in the Node Details inspector.")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                            .padding(.horizontal, 20)
+                            .padding(.bottom, 4)
+
+                        ForEach(CuratedMCPCatalog.categories, id: \.self) { category in
+                            VStack(alignment: .leading, spacing: 0) {
+                                Text(category)
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                                    .padding(.horizontal, 20)
+                                    .padding(.bottom, 6)
+                                    .padding(.top, 8)
+
+                                VStack(spacing: 1) {
+                                    ForEach(CuratedMCPCatalog.servers(in: category)) { server in
+                                        let savedConnection = preferredSavedConnection(for: server)
+                                        let isConnected = savedConnection != nil
+                                        let status = savedConnection.flatMap { mcpManager.connectionStatus[$0.id] }
+                                        let cachedToolCount = savedConnection.map { toolCountForDisplay(connection: $0, status: status) } ?? 0
+                                        HStack(spacing: 14) {
+                                            Image(systemName: server.icon)
+                                                .font(.title3)
+                                                .foregroundStyle(isConnected ? Color.accentColor : .secondary)
+                                                .frame(width: 32, height: 32)
+
+                                            VStack(alignment: .leading, spacing: 3) {
+                                                HStack(spacing: 8) {
+                                                    Text(server.name)
+                                                        .font(.body.weight(.medium))
+                                                    serverStatusBadge(isConnected: isConnected, status: status, cachedToolCount: cachedToolCount)
+                                                }
+                                                Text(server.description)
+                                                    .font(.caption)
+                                                    .foregroundStyle(.secondary)
+                                                    .lineLimit(2)
+                                                if case .connected(let count) = status {
+                                                    Text("\(count) tool\(count == 1 ? "" : "s") available")
+                                                        .font(.caption2)
+                                                        .foregroundStyle(.green)
+                                                } else if case .failed(let msg) = status {
+                                                    Text(msg)
+                                                        .font(.caption2)
+                                                        .foregroundStyle(.red)
+                                                        .lineLimit(3)
+                                                } else if cachedToolCount > 0 {
+                                                    Text("\(cachedToolCount) tool\(cachedToolCount == 1 ? "" : "s") available (tap to view)")
+                                                        .font(.caption2)
+                                                        .foregroundStyle(.secondary)
+                                                }
+                                            }
+                                            .contentShape(Rectangle())
+                                            .onTapGesture {
+                                                handleServerRowTap(connection: savedConnection, status: status)
+                                            }
+
+                                            Spacer()
+
+                                            if case .connecting = status {
+                                                ProgressView()
+                                                    .controlSize(.small)
+                                            } else if case .awaitingOAuth = status {
+                                                ProgressView()
+                                                    .controlSize(.small)
+                                            } else if isConnected {
+                                                HStack(spacing: 10) {
+                                                    if status == nil || status == .disconnected {
+                                                        Button {
+                                                            if let conn = savedConnection {
+                                                                Task { await mcpManager.connect(to: conn) }
+                                                            }
+                                                        } label: {
+                                                            Text("Refresh")
+                                                                .font(.caption.weight(.medium))
+                                                                .foregroundStyle(Color.accentColor)
+                                                        }
+                                                        .buttonStyle(.plain)
+                                                    }
+                                                    Button {
+                                                        disconnectServer(named: server.name)
+                                                    } label: {
+                                                        Text("Remove")
+                                                            .font(.caption.weight(.medium))
+                                                            .foregroundStyle(.red)
+                                                    }
+                                                    .buttonStyle(.plain)
+                                                }
+                                            } else {
+                                                Button {
+                                                    if server.requiresAPIKey {
+                                                        configuringServer = server
+                                                        serverAPIKey = ""
+                                                    } else {
+                                                        connectServer(server, apiKey: "")
+                                                    }
+                                                } label: {
+                                                    Text("Connect")
+                                                        .font(.caption.weight(.semibold))
+                                                        .foregroundStyle(.white)
+                                                        .padding(.horizontal, 12)
+                                                        .padding(.vertical, 5)
+                                                        .background(Color.accentColor, in: Capsule())
+                                                }
+                                                .buttonStyle(.plain)
+                                            }
+                                        }
+                                        .padding(.horizontal, 20)
+                                        .padding(.vertical, 10)
+                                        .background(Color(.secondarySystemGroupedBackground))
+                                    }
+                                }
+                                .clipShape(RoundedRectangle(cornerRadius: 10))
+                                .padding(.horizontal, 16)
+                            }
+                        }
+                    }
+
+                    // MARK: Custom Server
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("CUSTOM SERVER")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 20)
+
+                        Button {
+                            addingCustomServer = true
+                            customName = ""
+                            customURL = ""
+                            customAPIKey = ""
+                        } label: {
+                            HStack(spacing: 10) {
+                                Image(systemName: "plus.circle.fill")
+                                    .font(.title3)
+                                Text("Add Custom MCP Server")
+                                    .font(.body.weight(.medium))
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                                    .font(.caption)
+                                    .foregroundStyle(.tertiary)
+                            }
+                            .padding(.horizontal, 20)
+                            .padding(.vertical, 12)
+                            .background(Color(.secondarySystemGroupedBackground))
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.horizontal, 16)
+
+                        // Show custom servers
+                        let customServers = savedServers.filter { conn in
+                            !CuratedMCPCatalog.servers.contains(where: { $0.name == conn.name })
+                        }
+                        if !customServers.isEmpty {
+                            VStack(spacing: 1) {
+                                ForEach(customServers) { server in
+                                    HStack(spacing: 14) {
+                                        Image(systemName: "server.rack")
+                                            .font(.title3)
+                                            .foregroundStyle(server.isEnabled ? Color.accentColor : .secondary)
+                                            .frame(width: 32, height: 32)
+
+                                        VStack(alignment: .leading, spacing: 3) {
+                                            HStack(spacing: 8) {
+                                                Text(server.name)
+                                                    .font(.body.weight(.medium))
+                                                if server.isEnabled {
+                                                    Text("Connected")
+                                                        .font(.caption2.weight(.semibold))
+                                                        .foregroundStyle(.white)
+                                                        .padding(.horizontal, 6)
+                                                        .padding(.vertical, 2)
+                                                        .background(Color.green, in: Capsule())
+                                                }
+                                            }
+                                            Text(server.url)
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                                .lineLimit(1)
+                                        }
+
+                                        Spacer()
+
+                                        Button {
+                                            modelContext.delete(server)
+                                        } label: {
+                                            Text("Remove")
+                                                .font(.caption.weight(.medium))
+                                                .foregroundStyle(.red)
+                                        }
+                                        .buttonStyle(.plain)
+                                    }
+                                    .padding(.horizontal, 20)
+                                    .padding(.vertical, 10)
+                                    .background(Color(.secondarySystemGroupedBackground))
+                                }
+                            }
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                            .padding(.horizontal, 16)
+                        }
+                    }
+                }
+                .padding(.vertical, 16)
+            }
+            .background(Color(.systemGroupedBackground))
+            .navigationTitle("Tool Catalog")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .alert("Connect \(configuringServer?.name ?? "")", isPresented: Binding(
+                get: { configuringServer != nil },
+                set: { if !$0 { configuringServer = nil } }
+            )) {
+                SecureField("API Key", text: $serverAPIKey)
+                Button("Connect") {
+                    if let server = configuringServer {
+                        connectServer(server, apiKey: serverAPIKey)
+                    }
+                    configuringServer = nil
+                }
+                Button("Cancel", role: .cancel) {
+                    configuringServer = nil
+                }
+            } message: {
+                Text("Enter your API key for \(configuringServer?.name ?? "this service"). The key is stored locally on your device.")
+            }
+            .alert("Add Custom MCP Server", isPresented: $addingCustomServer) {
+                TextField("Server Name", text: $customName)
+                TextField("Server URL", text: $customURL)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                SecureField("API Key (optional)", text: $customAPIKey)
+                Button("Add") {
+                    addCustomServer()
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Enter the MCP server endpoint URL (e.g. https://mcp.example.com/sse).")
+            }
+            .navigationDestination(for: ServerToolListSelection.self) { selection in
+                ServerToolsDetailView(serverName: selection.name, tools: selection.tools)
+            }
+        }
+    }
+
+    private func connectServer(_ server: CuratedMCPServer, apiKey: String) {
+        let trimmedAPIKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let existing = savedServers
+            .filter({ $0.name == server.name })
+            .sorted(by: { $0.addedAt > $1.addedAt })
+            .first
+        {
+            // Keep curated servers aligned to the latest known endpoint/metadata.
+            existing.url = server.url
+            existing.icon = server.icon
+            existing.category = server.category
+            existing.serverDescription = server.description
+            existing.isEnabled = true
+            if !server.requiresAPIKey {
+                existing.apiKey = ""
+            } else if !trimmedAPIKey.isEmpty {
+                existing.apiKey = trimmedAPIKey
+            }
+
+            // Remove stale duplicates that may keep old URLs around.
+            for duplicate in savedServers where duplicate.name == server.name && duplicate.id != existing.id {
+                mcpManager.disconnect(id: duplicate.id)
+                modelContext.delete(duplicate)
+            }
+
+            Task { await mcpManager.connect(to: existing) }
+            return
+        }
+
+        let connection = MCPServerConnection(
+            name: server.name,
+            url: server.url,
+            apiKey: server.requiresAPIKey ? trimmedAPIKey : "",
+            icon: server.icon,
+            category: server.category,
+            serverDescription: server.description,
+            isEnabled: true
+        )
+        modelContext.insert(connection)
+        Task { await mcpManager.connect(to: connection) }
+    }
+
+    private func disconnectServer(named name: String) {
+        let matches = savedServers.filter { $0.name == name }
+        for existing in matches {
+            mcpManager.disconnect(id: existing.id)
+            modelContext.delete(existing)
+        }
+    }
+
+    private func preferredSavedConnection(for server: CuratedMCPServer) -> MCPServerConnection? {
+        savedServers
+            .filter { $0.name == server.name && $0.isEnabled }
+            .sorted { lhs, rhs in
+                let lhsMatchesCuratedURL = lhs.url == server.url
+                let rhsMatchesCuratedURL = rhs.url == server.url
+                if lhsMatchesCuratedURL != rhsMatchesCuratedURL {
+                    return lhsMatchesCuratedURL && !rhsMatchesCuratedURL
+                }
+                return lhs.addedAt > rhs.addedAt
+            }
+            .first
+    }
+
+    private func addCustomServer() {
+        let trimmedURL = customURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedName = customName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedURL.isEmpty, !trimmedName.isEmpty else { return }
+
+        let connection = MCPServerConnection(
+            name: trimmedName,
+            url: trimmedURL,
+            apiKey: customAPIKey,
+            icon: "server.rack",
+            category: "Custom",
+            serverDescription: trimmedURL,
+            isEnabled: true
+        )
+        modelContext.insert(connection)
+        Task { await mcpManager.connect(to: connection) }
+    }
+
+    private func handleServerRowTap(connection: MCPServerConnection?, status: MCPServerManager.ConnectionStatus?) {
+        guard let connection else { return }
+
+        let liveTools = sortedTools(for: connection.id)
+        if !liveTools.isEmpty {
+            navigationPath.append(ServerToolListSelection(id: connection.id, name: connection.name, tools: liveTools))
+            return
+        }
+
+        let cachedTools = sortedCachedTools(for: connection)
+        if !cachedTools.isEmpty {
+            navigationPath.append(ServerToolListSelection(id: connection.id, name: connection.name, tools: cachedTools))
+            return
+        }
+
+        if case .connecting = status { return }
+        if case .awaitingOAuth = status { return }
+
+        Task {
+            await mcpManager.connect(to: connection)
+            await MainActor.run {
+                let refreshed = sortedTools(for: connection.id)
+                if !refreshed.isEmpty {
+                    navigationPath.append(ServerToolListSelection(id: connection.id, name: connection.name, tools: refreshed))
+                }
+            }
+        }
+    }
+
+    private func sortedTools(for connectionID: UUID) -> [MCPRemoteTool] {
+        (mcpManager.discoveredTools[connectionID] ?? []).sorted { lhs, rhs in
+            let lhsLabel = lhs.title ?? lhs.name
+            let rhsLabel = rhs.title ?? rhs.name
+            return lhsLabel.localizedCaseInsensitiveCompare(rhsLabel) == .orderedAscending
+        }
+    }
+
+    private func sortedCachedTools(for connection: MCPServerConnection) -> [MCPRemoteTool] {
+        mcpManager.cachedTools(for: connection.id).sorted { lhs, rhs in
+            let lhsLabel = lhs.title ?? lhs.name
+            let rhsLabel = rhs.title ?? rhs.name
+            return lhsLabel.localizedCaseInsensitiveCompare(rhsLabel) == .orderedAscending
+        }
+    }
+
+    private func toolCountForDisplay(connection: MCPServerConnection, status: MCPServerManager.ConnectionStatus?) -> Int {
+        if case .connected(let liveCount) = status {
+            return liveCount
+        }
+        let liveCount = mcpManager.discoveredTools[connection.id]?.count ?? 0
+        if liveCount > 0 { return liveCount }
+        return mcpManager.cachedToolCount(for: connection.id)
+    }
+
+    @ViewBuilder
+    private func serverStatusBadge(isConnected: Bool, status: MCPServerManager.ConnectionStatus?, cachedToolCount: Int) -> some View {
+        if case .connected(let count) = status {
+            Text("\(count) tools")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Color.green, in: Capsule())
+        } else if case .connecting = status {
+            Text("Connecting…")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Color(.tertiarySystemFill), in: Capsule())
+        } else if case .awaitingOAuth = status {
+            Text("Authorizing…")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Color.orange, in: Capsule())
+        } else if case .failed = status {
+            Text("Failed")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Color.red, in: Capsule())
+        } else if isConnected && cachedToolCount > 0 {
+            Text("\(cachedToolCount) tools")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Color.green, in: Capsule())
+        } else if isConnected {
+            Text("Saved")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Color(.tertiarySystemFill), in: Capsule())
+        }
+    }
+
+    private func toolIcon(for id: String) -> String {
+        switch id {
+        case "web_search":       return "globe.americas"
+        case "structured_output": return "doc.text.below.ecg"
+        case "human_review":     return "person.badge.clock"
+        default:                 return "wrench"
+        }
+    }
+}
+
+private struct ServerToolsDetailView: View {
+    let serverName: String
+    let tools: [MCPRemoteTool]
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("\(tools.count) tool\(tools.count == 1 ? "" : "s") available")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 20)
+                    .padding(.top, 4)
+
+                if tools.isEmpty {
+                    Text("No tools discovered yet. Use Refresh in Tool Catalog to load tools.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 20)
+                } else {
+                    VStack(spacing: 12) {
+                        ForEach(tools) { tool in
+                            ServerToolCard(tool: tool)
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                }
+            }
+            .padding(.bottom, 20)
+        }
+        .background(Color(.systemGroupedBackground))
+        .navigationTitle("\(serverName) Tools")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+private struct ServerToolCard: View {
+    let tool: MCPRemoteTool
+    @State private var isExpanded = false
+
+    private static let wordLimit = 40
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            // Title
+            Text(tool.title ?? tool.name)
+                .font(.body.weight(.semibold))
+
+            // Tool ID badge
+            Text(tool.name)
+                .font(.caption2.monospaced())
+                .foregroundStyle(.white)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(Color(.tertiaryLabel), in: Capsule())
+
+            // Description with show more/less
+            if let description = tool.description, !description.isEmpty {
+                let cleaned = Self.cleanForDisplay(description)
+                let words = cleaned.split(separator: " ", omittingEmptySubsequences: true)
+                let needsTruncation = words.count > Self.wordLimit
+
+                if isExpanded || !needsTruncation {
+                    // Render full markdown
+                    markdownText(description)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    if needsTruncation {
+                        Button("Show Less") {
+                            withAnimation(.easeInOut(duration: 0.2)) { isExpanded = false }
+                        }
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(Color.accentColor)
+                    }
+                } else {
+                    // Truncated preview
+                    let truncated = words.prefix(Self.wordLimit).joined(separator: " ") + "…"
+                    markdownText(truncated)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    Button("Show More") {
+                        withAnimation(.easeInOut(duration: 0.2)) { isExpanded = true }
+                    }
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(Color.accentColor)
+                }
+            }
+
+            // Parameters
+            if let schema = tool.inputSchema,
+               let props = schema.properties, !props.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Parameters")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 2)
+
+                    ForEach(props.keys.sorted(), id: \.self) { key in
+                        let prop = props[key]!
+                        let isRequired = schema.required?.contains(key) ?? false
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 6) {
+                                Text(key)
+                                    .font(.caption.monospaced().weight(.medium))
+                                if let type = prop.type {
+                                    Text(type)
+                                        .font(.caption2)
+                                        .foregroundStyle(.white.opacity(0.9))
+                                        .padding(.horizontal, 5)
+                                        .padding(.vertical, 1)
+                                        .background(Color(.systemGray3), in: Capsule())
+                                }
+                                if isRequired {
+                                    Text("required")
+                                        .font(.caption2.weight(.medium))
+                                        .foregroundStyle(.red.opacity(0.8))
+                                }
+                            }
+                            if let desc = prop.description, !desc.isEmpty {
+                                Text(desc)
+                                    .font(.caption)
+                                    .foregroundStyle(.tertiary)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(16)
+        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    /// Cleans raw MCP description text before rendering.
+    /// Strips custom XML-like tags (e.g. `<example>...</example>`, `<data-source>`)
+    /// that are meant for the LLM, not the user.
+    private static func cleanForDisplay(_ source: String) -> String {
+        var text = source
+        // Remove full <tag ...>...</tag> blocks (including multiline)
+        text = text.replacingOccurrences(
+            of: "(?s)<[a-zA-Z][a-zA-Z0-9_-]*[^>]*>.*?</[a-zA-Z][a-zA-Z0-9_-]*>",
+            with: "",
+            options: .regularExpression
+        )
+        // Remove any remaining self-closing or orphan tags
+        text = text.replacingOccurrences(
+            of: "</?[a-zA-Z][a-zA-Z0-9_-]*[^>]*>",
+            with: "",
+            options: .regularExpression
+        )
+        // Collapse excessive whitespace left behind
+        text = text.replacingOccurrences(of: "\\n{3,}", with: "\n\n", options: .regularExpression)
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Renders markdown text using SwiftUI's AttributedString, falling back to plain text.
+    @ViewBuilder
+    private func markdownText(_ source: String) -> some View {
+        let cleaned = Self.cleanForDisplay(source)
+        if let attributed = try? AttributedString(markdown: cleaned, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)) {
+            Text(attributed)
+        } else {
+            Text(cleaned)
+        }
+    }
+}
+
+// MARK: - MCP Tool Registry
+
+private struct MCPToolDefinition: Identifiable, Hashable {
+    let id: String
+    let name: String
+    let description: String
+    let category: String
+    let status: ToolStatus
+
+    enum ToolStatus: String, Hashable {
+        case active = "Active"
+        case planned = "Coming Soon"
+    }
+
+    init(id: String, name: String, description: String, category: String, status: ToolStatus = .planned) {
+        self.id = id
+        self.name = name
+        self.description = description
+        self.category = category
+        self.status = status
+    }
+}
+
+private enum MCPToolRegistry {
+    static let allTools: [MCPToolDefinition] = [
+        MCPToolDefinition(
+            id: "web_search",
+            name: "Web Search",
+            description: "Search the web for current information via provider grounding.",
+            category: "Search",
+            status: .active
+        ),
+        MCPToolDefinition(
+            id: "structured_output",
+            name: "Structured Output",
+            description: "Enforce strict JSON-schema output from this node.",
+            category: "Output",
+            status: .active
+        ),
+        MCPToolDefinition(
+            id: "human_review",
+            name: "Human Review",
+            description: "Escalate output to a human for approval before continuing.",
+            category: "Workflow",
+            status: .active
+        ),
+    ]
+
+    static let toolsByID: [String: MCPToolDefinition] = Dictionary(
+        uniqueKeysWithValues: allTools.map { ($0.id, $0) }
+    )
+
+    static var categories: [String] {
+        allTools.map(\.category).reduce(into: [String]()) { result, cat in
+            if !result.contains(cat) { result.append(cat) }
+        }
+    }
+
+    static func tools(in category: String) -> [MCPToolDefinition] {
+        allTools.filter { $0.category == category }
     }
 }
 
