@@ -23,6 +23,7 @@ struct ContentView: View {
     @Environment(\.undoManager) private var undoManager
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Query private var graphDocuments: [GraphDocument]
+    @Query private var mcpServerConnections: [MCPServerConnection]
     @Query(sort: \UserNodeTemplate.updatedAt, order: .reverse)
     private var userNodeTemplates: [UserNodeTemplate]
     @State private var isShowingTaskList = true
@@ -43,7 +44,6 @@ struct ContentView: View {
     @State private var latestCoordinatorPlan: CoordinatorPlan?
     @State private var latestCoordinatorRun: CoordinatorRun?
     @State private var isExecutingCoordinator = false
-    @State private var coordinatorRunMode: CoordinatorExecutionMode = .simulation
     @State private var coordinatorTrace: [CoordinatorTraceStep] = []
     @State private var pendingCoordinatorExecution: PendingCoordinatorExecution?
     @State private var humanDecisionAudit: [HumanDecisionAuditEvent] = []
@@ -870,14 +870,6 @@ struct ContentView: View {
                 
                
                 
-                Picker("Execution Mode", selection: $coordinatorRunMode) {
-                    ForEach(CoordinatorExecutionMode.allCases) { mode in
-                        Text(mode.label).tag(mode)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 220)
-
                 Button {
                     isShowingHumanInbox = true
                 } label: {
@@ -942,7 +934,7 @@ struct ContentView: View {
                             )
                     } else {
                         headerControlLabel(
-                            title: coordinatorRunMode == .simulation ? "Simulate" : "Run Live",
+                            title: "Run Live",
                             systemImage: "play.fill",
                             height: headerControlHeight,
                             prominent: true,
@@ -1551,20 +1543,11 @@ struct ContentView: View {
                 return
             }
 
-            let response: MCPTaskResponse
-            switch pending.mode {
-            case .simulation:
-                response = await simulatePacketExecution(
-                    packet,
-                    handoffSummaries: handoffValidation.handoffSummaries
-                )
-            case .liveMCP:
-                response = await executeLiveProviderPacket(
-                    packet,
-                    handoffSummaries: handoffValidation.handoffSummaries,
-                    goal: pending.plan.goal
-                )
-            }
+            let response = await executeLiveProviderPacket(
+                packet,
+                handoffSummaries: handoffValidation.handoffSummaries,
+                goal: pending.plan.goal
+            )
 
             let finishedAtStep = Date()
             let completed = response.completed
@@ -1638,7 +1621,7 @@ struct ContentView: View {
 
         let planner = CoordinatorOrchestrator()
         let plan = planner.plan(goal: normalizedGoal, graph: orchestrationGraph)
-        let mode = coordinatorRunMode
+        let mode: CoordinatorExecutionMode = .liveMCP
         latestCoordinatorPlan = plan
         latestCoordinatorRun = nil
         humanDecisionNote = ""
@@ -1823,6 +1806,31 @@ struct ContentView: View {
             )
         }
 
+        await MCPServerManager.shared.registerKnownConnections(mcpServerConnections)
+
+        // When global tool access is on, merge all connected MCP server tools
+        // into the node's assigned tools automatically.
+        var effectiveTools = packet.assignedTools
+        var effectivePermissions = packet.allowedPermissions
+        if MCPServerManager.shared.globalToolAccess {
+            let allRemote = await MCPServerManager.shared.allRemoteTools
+            for tool in allRemote where !effectiveTools.contains(tool.name) {
+                effectiveTools.append(tool.name)
+            }
+            // Grant workspace read access automatically for global tools
+            if !allRemote.isEmpty && !effectivePermissions.contains("workspaceRead") {
+                effectivePermissions.append("workspaceRead")
+            }
+        }
+
+        // Build remote tool schema descriptions for the prompt
+        var remoteToolSchemas: [String: String] = [:]
+        for toolID in effectiveTools {
+            if let schema = await MCPServerManager.shared.toolSchemaDescription(forToolName: toolID) {
+                remoteToolSchemas[toolID] = schema
+            }
+        }
+
         let request = LiveProviderTaskRequest(
             goal: goal,
             objective: packet.objective,
@@ -1831,9 +1839,10 @@ struct ContentView: View {
             requiredOutputSchema: packet.requiredOutputSchema,
             outputSchemaDescription: packet.outputSchemaDescription,
             handoffSummaries: handoffSummaries,
-            allowedPermissions: packet.allowedPermissions,
-            assignedTools: packet.assignedTools,
-            assignedToolNames: packet.assignedTools.compactMap { MCPToolRegistry.toolsByID[$0]?.name }
+            allowedPermissions: effectivePermissions,
+            assignedTools: effectiveTools,
+            assignedToolNames: effectiveTools.map { MCPToolRegistry.toolsByID[$0]?.name ?? $0 },
+            remoteToolSchemas: remoteToolSchemas
         )
 
         do {
@@ -1960,16 +1969,6 @@ struct ContentView: View {
         return nil
     }
 
-    private func indicatesRuntimeToolUnavailable(from summary: String?) -> Bool {
-        guard let summary else { return false }
-        let normalized = summary.lowercased()
-        return normalized.contains("only team comms tools available")
-            || normalized.contains("chatroom_send")
-            || normalized.contains("tool unavailable")
-            || normalized.contains("despite 'webaccess' permission listed")
-            || normalized.contains("despite webaccess permission listed")
-    }
-
     private func traceResolution(for step: CoordinatorTraceStep) -> TraceResolutionRecommendation? {
         guard step.status == .failed || step.status == .blocked else { return nil }
         guard let summary = step.summary else { return nil }
@@ -2000,17 +1999,6 @@ struct ContentView: View {
             }
         }
 
-        if indicatesRuntimeToolUnavailable(from: summary) {
-            return TraceResolutionRecommendation(
-                presentation: CoordinatorTraceResolutionPresentation(
-                    title: "Runtime tool unavailable",
-                    detail: "This task needs web/browse capability, but Live API has no active web tool connection in this run.",
-                    buttonTitle: "Switch to Simulation"
-                ),
-                action: .switchToSimulation
-            )
-        }
-
         return nil
     }
 
@@ -2024,8 +2012,6 @@ struct ContentView: View {
                 selectedNodeID = nodes[index].id
                 selectedLinkID = nil
             }
-        case .switchToSimulation:
-            coordinatorRunMode = .simulation
         }
     }
 
@@ -3935,7 +3921,7 @@ struct ContentView: View {
             "- Task Question: \(debugInlineText(orchestrationGoal, fallback: "No question set"))",
             "- Structure Strategy: \(debugInlineText(orchestrationStrategy, fallback: "No strategy set"))",
             "- Context: \(debugInlineText(synthesisContext, fallback: "No extra context"))",
-            "- Execution Mode: \(coordinatorRunMode.label)",
+            "- Execution Mode: Live API",
             "- Is Executing: \(isExecutingCoordinator ? "yes" : "no")",
             "- Selected Node: \(selectedNodeSummary)"
         ]
@@ -4397,17 +4383,89 @@ struct ContentView: View {
 }
 
 private struct NodeInspector: View {
+    private struct ConnectedAppEntry: Identifiable {
+        let connection: MCPServerConnection
+        let tools: [MCPRemoteTool]
+        let status: MCPServerManager.ConnectionStatus?
+
+        var id: UUID { connection.id }
+        var hasTools: Bool { !tools.isEmpty }
+
+        var statusText: String {
+            if hasTools {
+                return "\(tools.count) tool\(tools.count == 1 ? "" : "s")"
+            }
+            if let status {
+                switch status {
+                case .connecting:
+                    return "Connecting…"
+                case .awaitingOAuth:
+                    return "Authorizing…"
+                case .failed:
+                    return "No tools discovered (connection failed)"
+                case .connected:
+                    return "No tools discovered"
+                case .disconnected:
+                    return "Disconnected"
+                }
+            }
+            return "No tools discovered yet"
+        }
+    }
+
     @Binding var node: OrgNode
+    @Query private var savedServers: [MCPServerConnection]
+    @ObservedObject private var mcpManager = MCPServerManager.shared
     let onDelete: () -> Void
     var onSaveAsTemplate: (() -> Void)?
     var headerTitle: String = "Node Details"
 
     private let editableTypes: [NodeType] = [.human, .agent]
-    // allRoles removed — preset roles replaced by node templates.
-    /// Only show permissions that are actually wired to provider tools.
-    /// The remaining permissions (workspaceRead, workspaceWrite, terminalExec,
-    /// secretsRead, auditLogs) are hidden until their backends are implemented.
-    private let allAccess: [SecurityAccess] = [.webAccess]
+
+    private var connectedServerTools: [ConnectedAppEntry] {
+        savedServers
+            .filter(\.isEnabled)
+            .map { connection in
+                let tools = toolsForServer(connection.id)
+                let status = mcpManager.connectionStatus[connection.id]
+                return ConnectedAppEntry(connection: connection, tools: tools, status: status)
+            }
+            .sorted { lhs, rhs in
+                lhs.connection.name.localizedCaseInsensitiveCompare(rhs.connection.name) == .orderedAscending
+            }
+    }
+
+    private func toolsForServer(_ connectionID: UUID) -> [MCPRemoteTool] {
+        let liveTools = mcpManager.discoveredTools[connectionID] ?? []
+        let sourceTools = liveTools.isEmpty ? mcpManager.cachedTools(for: connectionID) : liveTools
+        return sourceTools.sorted { lhs, rhs in
+            let lhsLabel = lhs.title ?? lhs.name
+            let rhsLabel = rhs.title ?? rhs.name
+            return lhsLabel.localizedCaseInsensitiveCompare(rhsLabel) == .orderedAscending
+        }
+    }
+
+    private func hasAllAssigned(_ tools: [MCPRemoteTool]) -> Bool {
+        !tools.isEmpty && tools.allSatisfy { node.assignedTools.contains($0.name) }
+    }
+
+    private func hasAnyAssigned(_ tools: [MCPRemoteTool]) -> Bool {
+        tools.contains { node.assignedTools.contains($0.name) }
+    }
+
+    private func setAssignment(for tools: [MCPRemoteTool], enabled: Bool) {
+        if enabled {
+            for tool in tools {
+                node.assignedTools.insert(tool.name)
+            }
+            // Connected app tools require workspace read access.
+            node.securityAccess.insert(.workspaceRead)
+        } else {
+            for tool in tools {
+                node.assignedTools.remove(tool.name)
+            }
+        }
+    }
 
     var body: some View {
         Group {
@@ -4552,28 +4610,8 @@ private struct NodeInspector: View {
                     }
 
                     // Preset Roles removed — node templates now pre-fill role descriptions on creation.
-
-                    GroupBox {
-                        VStack(spacing: 10) {
-                            ForEach(allAccess) { access in
-                                Toggle(
-                                    access.label,
-                                    isOn: Binding(
-                                        get: { node.securityAccess.contains(access) },
-                                        set: { isEnabled in
-                                            if isEnabled {
-                                                node.securityAccess.insert(access)
-                                            } else {
-                                                node.securityAccess.remove(access)
-                                            }
-                                        }
-                                    )
-                                )
-                            }
-                        }
-                    } label: {
-                        Text("Security Access")
-                    }
+                    // Security Access removed — workspaceRead is auto-granted by Connected Apps
+                    // or Global Tool Access; webAccess is handled by the Web Search tool toggle.
 
                     GroupBox {
                         VStack(alignment: .leading, spacing: 12) {
@@ -4603,6 +4641,51 @@ private struct NodeInspector: View {
                                         }
                                     }
                                 }
+                            }
+
+                            // Only show per-node Connected Apps section when global access is off
+                            if !mcpManager.globalToolAccess {
+                                Divider()
+                                    .padding(.vertical, 4)
+
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text("Connected Apps")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(.secondary)
+
+                                    if connectedServerTools.isEmpty {
+                                        Text("No connected app tools found. Connect an MCP server in Tool Catalog to enable app-level switches here.")
+                                            .font(.caption2)
+                                            .foregroundStyle(.tertiary)
+                                    } else {
+                                        ForEach(connectedServerTools) { entry in
+                                            Toggle(
+                                                isOn: Binding(
+                                                    get: { hasAllAssigned(entry.tools) },
+                                                    set: { enabled in
+                                                        setAssignment(for: entry.tools, enabled: enabled)
+                                                    }
+                                                )
+                                            ) {
+                                                VStack(alignment: .leading, spacing: 2) {
+                                                    Text(entry.connection.name)
+                                                        .font(.callout)
+                                                    Text("\(entry.statusText)\(entry.hasTools && hasAnyAssigned(entry.tools) && !hasAllAssigned(entry.tools) ? " (partially assigned)" : "")")
+                                                        .font(.caption2)
+                                                        .foregroundStyle(entry.hasTools ? .tertiary : .secondary)
+                                                }
+                                            }
+                                            .disabled(!entry.hasTools)
+                                        }
+                                    }
+                                }
+                            } else if !connectedServerTools.isEmpty {
+                                Divider()
+                                    .padding(.vertical, 4)
+
+                                Text("Connected app tools are available globally. Manage in Tool Catalog.")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
                             }
                         }
                     } label: {
@@ -4686,7 +4769,6 @@ private struct CoordinatorTraceResolutionPresentation {
 
 private enum TraceResolutionAction {
     case grantPermission(nodeID: UUID, permission: SecurityAccess)
-    case switchToSimulation
 }
 
 private struct TraceResolutionRecommendation {
@@ -7847,11 +7929,20 @@ private enum CuratedMCPCatalog {
         CuratedMCPServer(
             id: "linear",
             name: "Linear",
-            url: "https://mcp.linear.app/sse",
+            url: "https://mcp.linear.app/mcp",
             icon: "target",
             category: "Productivity",
             description: "Manage issues, projects, and cycles in Linear.",
             requiresAPIKey: false
+        ),
+        CuratedMCPServer(
+            id: "slack",
+            name: "Slack",
+            url: "https://mcp.slack.com/mcp",
+            icon: "bubble.left.and.bubble.right",
+            category: "Productivity",
+            description: "Search Slack and work with channels, threads, messages, and users.",
+            requiresAPIKey: true
         ),
         CuratedMCPServer(
             id: "stripe",
@@ -7896,7 +7987,7 @@ private enum CuratedMCPCatalog {
             icon: "arrowtriangle.up.fill",
             category: "Development",
             description: "Manage deployments, domains, and serverless functions.",
-            requiresAPIKey: false
+            requiresAPIKey: true
         ),
     ]
 
@@ -7988,11 +8079,33 @@ private struct ToolCatalogSheet: View {
                             .foregroundStyle(.secondary)
                             .padding(.horizontal, 20)
 
-                        Text("Connect external services via the Model Context Protocol. Tools from connected servers become available in the Node Details inspector.")
+                        Text(mcpManager.globalToolAccess
+                             ? "Connected tools are available to all nodes automatically."
+                             : "Connected tools must be assigned per-node in the Node Details inspector.")
                             .font(.caption)
                             .foregroundStyle(.tertiary)
                             .padding(.horizontal, 20)
                             .padding(.bottom, 4)
+
+                        // Global tool access toggle
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Global Tool Access")
+                                    .font(.callout.weight(.medium))
+                                Text("All connected tools available to every node")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Toggle("", isOn: $mcpManager.globalToolAccess)
+                                .labelsHidden()
+                        }
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 10)
+                        .background(Color(.secondarySystemGroupedBackground))
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 4)
 
                         ForEach(CuratedMCPCatalog.categories, id: \.self) { category in
                             VStack(alignment: .leading, spacing: 0) {
@@ -8220,7 +8333,7 @@ private struct ToolCatalogSheet: View {
                     configuringServer = nil
                 }
             } message: {
-                Text("Enter your API key for \(configuringServer?.name ?? "this service"). The key is stored locally on your device.")
+                Text("Enter your API key or bearer token for \(configuringServer?.name ?? "this service"). The credential is stored locally on your device.")
             }
             .alert("Add Custom MCP Server", isPresented: $addingCustomServer) {
                 TextField("Server Name", text: $customName)
@@ -8680,7 +8793,7 @@ private enum SecurityAccess: String, CaseIterable, Identifiable, Hashable, Codab
     var label: String {
         switch self {
         case .workspaceRead:
-            return "Workspace Read"
+            return "Connected Apps Read"
         case .workspaceWrite:
             return "Workspace Write"
         case .terminalExec:

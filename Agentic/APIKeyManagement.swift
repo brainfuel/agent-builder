@@ -169,6 +169,15 @@ struct APIKeysSheet: View {
                     .font(.subheadline.weight(.semibold))
                 Spacer()
                 if savedProviders.contains(provider) {
+                    let cost = UsageTracker.shared.estimatedCost(for: provider, days: 7)
+                    if cost > 0 {
+                        Text("~$\(cost, specifier: "%.2f") / 7d")
+                            .font(.caption2.weight(.medium).monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(Color.gray.opacity(0.12), in: Capsule())
+                    }
                     Label("Saved", systemImage: "checkmark.circle.fill")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.green)

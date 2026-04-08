@@ -82,7 +82,57 @@ private struct ToolsListParams: Encodable {
 
 private struct ToolsCallParams: Encodable {
     let name: String
-    let arguments: [String: String]
+    let arguments: [String: AnyCodableValue]
+}
+
+/// Wraps arbitrary JSON values so they can be sent as MCP tool arguments.
+enum AnyCodableValue: Codable, Hashable {
+    case string(String)
+    case int(Int)
+    case double(Double)
+    case bool(Bool)
+    case null
+    case array([AnyCodableValue])
+    case object([String: AnyCodableValue])
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .string(let v): try container.encode(v)
+        case .int(let v): try container.encode(v)
+        case .double(let v): try container.encode(v)
+        case .bool(let v): try container.encode(v)
+        case .null: try container.encodeNil()
+        case .array(let v): try container.encode(v)
+        case .object(let v): try container.encode(v)
+        }
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let v = try? container.decode(Bool.self) { self = .bool(v) }
+        else if let v = try? container.decode(Int.self) { self = .int(v) }
+        else if let v = try? container.decode(Double.self) { self = .double(v) }
+        else if let v = try? container.decode(String.self) { self = .string(v) }
+        else if let v = try? container.decode([AnyCodableValue].self) { self = .array(v) }
+        else if let v = try? container.decode([String: AnyCodableValue].self) { self = .object(v) }
+        else { self = .null }
+    }
+
+    /// Converts an arbitrary Foundation value (from JSONSerialization) to AnyCodableValue.
+    static func from(_ value: Any) -> AnyCodableValue {
+        switch value {
+        case let s as String: return .string(s)
+        case let b as Bool: return .bool(b)
+        case let i as Int: return .int(i)
+        case let d as Double: return .double(d)
+        case let n as NSNumber: return .double(n.doubleValue)
+        case let arr as [Any]: return .array(arr.map { from($0) })
+        case let dict as [String: Any]: return .object(dict.mapValues { from($0) })
+        case is NSNull: return .null
+        default: return .string(String(describing: value))
+        }
+    }
 }
 
 // MARK: - JSON-RPC Response Types
@@ -204,21 +254,23 @@ final class MCPOAuthHandler: NSObject, ASWebAuthenticationPresentationContextPro
 
     /// Cached client registrations keyed by authorization server URL.
     private var clientCache: [String: (clientID: String, clientSecret: String?)] = [:]
+    private var activeWebAuthSession: ASWebAuthenticationSession?
 
     private static let callbackScheme = "agentic"
     private static let redirectURI = "agentic://oauth/callback"
+    private static let authTimeoutNanoseconds: UInt64 = 60_000_000_000
 
     func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
         #if targetEnvironment(macCatalyst)
-        return UIApplication.shared.connectedScenes
+        let windows = UIApplication.shared.connectedScenes
             .compactMap { $0 as? UIWindowScene }
             .flatMap { $0.windows }
-            .first(where: { $0.isKeyWindow }) ?? ASPresentationAnchor()
+        return windows.first(where: { $0.isKeyWindow }) ?? windows.first ?? ASPresentationAnchor()
         #else
-        return UIApplication.shared.connectedScenes
+        let windows = UIApplication.shared.connectedScenes
             .compactMap { $0 as? UIWindowScene }
             .flatMap { $0.windows }
-            .first(where: { $0.isKeyWindow }) ?? ASPresentationAnchor()
+        return windows.first(where: { $0.isKeyWindow }) ?? windows.first ?? ASPresentationAnchor()
         #endif
     }
 
@@ -272,6 +324,7 @@ final class MCPOAuthHandler: NSObject, ASWebAuthenticationPresentationContextPro
     private func performOAuthFlow(for serverURL: URL) async throws -> MCPOAuthToken {
         // Step 1: Discover authorization server
         let (authServerURL, resourceMetadata) = try await discoverAuthServer(for: serverURL)
+        let resource = resourceMetadata?.resource ?? serverURL.absoluteString
 
         // Step 2: Get authorization server metadata
         let asMetadata = try await fetchAuthServerMetadata(authServerURL: authServerURL)
@@ -286,7 +339,7 @@ final class MCPOAuthHandler: NSObject, ASWebAuthenticationPresentationContextPro
         let authCode = try await authorizeWithBrowser(
             asMetadata: asMetadata,
             clientID: clientID,
-            serverURL: serverURL
+            resource: resource
         )
 
         // Step 5: Exchange code for token
@@ -296,7 +349,7 @@ final class MCPOAuthHandler: NSObject, ASWebAuthenticationPresentationContextPro
             asMetadata: asMetadata,
             clientID: clientID,
             clientSecret: clientSecret,
-            serverURL: serverURL
+            resource: resource
         )
 
         return token
@@ -422,7 +475,7 @@ final class MCPOAuthHandler: NSObject, ASWebAuthenticationPresentationContextPro
     private func authorizeWithBrowser(
         asMetadata: OAuthServerMetadata,
         clientID: String,
-        serverURL: URL
+        resource: String
     ) async throws -> (code: String, codeVerifier: String) {
         let codeVerifier = generateCodeVerifier()
         let codeChallenge = generateCodeChallenge(from: codeVerifier)
@@ -436,7 +489,7 @@ final class MCPOAuthHandler: NSObject, ASWebAuthenticationPresentationContextPro
             URLQueryItem(name: "code_challenge", value: codeChallenge),
             URLQueryItem(name: "code_challenge_method", value: "S256"),
             URLQueryItem(name: "state", value: state),
-            URLQueryItem(name: "resource", value: serverURL.absoluteString),
+            URLQueryItem(name: "resource", value: resource),
         ]
 
         // Add scope if supported
@@ -449,21 +502,57 @@ final class MCPOAuthHandler: NSObject, ASWebAuthenticationPresentationContextPro
         }
 
         let callbackURL = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<URL, Error>) in
+            var didResume = false
+            var timeoutTask: Task<Void, Never>?
+
+            @MainActor
+            func finish(_ result: Result<URL, Error>) {
+                guard !didResume else { return }
+                didResume = true
+                timeoutTask?.cancel()
+                self.activeWebAuthSession = nil
+                switch result {
+                case .success(let callback):
+                    continuation.resume(returning: callback)
+                case .failure(let error):
+                    continuation.resume(throwing: error)
+                }
+            }
+
             let session = ASWebAuthenticationSession(
                 url: authURL,
                 callbackURLScheme: Self.callbackScheme
             ) { callbackURL, error in
-                if let error {
-                    continuation.resume(throwing: MCPClientError.oauthFailed(error.localizedDescription))
-                } else if let callbackURL {
-                    continuation.resume(returning: callbackURL)
-                } else {
-                    continuation.resume(throwing: MCPClientError.oauthFailed("No callback URL received."))
+                Task { @MainActor in
+                    if let error {
+                        finish(.failure(MCPClientError.oauthFailed(error.localizedDescription)))
+                    } else if let callbackURL {
+                        finish(.success(callbackURL))
+                    } else {
+                        finish(.failure(MCPClientError.oauthFailed("No callback URL received.")))
+                    }
                 }
             }
             session.presentationContextProvider = self
             session.prefersEphemeralWebBrowserSession = false
-            session.start()
+
+            // Cancel any stale in-flight auth session before starting a new one.
+            self.activeWebAuthSession?.cancel()
+            self.activeWebAuthSession = session
+            let started = session.start()
+            if !started {
+                Task { @MainActor in
+                    finish(.failure(MCPClientError.oauthFailed("Could not start browser authentication session.")))
+                }
+                return
+            }
+
+            timeoutTask = Task { @MainActor in
+                try? await Task.sleep(nanoseconds: Self.authTimeoutNanoseconds)
+                guard !didResume else { return }
+                self.activeWebAuthSession?.cancel()
+                finish(.failure(MCPClientError.oauthFailed("Authentication timed out before returning to Agentic.")))
+            }
         }
 
         // Parse authorization code from callback
@@ -488,7 +577,7 @@ final class MCPOAuthHandler: NSObject, ASWebAuthenticationPresentationContextPro
         asMetadata: OAuthServerMetadata,
         clientID: String,
         clientSecret: String?,
-        serverURL: URL
+        resource: String
     ) async throws -> MCPOAuthToken {
         guard let tokenURL = URL(string: asMetadata.token_endpoint) else {
             throw MCPClientError.oauthFailed("Invalid token endpoint.")
@@ -504,7 +593,7 @@ final class MCPOAuthHandler: NSObject, ASWebAuthenticationPresentationContextPro
             "redirect_uri=\(Self.redirectURI.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? Self.redirectURI)",
             "client_id=\(clientID)",
             "code_verifier=\(codeVerifier)",
-            "resource=\(serverURL.absoluteString.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? serverURL.absoluteString)"
+            "resource=\(resource.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? resource)"
         ]
 
         if let secret = clientSecret {
@@ -537,7 +626,8 @@ final class MCPOAuthHandler: NSObject, ASWebAuthenticationPresentationContextPro
 
     /// Refresh an expired access token.
     private func refreshAccessToken(_ refreshToken: String, for serverURL: URL) async throws -> MCPOAuthToken {
-        let (authServerURL, _) = try await discoverAuthServer(for: serverURL)
+        let (authServerURL, resourceMetadata) = try await discoverAuthServer(for: serverURL)
+        let resource = resourceMetadata?.resource ?? serverURL.absoluteString
         let asMetadata = try await fetchAuthServerMetadata(authServerURL: authServerURL)
 
         guard let tokenURL = URL(string: asMetadata.token_endpoint) else {
@@ -557,7 +647,7 @@ final class MCPOAuthHandler: NSObject, ASWebAuthenticationPresentationContextPro
             "grant_type=refresh_token",
             "refresh_token=\(refreshToken)",
             "client_id=\(client.clientID)",
-            "resource=\(serverURL.absoluteString.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? serverURL.absoluteString)"
+            "resource=\(resource.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? resource)"
         ]
         if let secret = client.clientSecret {
             params.append("client_secret=\(secret)")
@@ -649,7 +739,7 @@ actor MCPServerClient {
     }
 
     /// Calls a tool on the MCP server and returns the result.
-    func callTool(name: String, arguments: [String: String]) async throws -> MCPToolCallResult {
+    func callTool(name: String, arguments: [String: AnyCodableValue]) async throws -> MCPToolCallResult {
         let id = getNextID()
         let request = JSONRPCRequest(
             id: id,
@@ -842,12 +932,24 @@ actor MCPServerClient {
 final class MCPServerManager: ObservableObject {
     static let shared = MCPServerManager()
     private let cacheKeyPrefix = "mcp.cachedTools."
+    private static let globalAccessKey = "mcp.globalToolAccess"
+
+    /// When true, all connected MCP tools are available to every node
+    /// without per-node assignment. Persisted across app launches.
+    @Published var globalToolAccess: Bool {
+        didSet { UserDefaults.standard.set(globalToolAccess, forKey: Self.globalAccessKey) }
+    }
 
     /// Tools discovered from all connected MCP servers, keyed by server connection ID.
     @Published var discoveredTools: [UUID: [MCPRemoteTool]] = [:]
 
     /// Connection status per server, keyed by server connection ID.
     @Published var connectionStatus: [UUID: ConnectionStatus] = [:]
+    private var activeConnections: [UUID: MCPServerConnection] = [:]
+
+    private init() {
+        self.globalToolAccess = UserDefaults.standard.bool(forKey: Self.globalAccessKey)
+    }
 
     enum ConnectionStatus: Equatable {
         case disconnected
@@ -864,6 +966,8 @@ final class MCPServerManager: ObservableObject {
 
     /// Connects to an MCP server, performing OAuth if required.
     func connect(to connection: MCPServerConnection) async {
+        activeConnections[connection.id] = connection
+
         guard let url = normalizedURL(for: connection) else {
             connectionStatus[connection.id] = .failed("Invalid URL")
             return
@@ -911,6 +1015,8 @@ final class MCPServerManager: ObservableObject {
         do {
             let token = try await MCPOAuthHandler.shared.accessToken(for: url)
 
+            connectionStatus[connection.id] = .connecting
+
             let client = MCPServerClient(
                 url: url,
                 apiKey: "",
@@ -922,6 +1028,16 @@ final class MCPServerManager: ObservableObject {
             discoveredTools[connection.id] = tools
             cacheDiscoveredTools(tools, on: connection)
             connectionStatus[connection.id] = .connected(toolCount: tools.count)
+        } catch let error as MCPClientError {
+            let msg: String
+            switch error {
+            case .oauthFailed(let detail): msg = "OAuth failed: \(detail)"
+            case .connectionFailed(let detail): msg = detail
+            case .toolCallFailed(let detail): msg = detail
+            default: msg = error.localizedDescription
+            }
+            connectionStatus[connection.id] = .failed(msg)
+            discoveredTools[connection.id] = nil
         } catch {
             connectionStatus[connection.id] = .failed(error.localizedDescription)
             discoveredTools[connection.id] = nil
@@ -932,6 +1048,14 @@ final class MCPServerManager: ObservableObject {
     func disconnect(id: UUID) {
         discoveredTools[id] = nil
         connectionStatus[id] = .disconnected
+        activeConnections[id] = nil
+    }
+
+    /// Registers enabled server connections so tool calls can resolve by server ID.
+    func registerKnownConnections(_ connections: [MCPServerConnection]) {
+        for connection in connections where connection.isEnabled {
+            activeConnections[connection.id] = connection
+        }
     }
 
     /// Returns cached tools from local storage for a connection.
@@ -949,8 +1073,65 @@ final class MCPServerManager: ObservableObject {
         cachedTools(for: connectionID).count
     }
 
+    /// Resolves which connected server should handle a remote tool.
+    /// Returns a prompt-friendly description of a remote tool including its parameter schema.
+    func toolSchemaDescription(forToolName toolName: String) -> String? {
+        let tool: MCPRemoteTool? = allRemoteTools.first(where: { $0.name == toolName })
+            ?? discoveredTools.values.flatMap({ $0 }).first(where: { $0.name == toolName })
+
+        guard let tool else { return nil }
+
+        var desc = "- \(tool.name)"
+        if let title = tool.title, !title.isEmpty { desc += " (\(title))" }
+        desc += ": "
+        if let d = tool.description, !d.isEmpty {
+            // Truncate to first 120 chars to keep prompt compact
+            let cleaned = d.replacingOccurrences(of: "\n", with: " ")
+            desc += String(cleaned.prefix(120))
+        }
+
+        if let schema = tool.inputSchema, let props = schema.properties, !props.isEmpty {
+            let required = Set(schema.required ?? [])
+            let paramDescs = props.sorted(by: { $0.key < $1.key }).map { key, prop in
+                let typeStr = prop.type ?? "any"
+                let reqStr = required.contains(key) ? ", required" : ""
+                let propDesc = prop.description.map { " — \(String($0.prefix(60)))" } ?? ""
+                return "    \(key) (\(typeStr)\(reqStr))\(propDesc)"
+            }
+            desc += "\n  Parameters:\n" + paramDescs.joined(separator: "\n")
+        }
+
+        return desc
+    }
+
+    func serverConnectionID(forToolName toolName: String) -> UUID? {
+        if let live = allRemoteTools.first(where: { $0.name == toolName }) {
+            return live.serverConnectionID
+        }
+
+        for (connectionID, _) in activeConnections {
+            if cachedTools(for: connectionID).contains(where: { $0.name == toolName }) {
+                return connectionID
+            }
+        }
+
+        return nil
+    }
+
+    /// Calls a tool on a known MCP server by connection ID.
+    func callTool(
+        name: String,
+        arguments: [String: AnyCodableValue],
+        onServerWithID serverConnectionID: UUID
+    ) async throws -> MCPToolCallResult {
+        guard let connection = activeConnections[serverConnectionID] else {
+            throw MCPClientError.connectionFailed("MCP server for tool '\(name)' is not connected.")
+        }
+        return try await callTool(name: name, arguments: arguments, on: connection)
+    }
+
     /// Calls a tool on the appropriate MCP server.
-    func callTool(name: String, arguments: [String: String], on connection: MCPServerConnection) async throws -> MCPToolCallResult {
+    func callTool(name: String, arguments: [String: AnyCodableValue], on connection: MCPServerConnection) async throws -> MCPToolCallResult {
         guard let url = normalizedURL(for: connection) else {
             throw MCPClientError.connectionFailed("Invalid URL")
         }
@@ -977,8 +1158,9 @@ final class MCPServerManager: ObservableObject {
         let defaultPathByHost: [String: String] = [
             "api.githubcopilot.com": "/mcp",
             "mcp.exa.ai": "/mcp",
-            "mcp.linear.app": "/sse",
+            "mcp.linear.app": "/mcp",
             "mcp.notion.com": "/mcp",
+            "mcp.slack.com": "/mcp",
             "mcp.supabase.com": "/mcp"
         ]
 
