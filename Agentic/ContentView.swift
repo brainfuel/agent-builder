@@ -1817,9 +1817,14 @@ struct ContentView: View {
             for tool in allRemote where !effectiveTools.contains(tool.name) {
                 effectiveTools.append(tool.name)
             }
-            // Grant workspace read access automatically for global tools
-            if !allRemote.isEmpty && !effectivePermissions.contains("workspaceRead") {
-                effectivePermissions.append("workspaceRead")
+            // Grant workspace read+write access automatically for global tools
+            if !allRemote.isEmpty {
+                if !effectivePermissions.contains("workspaceRead") {
+                    effectivePermissions.append("workspaceRead")
+                }
+                if !effectivePermissions.contains("workspaceWrite") {
+                    effectivePermissions.append("workspaceWrite")
+                }
             }
         }
 
@@ -4458,8 +4463,9 @@ private struct NodeInspector: View {
             for tool in tools {
                 node.assignedTools.insert(tool.name)
             }
-            // Connected app tools require workspace read access.
+            // Connected app tools require workspace read+write access.
             node.securityAccess.insert(.workspaceRead)
+            node.securityAccess.insert(.workspaceWrite)
         } else {
             for tool in tools {
                 node.assignedTools.remove(tool.name)
@@ -7987,6 +7993,15 @@ private enum CuratedMCPCatalog {
             icon: "arrowtriangle.up.fill",
             category: "Development",
             description: "Manage deployments, domains, and serverless functions.",
+            requiresAPIKey: true
+        ),
+        CuratedMCPServer(
+            id: "airtable",
+            name: "Airtable",
+            url: "https://mcp.airtable.com/mcp",
+            icon: "tablecells",
+            category: "Productivity",
+            description: "Read, create, and update records across your Airtable bases and tables.",
             requiresAPIKey: true
         ),
     ]

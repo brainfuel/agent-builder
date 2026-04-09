@@ -13,7 +13,10 @@
       "Bash(grep -n \"enum.*Error\\\\|struct.*Provider\" /Users/benmilford/Documents/Projects/Agentic/Agentic/*.swift)",
       "mcp__mcp-registry__search_mcp_registry",
       "WebFetch(domain:github.com)",
-      "Bash(ls /Users/benmilford/Documents/Projects/Agentic/Agentic/*.swift)"
+      "Bash(ls /Users/benmilford/Documents/Projects/Agentic/Agentic/*.swift)",
+      "WebFetch(domain:support.airtable.com)",
+      "WebFetch(domain:community.airtable.com)",
+      "WebFetch(domain:www.pulsemcp.com)"
     ]
   }
 }
