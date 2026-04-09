@@ -65,6 +65,7 @@ struct ContentView: View {
     @State private var taskResultsDocumentKey: String?
     @State private var sidebarTab: SidebarTab = .tasks
     @State private var isShowingSettingsPlaceholderSheet = false
+    @State private var activeDraftInfo: DraftInfoTopic?
     @State private var isShowingNodeTemplateLibrary = false
     @State private var templateSavedName: String?
     @State private var isShowingWipeDataConfirmation = false
@@ -163,6 +164,35 @@ struct ContentView: View {
         case title
         case goal
         case context
+    }
+
+    private enum DraftInfoTopic: String, Hashable {
+        case title
+        case question
+        case context
+        case template
+
+        var title: String {
+            switch self {
+            case .title: return "Task Title"
+            case .question: return "Question"
+            case .context: return "Context"
+            case .template: return "Template"
+            }
+        }
+
+        var message: String {
+            switch self {
+            case .title:
+                return "Give the task a short, searchable name so you can identify it later."
+            case .question:
+                return "Describe what you want the agents to answer or produce."
+            case .context:
+                return "Add relevant background, constraints, links, or assumptions."
+            case .template:
+                return "Choose a default team structure to start from before creating and running."
+            }
+        }
     }
 
     private enum DetailSectionTab: String, CaseIterable, Identifiable {
@@ -603,9 +633,9 @@ struct ContentView: View {
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
 
-                draftTextField("Task title", text: $newTaskTitle, field: .title)
-                draftTextField("Question", text: $newTaskGoal, field: .goal)
-                draftTextField("Context", text: $newTaskContext, field: .context)
+                draftTextField("Task title", text: $newTaskTitle, field: .title, infoTopic: .title)
+                draftTextField("Question", text: $newTaskGoal, field: .goal, infoTopic: .question)
+                draftTextField("Context", text: $newTaskContext, field: .context, infoTopic: .context)
 
                 HStack(spacing: 10) {
                     Picker("Template", selection: $newTaskTemplate) {
@@ -615,12 +645,14 @@ struct ContentView: View {
                     }
                     .pickerStyle(.menu)
 
+                    draftInfoButton(topic: .template)
+
                     Spacer()
 
                     Button {
                         presentTaskCreationOptions()
                     } label: {
-                        Label("Create", systemImage: "plus.circle.fill")
+                        Label("Create & Run", systemImage: "plus.circle.fill")
                     }
                     .buttonStyle(.borderedProminent)
                 }
@@ -760,11 +792,21 @@ struct ContentView: View {
         )
     }
 
-    private func draftTextField(_ placeholder: String, text: Binding<String>, field: DraftField) -> some View {
+    private func draftTextField(
+        _ placeholder: String,
+        text: Binding<String>,
+        field: DraftField,
+        infoTopic: DraftInfoTopic
+    ) -> some View {
         let isFocused = focusedDraftField == field
-        return TextField(placeholder, text: text)
-            .textFieldStyle(.plain)
-            .padding(.horizontal, 12)
+        return HStack(spacing: 8) {
+            TextField(placeholder, text: text)
+                .textFieldStyle(.plain)
+                .focused($focusedDraftField, equals: field)
+            draftInfoButton(topic: infoTopic)
+        }
+            .padding(.leading, 12)
+            .padding(.trailing, 8)
             .frame(height: 38)
             .background(
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
@@ -777,7 +819,41 @@ struct ContentView: View {
                         lineWidth: isFocused ? 2 : 1
                     )
             )
-            .focused($focusedDraftField, equals: field)
+    }
+
+    private func draftInfoButton(topic: DraftInfoTopic) -> some View {
+        Button {
+            activeDraftInfo = topic
+        } label: {
+            Image(systemName: "info.circle")
+                .foregroundStyle(.secondary)
+        }
+        .buttonStyle(.plain)
+        .popover(
+            isPresented: Binding(
+                get: { activeDraftInfo == topic },
+                set: { isPresented in
+                    if !isPresented, activeDraftInfo == topic {
+                        activeDraftInfo = nil
+                    }
+                }
+            ),
+            attachmentAnchor: .point(.trailing),
+            arrowEdge: .trailing
+        ) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(topic.title)
+                    .font(.headline)
+                Text(topic.message)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(nil)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(14)
+            .frame(width: 280, alignment: .leading)
+            .fixedSize(horizontal: false, vertical: true)
+        }
     }
 
     private func runStatus(for document: GraphDocument) -> TaskRunStatus {
@@ -950,7 +1026,7 @@ struct ContentView: View {
                             )
                     } else {
                         headerControlLabel(
-                            title: "Run Live",
+                            title: "Run",
                             systemImage: "play.fill",
                             height: headerControlHeight,
                             prominent: true,
