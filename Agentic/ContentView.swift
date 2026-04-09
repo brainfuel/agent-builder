@@ -44,6 +44,8 @@ struct ContentView: View {
     @State private var latestCoordinatorPlan: CoordinatorPlan?
     @State private var latestCoordinatorRun: CoordinatorRun?
     @State private var isExecutingCoordinator = false
+    @State private var liveStatusMessage = ""
+    @State private var liveStatusBannerPulse = false
     @State private var coordinatorTrace: [CoordinatorTraceStep] = []
     @State private var pendingCoordinatorExecution: PendingCoordinatorExecution?
     @State private var humanDecisionAudit: [HumanDecisionAuditEvent] = []
@@ -948,10 +950,53 @@ struct ContentView: View {
                 
             }
             .padding(.horizontal, 24)
+
+            if isExecutingCoordinator, !liveStatusMessage.isEmpty {
+                HStack(spacing: 10) {
+                    Circle()
+                        .fill(Color.blue)
+                        .frame(width: 8, height: 8)
+                        .opacity(liveStatusBannerPulse ? 0.55 : 1)
+
+                    Text(liveStatusMessage)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(Color.blue.opacity(0.92))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(Color.blue.opacity(0.9))
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color.blue.opacity(liveStatusBannerPulse ? 0.12 : 0.06))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(Color.blue.opacity(liveStatusBannerPulse ? 0.35 : 0.20), lineWidth: 1)
+                )
+                .padding(.horizontal, 24)
+                .transition(.move(edge: .top).combined(with: .opacity))
+                .onAppear {
+                    liveStatusBannerPulse = false
+                    withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) {
+                        liveStatusBannerPulse = true
+                    }
+                }
+                .onDisappear {
+                    liveStatusBannerPulse = false
+                }
+            }
         }
         .padding(.top, usesTaskSplitView ? 0 : 18)
         .padding(.bottom, 14)
         .background(Color(uiColor: .systemBackground))
+        .animation(.easeInOut(duration: 0.2), value: liveStatusMessage)
+        .animation(.easeInOut(duration: 0.2), value: isExecutingCoordinator)
     }
 
     private func headerControlLabel(
@@ -1279,7 +1324,8 @@ struct ContentView: View {
                             node: node,
                             isSelected: node.id == selectedNodeID,
                             isLinkTargeted: node.id == linkHoverTargetNodeID,
-                            isOrphan: orphanIDs.contains(node.id)
+                            isOrphan: orphanIDs.contains(node.id),
+                            executionState: executionState(for: node.id)
                         )
                             .frame(width: cardSize.width, height: cardSize.height)
                             .position(node.position)
@@ -1491,6 +1537,10 @@ struct ContentView: View {
         while pending.nextPacketIndex < pending.plan.packets.count {
             let packet = pending.plan.packets[pending.nextPacketIndex]
             let startedAtStep = Date()
+            let nodeIndex = pending.nextPacketIndex + 1
+            let nodeTotal = pending.plan.packets.count
+            liveStatusMessage = "Node \(nodeIndex)/\(nodeTotal): \(packet.assignedNodeName) — starting…"
+
             updateTraceStep(
                 packetID: packet.id,
                 status: .running,
@@ -1543,14 +1593,30 @@ struct ContentView: View {
                 return
             }
 
+            liveStatusMessage = "Node \(nodeIndex)/\(nodeTotal): \(packet.assignedNodeName) — calling LLM…"
+            let statusPrefix = "Node \(nodeIndex)/\(nodeTotal): \(packet.assignedNodeName)"
+
+            // Poll execution service status while the LLM call runs
+            let statusTask = Task { @MainActor in
+                while !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: 300_000_000) // 0.3s
+                    let detail = LiveProviderExecutionService.liveStatus
+                    if !detail.isEmpty {
+                        liveStatusMessage = "\(statusPrefix) · \(detail)"
+                    }
+                }
+            }
+
             let response = await executeLiveProviderPacket(
                 packet,
                 handoffSummaries: handoffValidation.handoffSummaries,
                 goal: pending.plan.goal
             )
+            statusTask.cancel()
 
             let finishedAtStep = Date()
             let completed = response.completed
+            liveStatusMessage = "\(statusPrefix) — \(completed ? "done ✓" : "failed ✗")"
             let result = CoordinatorTaskResult(
                 id: UUID().uuidString,
                 packetID: packet.id,
@@ -1590,6 +1656,7 @@ struct ContentView: View {
         )
         pendingCoordinatorExecution = nil
         isExecutingCoordinator = false
+        liveStatusMessage = ""
         persistCoordinatorExecutionState()
     }
 
@@ -1651,6 +1718,7 @@ struct ContentView: View {
             retryFeedback: feedback
         )
         isExecutingCoordinator = true
+        liveStatusMessage = "Planning execution…"
         persistCoordinatorExecutionState()
         Task {
             await continueCoordinatorExecution()
@@ -2416,6 +2484,22 @@ struct ContentView: View {
             selectedNodeID = nil
         } else {
             selectedLinkID = nil
+        }
+    }
+
+    private func executionState(for nodeID: UUID) -> NodeExecutionState {
+        guard let step = coordinatorTrace.first(where: { $0.assignedNodeID == nodeID }) else {
+            return .idle
+        }
+        switch step.status {
+        case .running, .waitingHuman:
+            return .running
+        case .succeeded, .approved:
+            return .succeeded
+        case .failed, .blocked, .rejected, .needsInfo:
+            return .failed
+        case .queued:
+            return .idle
         }
     }
 
@@ -5865,11 +5949,19 @@ private struct DotGridBackground: View {
     }
 }
 
+private enum NodeExecutionState {
+    case idle
+    case running
+    case succeeded
+    case failed
+}
+
 private struct NodeCard: View {
     let node: OrgNode
     let isSelected: Bool
     let isLinkTargeted: Bool
     let isOrphan: Bool
+    var executionState: NodeExecutionState = .idle
 
     var body: some View {
         HStack(spacing: 12) {
@@ -5908,17 +6000,21 @@ private struct NodeCard: View {
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .stroke(
-                    isSelected
+                    executionBorderColor ?? (isSelected
                         ? Color.orange
-                        : (isLinkTargeted ? Color.green : defaultBorderColor),
+                        : (isLinkTargeted ? Color.green : defaultBorderColor)),
                     style: StrokeStyle(
-                        lineWidth: isSelected || isLinkTargeted ? 2 : 1,
+                        lineWidth: isSelected || isLinkTargeted || executionState != .idle ? 2 : 1,
                         dash: isOrphan && !isSelected && !isLinkTargeted ? [6, 4] : []
                     )
                 )
         )
         .opacity(isOrphan ? 0.55 : 1)
-        .shadow(color: .black.opacity(0.08), radius: 10, y: 2)
+        .shadow(
+            color: executionGlowColor ?? .black.opacity(0.08),
+            radius: executionState == .running ? 12 : 10,
+            y: executionState == .running ? 0 : 2
+        )
     }
 
     private var cardBackgroundColor: Color {
@@ -5929,6 +6025,24 @@ private struct NodeCard: View {
             return Color.teal.opacity(0.08)
         case .agent, .human:
             return Color(uiColor: .systemBackground)
+        }
+    }
+
+    private var executionBorderColor: Color? {
+        switch executionState {
+        case .idle: return nil
+        case .running: return .blue
+        case .succeeded: return .green
+        case .failed: return .red
+        }
+    }
+
+    private var executionGlowColor: Color? {
+        switch executionState {
+        case .idle: return nil
+        case .running: return .blue.opacity(0.35)
+        case .succeeded: return .green.opacity(0.25)
+        case .failed: return .red.opacity(0.25)
         }
     }
 

@@ -280,6 +280,9 @@ enum LiveProviderExecutionError: LocalizedError {
 }
 
 enum LiveProviderExecutionService {
+    /// Shared status message for live UI updates during execution.
+    @MainActor static var liveStatus: String = ""
+
     private static let modelCacheLock = NSLock()
     private static var modelCache: [APIKeyProvider: String] = [:]
 
@@ -308,6 +311,7 @@ enum LiveProviderExecutionService {
         var totalOutputTokens = 0
 
         for iteration in 0..<(hasExecutableTools ? ToolExecutionEngine.maxIterations : 1) {
+            await MainActor.run { Self.liveStatus = iteration == 0 ? "Generating response…" : "Re-prompting (turn \(iteration + 1))…" }
             let stream = client.generateReplyStream(
                 modelID: modelID,
                 systemInstruction: systemPrompt,
@@ -373,7 +377,8 @@ enum LiveProviderExecutionService {
 
             // Execute each tool call and collect results
             var toolResultsText = ""
-            for call in toolCalls {
+            for (i, call) in toolCalls.enumerated() {
+                await MainActor.run { Self.liveStatus = "Calling tool \(i + 1)/\(toolCalls.count): \(call.name)…" }
                 let result = await engine.execute(call, assignedTools: request.assignedTools)
                 toolResultsText += "[TOOL_RESULT: \(call.name) → \(result.output)]\n"
             }
@@ -428,6 +433,7 @@ enum LiveProviderExecutionService {
 
         // Record token usage for cost tracking
         UsageTracker.shared.record(provider: provider, modelID: modelID, inputTokens: totalInputTokens, outputTokens: totalOutputTokens)
+        await MainActor.run { Self.liveStatus = "" }
 
         return result.isEmpty ? "" : String(result.prefix(16000))
     }
