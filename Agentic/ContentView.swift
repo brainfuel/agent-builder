@@ -1056,16 +1056,28 @@ struct ContentView: View {
                 Button(role: .destructive) {
                     isShowingDeleteTaskConfirmation = true
                 } label: {
-                    headerControlLabel(
-                        title: "Delete Task",
-                        systemImage: "trash",
-                        height: headerControlHeight,
-                        prominent: false,
-                        enabled: canDeleteTask,
-                        destructive: true
-                    )
+                    Image(systemName: "trash")
+                        .font(.headline)
+                        .frame(width: headerControlHeight, height: headerControlHeight)
+                        .foregroundStyle(
+                            headerControlForeground(
+                                prominent: false,
+                                enabled: canDeleteTask,
+                                destructive: true
+                            )
+                        )
+                        .background(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .fill(
+                                    headerControlBackground(
+                                        prominent: false,
+                                        enabled: canDeleteTask
+                                    )
+                                )
+                        )
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Delete Task")
                 .disabled(!canDeleteTask)
 
 
@@ -1582,7 +1594,7 @@ struct ContentView: View {
                     .font(.subheadline.weight(.semibold))
                     .padding(.horizontal, 14)
                     .padding(.vertical, 8)
-                    .background(Color.indigo)
+                    .background(AppTheme.brandTint)
                     .foregroundStyle(.white)
                     .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
             }
