@@ -213,6 +213,10 @@ struct APIKeysSheet: View {
                     }
                 }
                 .modifier(APIKeyFieldStylingModifier())
+                .submitLabel(.done)
+                .onSubmit {
+                    saveKeyIfNeeded(for: provider)
+                }
 
                 Button {
                     toggleReveal(for: provider)
@@ -220,22 +224,11 @@ struct APIKeysSheet: View {
                     Image(systemName: revealedProviders.contains(provider) ? "eye.slash" : "eye")
                 }
                 .buttonStyle(.bordered)
-
-                Button("Save") {
-                    saveKey(for: provider)
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(trimmedValue(for: provider).isEmpty)
-
-                Button("Clear", role: .destructive) {
-                    clearKey(for: provider)
-                }
-                .buttonStyle(.bordered)
-                .disabled(!savedProviders.contains(provider) && trimmedValue(for: provider).isEmpty)
             }
 
-            HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 8) {
                 Button {
+                    saveKeyIfNeeded(for: provider)
                     Task { await loadModels(for: provider, reportErrors: true) }
                 } label: {
                     if loadingProviders.contains(provider) {
@@ -249,7 +242,10 @@ struct APIKeysSheet: View {
                     }
                 }
                 .buttonStyle(.bordered)
-                .disabled(loadingProviders.contains(provider) || !savedProviders.contains(provider))
+                .disabled(
+                    loadingProviders.contains(provider)
+                    || (!savedProviders.contains(provider) && trimmedValue(for: provider).isEmpty)
+                )
 
                 Menu {
                     let models = availableModels(for: provider)
@@ -279,8 +275,6 @@ struct APIKeysSheet: View {
                 }
                 .buttonStyle(.bordered)
                 .disabled(availableModels(for: provider).isEmpty)
-
-                Spacer()
             }
 
             if savedProviders.contains(provider), trimmedValue(for: provider).isEmpty {
@@ -359,21 +353,13 @@ struct APIKeysSheet: View {
         }
     }
 
-    private func clearKey(for provider: APIKeyProvider) {
-        do {
-            try store.removeKey(for: provider)
-            savedProviders.remove(provider)
-            drafts[provider] = ""
-            availableModelsByProvider[provider] = []
-            selectedModelByProvider[provider] = nil
-            modelStore.persistCachedModels([], for: provider)
-            modelStore.persistDefaultModel(nil, for: provider)
-            feedbackMessage = "\(provider.label) key removed."
-            feedbackIsError = false
-        } catch {
-            feedbackMessage = error.localizedDescription
-            feedbackIsError = true
-        }
+    private func saveKeyIfNeeded(for provider: APIKeyProvider) {
+        let key = trimmedValue(for: provider)
+        guard !key.isEmpty else { return }
+        let existing = storedKey(for: provider)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard existing != key else { return }
+        saveKey(for: provider)
     }
 
     private func availableModels(for provider: APIKeyProvider) -> [String] {
