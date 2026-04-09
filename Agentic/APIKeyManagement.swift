@@ -105,6 +105,7 @@ struct KeychainAPIKeyStore: APIKeyStoring {
 }
 
 struct APIKeysSheet: View {
+    var embedded: Bool = false
     let store: any APIKeyStoring
     let modelStore: any ProviderModelPreferencesStoring
 
@@ -119,47 +120,64 @@ struct APIKeysSheet: View {
     @State private var feedbackIsError = false
 
     init(
+        embedded: Bool = false,
         store: any APIKeyStoring,
         modelStore: any ProviderModelPreferencesStoring = UserDefaultsProviderModelStore()
     ) {
+        self.embedded = embedded
         self.store = store
         self.modelStore = modelStore
     }
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
+        if embedded {
+            apiKeysContent
+                .onAppear(perform: loadStoredState)
+        } else {
+            NavigationStack {
+                apiKeysContent
+                    .navigationTitle("API Keys")
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button {
+                                dismiss()
+                            } label: {
+                                Image(systemName: "xmark")
+                            }
+                            .accessibilityLabel("Close")
+                        }
+                    }
+            }
+            .onAppear(perform: loadStoredState)
+        }
+    }
+
+    private var apiKeysContent: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                if !embedded {
                     Text("Store provider keys securely in Keychain. This can be swapped for a different store when merged into another app.")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
-
-                    ForEach(APIKeyProvider.allCases) { provider in
-                        providerRow(provider)
-                    }
-
-                    if let feedbackMessage {
-                        Text(feedbackMessage)
-                            .font(.footnote)
-                            .foregroundStyle(feedbackIsError ? .red : .secondary)
-                            .padding(.top, 4)
-                    }
+                } else {
+                    Text("Provider API keys stored in Keychain.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
-                .padding(20)
-            }
-            .navigationTitle("API Keys")
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        dismiss()
-                    } label: {
-                        Image(systemName: "xmark")
-                    }
-                    .accessibilityLabel("Close")
+
+                ForEach(APIKeyProvider.allCases) { provider in
+                    providerRow(provider)
+                }
+
+                if let feedbackMessage {
+                    Text(feedbackMessage)
+                        .font(.footnote)
+                        .foregroundStyle(feedbackIsError ? .red : .secondary)
+                        .padding(.top, 4)
                 }
             }
+            .padding(20)
         }
-        .onAppear(perform: loadStoredState)
     }
 
     private func providerRow(_ provider: APIKeyProvider) -> some View {

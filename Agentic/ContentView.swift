@@ -63,8 +63,8 @@ struct ContentView: View {
     @State private var newTaskTemplate: PresetHierarchyTemplate = .baseline
     @State private var isShowingTaskResults = false
     @State private var taskResultsDocumentKey: String?
-    @State private var isShowingAPIKeys = false
-    @State private var isShowingToolCatalog = false
+    @State private var sidebarTab: SidebarTab = .tasks
+    @State private var isShowingSettingsPlaceholderSheet = false
     @State private var isShowingNodeTemplateLibrary = false
     @State private var templateSavedName: String?
     @State private var isShowingWipeDataConfirmation = false
@@ -170,6 +170,22 @@ struct ContentView: View {
         case edit = "Edit"
 
         var id: String { rawValue }
+    }
+
+    private enum SidebarTab: String, CaseIterable, Identifiable {
+        case tasks = "Tasks"
+        case tools = "Tools"
+        case settings = "Keys"
+
+        var id: String { rawValue }
+
+        var icon: String {
+            switch self {
+            case .tasks: return "list.bullet.rectangle"
+            case .tools: return "wrench.and.screwdriver"
+            case .settings: return "key.horizontal"
+            }
+        }
     }
 
     var body: some View {
@@ -311,20 +327,41 @@ struct ContentView: View {
             )
             .presentationDetents([.medium, .large])
         }
-        .sheet(isPresented: $isShowingAPIKeys) {
-            APIKeysSheet(store: apiKeyStore, modelStore: providerModelStore)
-                .presentationDetents([.medium, .large])
-        }
-        .sheet(isPresented: $isShowingToolCatalog) {
-            ToolCatalogSheet()
-                .presentationDetents([.medium, .large])
-        }
         .sheet(isPresented: $isShowingNodeTemplateLibrary) {
             NodeTemplateLibrarySheet(onInsert: { userTemplate in
                 isShowingNodeTemplateLibrary = false
                 addNodeFromUserTemplate(userTemplate)
             })
             .presentationDetents([.medium, .large])
+        }
+        .sheet(isPresented: $isShowingSettingsPlaceholderSheet) {
+            NavigationStack {
+                VStack(spacing: 12) {
+                    Image(systemName: "gearshape.2")
+                        .font(.system(size: 30))
+                        .foregroundStyle(.secondary)
+                    Text("Settings Placeholder")
+                        .font(.headline)
+                    Text("Settings controls will be added here.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                .multilineTextAlignment(.center)
+                .padding(24)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .navigationTitle("Settings")
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button {
+                            isShowingSettingsPlaceholderSheet = false
+                        } label: {
+                            Image(systemName: "xmark")
+                        }
+                        .accessibilityLabel("Close Settings")
+                    }
+                }
+            }
+            .presentationDetents([.medium])
         }
     }
 
@@ -426,7 +463,7 @@ struct ContentView: View {
                     Button("No API keys configured") {}
                         .disabled(true)
                     Button("Open API Keys…") {
-                        isShowingAPIKeys = true
+                        sidebarTab = .settings
                     }
                 } else {
                     ForEach(availableProviders, id: \.self) { provider in
@@ -518,40 +555,47 @@ struct ContentView: View {
 
     private var taskListView: some View {
         VStack(spacing: 0) {
-            if !usesTaskSplitView {
-                HStack(spacing: 12) {
-                    VStack(alignment: .leading, spacing: 0) {
-                        Text("Coordinator Tasks")
-                            .font(.title2.weight(.bold))
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.85)
-                    }
-                    Spacer()
-                    Button {
-                        isShowingAPIKeys = true
-                    } label: {
-                        Label("API Keys", systemImage: "key.horizontal")
-                    }
-                    .buttonStyle(.bordered)
-
-                    Button(role: .destructive) {
-                        isShowingWipeDataConfirmation = true
-                    } label: {
-                        Label("Wipe Data", systemImage: "trash")
-                    }
-                    .buttonStyle(.bordered)
+            // Tab picker
+            Picker("Sidebar", selection: $sidebarTab) {
+                ForEach(SidebarTab.allCases) { tab in
+                    Label(tab.rawValue, systemImage: tab.icon).tag(tab)
                 }
-                .padding(.horizontal, 24)
-                .padding(.vertical, 18)
-                .background(Color(uiColor: .systemBackground))
-
-                Divider()
             }
+            .pickerStyle(.segmented)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
 
+            Divider()
+
+            switch sidebarTab {
+            case .tasks:
+                sidebarTasksContent
+            case .tools:
+                ToolCatalogSheet(embedded: true)
+            case .settings:
+                sidebarSettingsContent
+            }
+        }
+        .navigationTitle(usesTaskSplitView ? "Agentic" : "")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
             if usesTaskSplitView {
-                Divider()
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    Button {
+                        isShowingSettingsPlaceholderSheet = true
+                    } label: {
+                        Label("Settings", systemImage: "gearshape")
+                    }
+                    .labelStyle(.iconOnly)
+                    .accessibilityLabel("Settings")
+                    .help("Settings")
+                }
             }
+        }
+    }
 
+    private var sidebarTasksContent: some View {
+        VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 10) {
                 Text("New Task Draft")
                     .font(.headline)
@@ -596,40 +640,10 @@ struct ContentView: View {
                 .padding(24)
             }
         }
-        .navigationTitle(usesTaskSplitView ? "Coordinator Tasks" : "")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            if usesTaskSplitView {
-                ToolbarItemGroup(placement: .topBarTrailing) {
-                    Button {
-                        isShowingToolCatalog = true
-                    } label: {
-                        Label("Tools", systemImage: "wrench.and.screwdriver")
-                    }
-                    .labelStyle(.iconOnly)
-                    .accessibilityLabel("Tool Catalog")
-                    .help("Tool Catalog")
+    }
 
-                    Button {
-                        isShowingAPIKeys = true
-                    } label: {
-                        Label("API Keys", systemImage: "key.horizontal")
-                    }
-                    .labelStyle(.iconOnly)
-                    .accessibilityLabel("API Keys")
-                    .help("API Keys")
-
-                    Button(role: .destructive) {
-                        isShowingWipeDataConfirmation = true
-                    } label: {
-                        Label("Wipe Data", systemImage: "trash")
-                    }
-                    .labelStyle(.iconOnly)
-                    .accessibilityLabel("Wipe Data")
-                    .help("Wipe Data")
-                }
-            }
-        }
+    private var sidebarSettingsContent: some View {
+        APIKeysSheet(embedded: true, store: apiKeyStore, modelStore: providerModelStore)
     }
 
     private func taskRow(_ document: GraphDocument) -> some View {
@@ -8140,6 +8154,8 @@ private struct ToolCatalogSheet: View {
         let tools: [MCPRemoteTool]
     }
 
+    var embedded: Bool = false
+
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @Query private var savedServers: [MCPServerConnection]
@@ -8154,53 +8170,38 @@ private struct ToolCatalogSheet: View {
     @State private var navigationPath = NavigationPath()
 
     var body: some View {
-        NavigationStack(path: $navigationPath) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 24) {
-                    // MARK: Built-in Tools
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("BUILT-IN TOOLS")
-                            .font(.caption.weight(.bold))
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 20)
-
-                        Text("Always available. Assign per-node in the Node Details inspector.")
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
-                            .padding(.horizontal, 20)
-                            .padding(.bottom, 4)
-
-                        VStack(spacing: 1) {
-                            ForEach(MCPToolRegistry.allTools) { tool in
-                                HStack(spacing: 14) {
-                                    Image(systemName: toolIcon(for: tool.id))
-                                        .font(.title3)
-                                        .foregroundStyle(Color.accentColor)
-                                        .frame(width: 32, height: 32)
-
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        Text(tool.name)
-                                            .font(.body.weight(.medium))
-                                        Text(tool.description)
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                            .lineLimit(2)
-                                    }
-
-                                    Spacer()
-
-                                    Image(systemName: "checkmark.circle.fill")
-                                        .foregroundStyle(.green)
-                                }
-                                .padding(.horizontal, 20)
-                                .padding(.vertical, 10)
-                                .background(Color(.secondarySystemGroupedBackground))
+        if embedded {
+            NavigationStack(path: $navigationPath) {
+                toolCatalogContent
+                    .navigationDestination(for: ServerToolListSelection.self) { selection in
+                        ServerToolsDetailView(serverName: selection.name, tools: selection.tools)
+                    }
+            }
+        } else {
+            NavigationStack(path: $navigationPath) {
+                toolCatalogContent
+                    .navigationTitle("Tool Catalog")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button {
+                                dismiss()
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundStyle(.secondary)
                             }
                         }
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
-                        .padding(.horizontal, 16)
                     }
+                    .navigationDestination(for: ServerToolListSelection.self) { selection in
+                        ServerToolsDetailView(serverName: selection.name, tools: selection.tools)
+                    }
+            }
+        }
+    }
 
+    private var toolCatalogContent: some View {
+        ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
                     // MARK: MCP Servers
                     VStack(alignment: .leading, spacing: 4) {
                         Text("MCP SERVERS")
@@ -8251,7 +8252,8 @@ private struct ToolCatalogSheet: View {
                                         let isConnected = savedConnection != nil
                                         let status = savedConnection.flatMap { mcpManager.connectionStatus[$0.id] }
                                         let cachedToolCount = savedConnection.map { toolCountForDisplay(connection: $0, status: status) } ?? 0
-                                        HStack(spacing: 14) {
+                                        let hasToolDetails = cachedToolCount > 0
+                                        HStack(alignment: .top, spacing: 14) {
                                             Image(systemName: server.icon)
                                                 .font(.title3)
                                                 .foregroundStyle(isConnected ? Color.accentColor : .secondary)
@@ -8261,12 +8263,73 @@ private struct ToolCatalogSheet: View {
                                                 HStack(spacing: 8) {
                                                     Text(server.name)
                                                         .font(.body.weight(.medium))
+                                                        .lineLimit(1)
                                                     serverStatusBadge(isConnected: isConnected, status: status, cachedToolCount: cachedToolCount)
+
+                                                    Spacer(minLength: 8)
+
+                                                    if case .connecting = status {
+                                                        ProgressView()
+                                                            .controlSize(.small)
+                                                    } else if case .awaitingOAuth = status {
+                                                        ProgressView()
+                                                            .controlSize(.small)
+                                                    } else if isConnected {
+                                                        Button {
+                                                            if let conn = savedConnection {
+                                                                Task { await mcpManager.connect(to: conn) }
+                                                            }
+                                                        } label: {
+                                                            Image(systemName: "arrow.clockwise")
+                                                                .font(.callout.weight(.semibold))
+                                                                .foregroundStyle(Color.accentColor)
+                                                        }
+                                                        .buttonStyle(.plain)
+                                                        .accessibilityLabel("Refresh")
+
+                                                        Button {
+                                                            disconnectServer(named: server.name)
+                                                        } label: {
+                                                            Image(systemName: "xmark.circle")
+                                                                .font(.callout.weight(.semibold))
+                                                                .foregroundStyle(.red)
+                                                        }
+                                                        .buttonStyle(.plain)
+                                                        .accessibilityLabel("Remove")
+                                                    } else {
+                                                        Button {
+                                                            if server.requiresAPIKey {
+                                                                configuringServer = server
+                                                                serverAPIKey = ""
+                                                            } else {
+                                                                connectServer(server, apiKey: "")
+                                                            }
+                                                        } label: {
+                                                            Text("Connect")
+                                                                .font(.caption.weight(.semibold))
+                                                                .foregroundStyle(.white)
+                                                                .lineLimit(1)
+                                                                .fixedSize(horizontal: true, vertical: false)
+                                                                .padding(.horizontal, 12)
+                                                                .padding(.vertical, 3)
+                                                                .background(Color.accentColor, in: Capsule())
+                                                        }
+                                                        .buttonStyle(.plain)
+                                                    }
+
                                                 }
-                                                Text(server.description)
-                                                    .font(.caption)
-                                                    .foregroundStyle(.secondary)
-                                                    .lineLimit(2)
+                                                HStack(alignment: .center, spacing: 8) {
+                                                    Text(server.description)
+                                                        .font(.caption)
+                                                        .foregroundStyle(.secondary)
+                                                        .lineLimit(2)
+                                                    if hasToolDetails {
+                                                        Spacer(minLength: 0)
+                                                        Image(systemName: "chevron.right")
+                                                            .font(.caption.weight(.semibold))
+                                                            .foregroundStyle(.tertiary)
+                                                    }
+                                                }
                                                 if case .connected(let count) = status {
                                                     Text("\(count) tool\(count == 1 ? "" : "s") available")
                                                         .font(.caption2)
@@ -8282,59 +8345,10 @@ private struct ToolCatalogSheet: View {
                                                         .foregroundStyle(.secondary)
                                                 }
                                             }
+                                            .layoutPriority(1)
                                             .contentShape(Rectangle())
                                             .onTapGesture {
                                                 handleServerRowTap(connection: savedConnection, status: status)
-                                            }
-
-                                            Spacer()
-
-                                            if case .connecting = status {
-                                                ProgressView()
-                                                    .controlSize(.small)
-                                            } else if case .awaitingOAuth = status {
-                                                ProgressView()
-                                                    .controlSize(.small)
-                                            } else if isConnected {
-                                                HStack(spacing: 10) {
-                                                    if status == nil || status == .disconnected {
-                                                        Button {
-                                                            if let conn = savedConnection {
-                                                                Task { await mcpManager.connect(to: conn) }
-                                                            }
-                                                        } label: {
-                                                            Text("Refresh")
-                                                                .font(.caption.weight(.medium))
-                                                                .foregroundStyle(Color.accentColor)
-                                                        }
-                                                        .buttonStyle(.plain)
-                                                    }
-                                                    Button {
-                                                        disconnectServer(named: server.name)
-                                                    } label: {
-                                                        Text("Remove")
-                                                            .font(.caption.weight(.medium))
-                                                            .foregroundStyle(.red)
-                                                    }
-                                                    .buttonStyle(.plain)
-                                                }
-                                            } else {
-                                                Button {
-                                                    if server.requiresAPIKey {
-                                                        configuringServer = server
-                                                        serverAPIKey = ""
-                                                    } else {
-                                                        connectServer(server, apiKey: "")
-                                                    }
-                                                } label: {
-                                                    Text("Connect")
-                                                        .font(.caption.weight(.semibold))
-                                                        .foregroundStyle(.white)
-                                                        .padding(.horizontal, 12)
-                                                        .padding(.vertical, 5)
-                                                        .background(Color.accentColor, in: Capsule())
-                                                }
-                                                .buttonStyle(.plain)
                                             }
                                         }
                                         .padding(.horizontal, 20)
@@ -8435,18 +8449,6 @@ private struct ToolCatalogSheet: View {
                 .padding(.vertical, 16)
             }
             .background(Color(.systemGroupedBackground))
-            .navigationTitle("Tool Catalog")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        dismiss()
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
             .alert("Connect \(configuringServer?.name ?? "")", isPresented: Binding(
                 get: { configuringServer != nil },
                 set: { if !$0 { configuringServer = nil } }
@@ -8477,10 +8479,6 @@ private struct ToolCatalogSheet: View {
             } message: {
                 Text("Enter the MCP server endpoint URL (e.g. https://mcp.example.com/sse).")
             }
-            .navigationDestination(for: ServerToolListSelection.self) { selection in
-                ServerToolsDetailView(serverName: selection.name, tools: selection.tools)
-            }
-        }
     }
 
     private func connectServer(_ server: CuratedMCPServer, apiKey: String) {
@@ -8666,14 +8664,6 @@ private struct ToolCatalogSheet: View {
         }
     }
 
-    private func toolIcon(for id: String) -> String {
-        switch id {
-        case "web_search":       return "globe.americas"
-        case "structured_output": return "doc.text.below.ecg"
-        case "human_review":     return "person.badge.clock"
-        default:                 return "wrench"
-        }
-    }
 }
 
 private struct ServerToolsDetailView: View {
