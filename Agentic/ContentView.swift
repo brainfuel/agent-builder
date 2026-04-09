@@ -56,11 +56,11 @@ struct ContentView: View {
     @State private var synthesisQuestions: [SynthesisQuestionState] = []
     @State private var synthesizedStructure: HierarchySnapshot?
     @State private var synthesisStatusMessage: String?
-    @State private var isShowingNewTaskOptions = false
     @State private var newTaskTitle = ""
     @State private var newTaskGoal = ""
     @State private var newTaskContext = ""
-    @State private var newTaskTemplate: PresetHierarchyTemplate = .baseline
+    @State private var newTaskStructureStrategy = ""
+    @State private var newTaskCreationOption: DraftCreationOption = .baselineTeam
     @State private var isShowingTaskResults = false
     @State private var taskResultsDocumentKey: String?
     @State private var sidebarTab: SidebarTab = .tasks
@@ -164,20 +164,56 @@ struct ContentView: View {
         case title
         case goal
         case context
+        case structureStrategy
+    }
+
+    private enum DraftCreationOption: String, CaseIterable, Hashable, Identifiable {
+        case generateStructure
+        case simpleTask
+        case baselineTeam
+        case researchDelivery
+        case incidentResponse
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .generateStructure: return "Generate Structure"
+            case .simpleTask: return "Simple Task"
+            case .baselineTeam: return "Baseline Team"
+            case .researchDelivery: return "Research + Delivery"
+            case .incidentResponse: return "Incident Response"
+            }
+        }
+
+        var usesStructureStrategyField: Bool {
+            self == .generateStructure
+        }
+
+        var template: PresetHierarchyTemplate? {
+            switch self {
+            case .baselineTeam: return .baseline
+            case .researchDelivery: return .researchOps
+            case .incidentResponse: return .incidentResponse
+            default: return nil
+            }
+        }
     }
 
     private enum DraftInfoTopic: String, Hashable {
         case title
         case question
         case context
-        case template
+        case structureStrategy
+        case creationMode
 
         var title: String {
             switch self {
             case .title: return "Task Title"
             case .question: return "Question"
             case .context: return "Context"
-            case .template: return "Template"
+            case .structureStrategy: return "Structure Strategy"
+            case .creationMode: return "Creation Mode"
             }
         }
 
@@ -189,8 +225,10 @@ struct ContentView: View {
                 return "Describe what you want the agents to answer or produce."
             case .context:
                 return "Add relevant background, constraints, links, or assumptions."
-            case .template:
-                return "Choose a default team structure to start from before creating and running."
+            case .structureStrategy:
+                return "Describe how generated teams should approach planning, execution, and decision making."
+            case .creationMode:
+                return "Choose whether to generate a new team structure, start from a simple task, or use a preset team."
             }
         }
     }
@@ -298,20 +336,6 @@ struct ContentView: View {
         }
         .onChange(of: humanActorIdentity) { _, _ in
             persistCoordinatorExecutionState()
-        }
-        .confirmationDialog("Create Top-Level Task", isPresented: $isShowingNewTaskOptions) {
-            Button("Simple Task") {
-                createSimpleTask()
-            }
-            Button("Generate Structure") {
-                createGeneratedTaskFromDraft()
-            }
-            Button("From Selected Template") {
-                createTaskFromSelectedTemplate()
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Choose how to create the new coordinator task.")
         }
         .confirmationDialog("Wipe All Data?", isPresented: $isShowingWipeDataConfirmation) {
             Button("Wipe All Data", role: .destructive) {
@@ -629,30 +653,48 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 10) {
                 Text("New Task Draft")
                     .font(.headline)
-                Text("Set title, question, context, and template, then create.")
+                Text("Set title, question, context, and creation mode, then create.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
 
                 draftTextField("Task title", text: $newTaskTitle, field: .title, infoTopic: .title)
                 draftTextField("Question", text: $newTaskGoal, field: .goal, infoTopic: .question)
                 draftTextField("Context", text: $newTaskContext, field: .context, infoTopic: .context)
+                if newTaskCreationOption.usesStructureStrategyField {
+                    draftTextField(
+                        "Structure strategy",
+                        text: $newTaskStructureStrategy,
+                        field: .structureStrategy,
+                        infoTopic: .structureStrategy
+                    )
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                }
 
                 HStack(spacing: 10) {
-                    Picker("Template", selection: $newTaskTemplate) {
-                        ForEach(PresetHierarchyTemplate.allCases) { template in
-                            Text(template.title).tag(template)
+                    Menu {
+                        draftCreationOptionMenuItem(.generateStructure)
+                        Divider()
+                        draftCreationOptionMenuItem(.simpleTask)
+                        draftCreationOptionMenuItem(.baselineTeam)
+                        draftCreationOptionMenuItem(.researchDelivery)
+                        draftCreationOptionMenuItem(.incidentResponse)
+                    } label: {
+                        HStack(spacing: 6) {
+                            Text(newTaskCreationOption.title)
+                            Image(systemName: "chevron.up.chevron.down")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.secondary)
                         }
                     }
-                    .pickerStyle(.menu)
 
-                    draftInfoButton(topic: .template)
+                    draftInfoButton(topic: .creationMode)
 
                     Spacer()
 
                     Button {
-                        presentTaskCreationOptions()
+                        createTaskFromDraftSelection()
                     } label: {
-                        Label("Create & Run", systemImage: "plus.circle.fill")
+                        Label("Create", systemImage: "plus.circle.fill")
                     }
                     .buttonStyle(.borderedProminent)
                 }
@@ -660,6 +702,7 @@ struct ContentView: View {
             .padding(.horizontal, 24)
             .padding(.vertical, 14)
             .background(Color(uiColor: .systemBackground))
+            .animation(.easeInOut(duration: 0.2), value: newTaskCreationOption.usesStructureStrategyField)
 
             Divider()
 
@@ -853,6 +896,20 @@ struct ContentView: View {
             .padding(14)
             .frame(width: 280, alignment: .leading)
             .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func draftCreationOptionMenuItem(_ option: DraftCreationOption) -> some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                newTaskCreationOption = option
+            }
+        } label: {
+            if newTaskCreationOption == option {
+                Label(option.title, systemImage: "checkmark")
+            } else {
+                Text(option.title)
+            }
         }
     }
 
@@ -3770,21 +3827,24 @@ struct ContentView: View {
         currentGraphKey = document.key
     }
 
-    private func presentTaskCreationOptions() {
-        if newTaskGoal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            newTaskGoal = orchestrationGoal
+    private func createTaskFromDraftSelection() {
+        switch newTaskCreationOption {
+        case .generateStructure:
+            createGeneratedTaskFromDraft()
+        case .simpleTask:
+            createSimpleTask()
+        case .baselineTeam, .researchDelivery, .incidentResponse:
+            guard let template = newTaskCreationOption.template else { return }
+            createTaskFromTemplate(template)
         }
-        if newTaskContext.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            newTaskContext = synthesisContext
-        }
-        isShowingNewTaskOptions = true
     }
 
     private func resetTaskDraft() {
         newTaskTitle = ""
         newTaskGoal = ""
         newTaskContext = ""
-        newTaskTemplate = .baseline
+        newTaskStructureStrategy = ""
+        newTaskCreationOption = .baselineTeam
     }
 
     private func openTaskEditor(key: String) {
@@ -3822,33 +3882,45 @@ struct ContentView: View {
 
     private func createGeneratedTaskFromDraft() {
         let rawGoal = newTaskGoal.trimmingCharacters(in: .whitespacesAndNewlines)
-        let context = newTaskContext.trimmingCharacters(in: .whitespacesAndNewlines)
+        let rawContext = newTaskContext.trimmingCharacters(in: .whitespacesAndNewlines)
+        let context = rawContext.isEmpty ? synthesisContext : rawContext
         let title = newTaskTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        let rawStrategy = newTaskStructureStrategy.trimmingCharacters(in: .whitespacesAndNewlines)
+        let strategy = rawStrategy.isEmpty ? orchestrationStrategy : rawStrategy
         let goal = rawGoal.isEmpty ? orchestrationGoal : rawGoal
+
+        let synthesisContextValue: String
+        if strategy.isEmpty {
+            synthesisContextValue = context
+        } else if context.isEmpty {
+            synthesisContextValue = "Structure strategy: \(strategy)"
+        } else {
+            synthesisContextValue = "\(context)\n\nStructure strategy: \(strategy)"
+        }
 
         let synthesizer = TeamStructureSynthesizer()
         let snapshot = synthesizer.synthesize(
             goal: goal.isEmpty ? "Execute coordinator objective" : goal,
-            context: context,
+            context: synthesisContextValue,
             answers: [:]
         )
         createTaskDocument(
             title: title.isEmpty ? "Generated Task" : title,
             goal: goal,
-            structureStrategy: orchestrationStrategy,
+            structureStrategy: strategy,
             snapshot: snapshot
         )
         resetTaskDraft()
     }
 
-    private func createTaskFromSelectedTemplate() {
+    private func createTaskFromTemplate(_ template: PresetHierarchyTemplate) {
         let title = newTaskTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         let goal = newTaskGoal.trimmingCharacters(in: .whitespacesAndNewlines)
         createTaskDocument(
-            title: title.isEmpty ? newTaskTemplate.title : title,
+            title: title.isEmpty ? template.title : title,
             goal: goal.isEmpty ? orchestrationGoal : goal,
             structureStrategy: orchestrationStrategy,
-            snapshot: newTaskTemplate.snapshot()
+            snapshot: template.snapshot()
         )
         resetTaskDraft()
     }
