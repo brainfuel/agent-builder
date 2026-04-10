@@ -421,18 +421,17 @@ struct ContentView: View {
             Divider()
             schemaControlsBar
             Divider()
-            ZStack(alignment: .bottom) {
-                HStack(spacing: 0) {
+            HStack(spacing: 0) {
+                ZStack(alignment: .bottom) {
                     chartCanvas
-                    if inspectorNodeBinding != nil {
-                        Divider()
-                        inspectorPanel
-                            .frame(minWidth: 320, idealWidth: 360, maxWidth: 420)
-                            .transition(.move(edge: .trailing).combined(with: .opacity))
-                    }
+                    resultsDrawer
                 }
-
-                resultsDrawer
+                if inspectorNodeBinding != nil {
+                    Divider()
+                    inspectorPanel
+                        .frame(minWidth: 320, idealWidth: 360, maxWidth: 420)
+                        .transition(.move(edge: .trailing).combined(with: .opacity))
+                }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -2183,15 +2182,13 @@ struct ContentView: View {
                 )
             }
 
+            // Schema mismatch is a soft warning, not a hard block.
+            // Multi-parent nodes often aggregate different output types.
             if requirement.outputSchema != packet.requiredInputSchema {
-                return HandoffValidation(
-                    isValid: false,
-                    message: "Blocked: \(packet.assignedNodeName) requires \(packet.requiredInputSchema) but child \(requirement.fromNodeName) outputs \(requirement.outputSchema).",
-                    handoffSummaries: []
-                )
+                summaries.append("[\(requirement.fromNodeName) (\(requirement.outputSchema) → \(packet.requiredInputSchema))]: \(handoff.summary)")
+            } else {
+                summaries.append("\(requirement.fromNodeName): \(handoff.summary)")
             }
-
-            summaries.append("\(requirement.fromNodeName): \(handoff.summary)")
         }
 
         return HandoffValidation(
@@ -3778,17 +3775,18 @@ struct ContentView: View {
             )
         }
 
-        // Keep sink derived from the current reachable branch under the attached root,
-        // so adding/removing children updates Output cleanly without jumping to orphan branches.
-        let resolvedSinkID: UUID? = {
+        // Wire ALL leaf nodes (no outgoing work links) to Output so every
+        // branch terminates properly — not just the single deepest leaf.
+        let resolvedSinkIDs: [UUID] = {
             guard
                 let resolvedRootID,
                 workNodeIDs.contains(resolvedRootID)
             else {
-                if let preferredOutputParentID = preferredOutputParentIDs.first(where: { workNodeIDs.contains($0) }) {
-                    return preferredOutputParentID
-                }
-                return attachments.sinkID
+                // Fallback: use preferred output parents or the attachment sink
+                let preferred = preferredOutputParentIDs.filter { workNodeIDs.contains($0) }
+                if !preferred.isEmpty { return preferred }
+                if let sinkID = attachments.sinkID { return [sinkID] }
+                return []
             }
 
             let internalLinks = mutableLinks.filter { workNodeIDs.contains($0.fromID) && workNodeIDs.contains($0.toID) }
@@ -3807,28 +3805,31 @@ struct ContentView: View {
                 }
             }
 
-            if let preferredReachableOutputParentID = preferredOutputParentIDs.first(where: { reachable.contains($0) }) {
-                return preferredReachableOutputParentID
+            guard !reachable.isEmpty else {
+                if let sinkID = attachments.sinkID { return [sinkID] }
+                return []
             }
 
-            guard !reachable.isEmpty else { return attachments.sinkID }
-            let rootX = mutableNodes.first(where: { $0.id == resolvedRootID })?.position.x ?? 0
             let leaves = reachable.filter { outgoingByParentID[$0] == nil }
-            let candidates = leaves.isEmpty ? reachable : leaves
+            if leaves.isEmpty {
+                // Cycle or single node — pick the deepest
+                let rootX = mutableNodes.first(where: { $0.id == resolvedRootID })?.position.x ?? 0
+                if let best = reachable.sorted(by: { lhs, rhs in
+                    let leftY = mutableNodes.first(where: { $0.id == lhs })?.position.y ?? 0
+                    let rightY = mutableNodes.first(where: { $0.id == rhs })?.position.y ?? 0
+                    if leftY != rightY { return leftY > rightY }
+                    let leftDelta = abs((mutableNodes.first(where: { $0.id == lhs })?.position.x ?? 0) - rootX)
+                    let rightDelta = abs((mutableNodes.first(where: { $0.id == rhs })?.position.x ?? 0) - rootX)
+                    return leftDelta < rightDelta
+                }).first {
+                    return [best]
+                }
+                return []
+            }
 
-            return candidates.sorted { lhs, rhs in
-                let leftNode = mutableNodes.first(where: { $0.id == lhs })
-                let rightNode = mutableNodes.first(where: { $0.id == rhs })
-                let leftY = leftNode?.position.y ?? 0
-                let rightY = rightNode?.position.y ?? 0
-                if leftY != rightY { return leftY > rightY }
-                let leftRootDelta = abs((leftNode?.position.x ?? 0) - rootX)
-                let rightRootDelta = abs((rightNode?.position.x ?? 0) - rootX)
-                if leftRootDelta != rightRootDelta { return leftRootDelta < rightRootDelta }
-                return lhs.uuidString < rhs.uuidString
-            }.first
+            return Array(leaves)
         }()
-        if let sinkID = resolvedSinkID {
+        for sinkID in resolvedSinkIDs {
             mutableLinks.append(
                 NodeLink(fromID: sinkID, toID: outputID, tone: .teal, edgeType: .primary)
             )
