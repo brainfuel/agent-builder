@@ -70,7 +70,8 @@ struct ContentView: View {
     @State private var templateSavedName: String?
     @State private var isShowingWipeDataConfirmation = false
     @State private var isShowingDeleteTaskConfirmation = false
-    @State private var detailSectionTab: DetailSectionTab = .edit
+    @State private var resultsDrawerOpen = false
+    @State private var scrollToTraceID: String?
     @State private var splitViewVisibility: NavigationSplitViewVisibility = .all
     @State private var isShowingGenerateProviderPicker = false
     @State private var isGeneratingStructure = false
@@ -231,13 +232,6 @@ struct ContentView: View {
                 return "Choose whether to generate a new team structure, start from a simple task, or use a preset team."
             }
         }
-    }
-
-    private enum DetailSectionTab: String, CaseIterable, Identifiable {
-        case results = "Results"
-        case edit = "Edit"
-
-        var id: String { rawValue }
     }
 
     private enum SidebarTab: String, CaseIterable, Identifiable {
@@ -423,11 +417,11 @@ struct ContentView: View {
         VStack(spacing: 0) {
             header
             Divider()
-            sectionTabs
-            if detailSectionTab == .edit {
-                Divider()
-                schemaControlsBar
-                Divider()
+            orchestrationConfigStrip
+            Divider()
+            schemaControlsBar
+            Divider()
+            ZStack(alignment: .bottom) {
                 HStack(spacing: 0) {
                     chartCanvas
                     if inspectorNodeBinding != nil {
@@ -437,10 +431,8 @@ struct ContentView: View {
                             .transition(.move(edge: .trailing).combined(with: .opacity))
                     }
                 }
-            } else {
-                Divider()
-                orchestrationBar
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+
+                resultsDrawer
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -458,21 +450,201 @@ struct ContentView: View {
         }
     }
 
-    private var sectionTabs: some View {
-        HStack {
-            Spacer()
-            Picker("Detail Section", selection: $detailSectionTab) {
-                ForEach(DetailSectionTab.allCases) { tab in
-                    Text(tab.rawValue).tag(tab)
+    private var resultsDrawer: some View {
+        VStack(spacing: 0) {
+            // Drag handle / header
+            Button {
+                withAnimation(.snappy(duration: 0.3)) {
+                    resultsDrawerOpen.toggle()
+                }
+            } label: {
+                VStack(spacing: 6) {
+                    Capsule()
+                        .fill(Color(uiColor: .tertiaryLabel))
+                        .frame(width: 36, height: 5)
+                        .padding(.top, 8)
+
+                    HStack(spacing: 8) {
+                        Image(systemName: "text.line.last.and.arrowtriangle.forward")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(AppTheme.brandTint)
+
+                        Text("Run Trace")
+                            .font(.subheadline.weight(.semibold))
+
+                        if !coordinatorTrace.isEmpty {
+                            Text("\(coordinatorTrace.count)")
+                                .font(.caption2.weight(.bold))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(AppTheme.brandTint, in: Capsule())
+                        }
+
+                        Spacer()
+
+                        Image(systemName: resultsDrawerOpen ? "chevron.down" : "chevron.up")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 6)
                 }
             }
-            .pickerStyle(.segmented)
-            .frame(width: 240)
-            Spacer()
+            .buttonStyle(.plain)
+
+            if resultsDrawerOpen {
+                Divider()
+                resultsDrawerContent
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
         }
-        .padding(.horizontal, 24)
-        .padding(.vertical, 8)
-        .background(Color(uiColor: .secondarySystemBackground))
+        .background(.ultraThinMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: resultsDrawerOpen ? 16 : 12, style: .continuous))
+        .shadow(color: .black.opacity(0.12), radius: 12, y: -4)
+        .padding(.horizontal, 8)
+        .padding(.bottom, 4)
+        .frame(maxHeight: resultsDrawerOpen ? UIScreen.main.bounds.height * 0.45 : nil)
+        .animation(.snappy(duration: 0.3), value: resultsDrawerOpen)
+    }
+
+    private var resultsDrawerContent: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    // Run config summary
+                    if let latestCoordinatorPlan {
+                        Label(
+                            "Planned \(latestCoordinatorPlan.packets.count) task packets from \(latestCoordinatorPlan.coordinatorName).",
+                            systemImage: "doc.plaintext"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
+
+                    if let latestCoordinatorRun {
+                        Label(
+                            "Last run: \(latestCoordinatorRun.succeededCount)/\(latestCoordinatorRun.results.count) tasks succeeded.",
+                            systemImage: latestCoordinatorRun.succeededCount == latestCoordinatorRun.results.count
+                                ? "checkmark.circle.fill" : "exclamationmark.triangle.fill"
+                        )
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(
+                            latestCoordinatorRun.succeededCount == latestCoordinatorRun.results.count
+                                ? .green : .orange
+                        )
+                    }
+
+                    // Resume / Human inbox
+                    if
+                        let pendingCoordinatorExecution,
+                        pendingCoordinatorExecution.awaitingHumanPacketID == nil,
+                        !isExecutingCoordinator
+                    {
+                        Button("Resume Pending Run") {
+                            isExecutingCoordinator = true
+                            Task { await continueCoordinatorExecution() }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                    }
+
+                    if let pendingHumanPacket {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Label("Human Decision Required", systemImage: "person.badge.clock")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.orange)
+
+                            Text("\(pendingHumanPacket.assignedNodeName): \(pendingHumanPacket.objective)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+
+                            HStack(spacing: 8) {
+                                Button("Approve") { resolveHumanTask(.approve) }
+                                    .buttonStyle(.borderedProminent)
+                                Button("Reject") { resolveHumanTask(.reject) }
+                                    .buttonStyle(.bordered)
+                                Button("Inbox") { isShowingHumanInbox = true }
+                                    .buttonStyle(.bordered)
+                            }
+                            .controlSize(.small)
+                        }
+                        .padding(10)
+                        .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+                    }
+
+                    // Trace list
+                    HStack {
+                        Text("Trace")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        if !coordinatorTrace.isEmpty {
+                            Button("Clear") {
+                                coordinatorTrace = []
+                                persistCoordinatorExecutionState()
+                            }
+                            .buttonStyle(.borderless)
+                            .font(.caption)
+                            .disabled(isExecutingCoordinator)
+                        }
+                    }
+
+                    if coordinatorTrace.isEmpty {
+                        VStack(spacing: 6) {
+                            Image(systemName: "doc.text.magnifyingglass")
+                                .font(.title3)
+                                .foregroundStyle(.tertiary)
+                            Text("No results yet. Run the coordinator to generate trace.")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 16)
+                    } else {
+                        LazyVStack(spacing: 8) {
+                            ForEach(Array(coordinatorTrace.enumerated()), id: \.element.id) { index, step in
+                                let resolution = traceResolution(for: step)
+                                let isHighlighted = scrollToTraceID == step.id
+                                CoordinatorTraceRow(
+                                    stepNumber: index + 1,
+                                    step: step,
+                                    resolution: resolution.map { $0.presentation },
+                                    onResolve: resolution == nil
+                                        ? nil
+                                        : { applyTraceResolution(for: step) },
+                                    onRetryWithFeedback: isExecutingCoordinator
+                                        ? nil
+                                        : { feedback in retryPipelineWithFeedback(feedback, from: step) }
+                                )
+                                .id(step.id)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                        .stroke(AppTheme.brandTint, lineWidth: isHighlighted ? 2 : 0)
+                                )
+                                .animation(.easeInOut(duration: 0.3), value: isHighlighted)
+                            }
+                        }
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+            }
+            .onChange(of: scrollToTraceID) { _, newID in
+                guard let newID else { return }
+                withAnimation(.easeInOut(duration: 0.3)) {
+                    proxy.scrollTo(newID, anchor: .center)
+                }
+                // Clear highlight after a brief moment
+                Task {
+                    try? await Task.sleep(for: .seconds(1.5))
+                    if scrollToTraceID == newID {
+                        withAnimation { scrollToTraceID = nil }
+                    }
+                }
+            }
+        }
     }
 
     private var schemaControlsBar: some View {
@@ -1200,229 +1372,103 @@ struct ContentView: View {
             : Color(uiColor: .tertiarySystemFill)
     }
 
-    private var orchestrationBar: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 10) {
-                Label("Task Question", systemImage: "text.bubble")
-                    .font(.subheadline.weight(.semibold))
+    private var orchestrationConfigStrip: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Image(systemName: "text.bubble")
+                    .font(.caption)
                     .foregroundStyle(.secondary)
-
+                    .frame(width: 16)
                 TextField("What should the team answer?", text: $orchestrationGoal)
                     .textFieldStyle(.roundedBorder)
+                    .font(.caption)
                     .lineLimit(1)
-            }
 
-            HStack(spacing: 10) {
-                Label("Structure Strategy", systemImage: "point.3.filled.connected.trianglepath.dotted")
-                    .font(.subheadline.weight(.semibold))
+                Image(systemName: "point.3.filled.connected.trianglepath.dotted")
+                    .font(.caption)
                     .foregroundStyle(.secondary)
-
-                TextField("How should the team solve and synthesize this?", text: $orchestrationStrategy)
+                    .frame(width: 16)
+                TextField("Structure strategy", text: $orchestrationStrategy)
                     .textFieldStyle(.roundedBorder)
+                    .font(.caption)
                     .lineLimit(1)
-            }
 
-            HStack(spacing: 10) {
-                TextField("Optional context (data sources, constraints, risk tolerance)...", text: $synthesisContext)
+                Image(systemName: "doc.text")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 16)
+                TextField("Context (optional)", text: $synthesisContext)
                     .textFieldStyle(.roundedBorder)
+                    .font(.caption)
                     .lineLimit(1)
             }
 
             let orphanCount = orphanNodeIDsInCurrentGraph.count
             if orphanCount > 0 {
                 Text(
-                    "\(orphanCount) orphan \(orphanCount == 1 ? "node is" : "nodes are") disconnected from Input and excluded from runs until reconnected."
+                    "\(orphanCount) orphan \(orphanCount == 1 ? "node" : "nodes") disconnected — excluded from runs."
                 )
-                .font(.footnote)
+                .font(.caption2)
                 .foregroundStyle(.orange)
             }
 
             if !synthesisQuestions.isEmpty {
-                VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 4) {
                     Text("Discovery Questions")
-                        .font(.footnote.weight(.semibold))
+                        .font(.caption2.weight(.semibold))
                         .foregroundStyle(.secondary)
                     ForEach($synthesisQuestions) { $question in
-                        VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 6) {
                             Text(question.key.prompt)
-                                .font(.caption)
+                                .font(.caption2)
                                 .foregroundStyle(.secondary)
-                            TextField("Optional answer", text: $question.answer)
+                                .lineLimit(1)
+                            TextField("Answer", text: $question.answer)
                                 .textFieldStyle(.roundedBorder)
+                                .font(.caption2)
                         }
                     }
                 }
             }
 
             if let synthesisPreview {
-                VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) {
                     Text(
-                        "Suggested structure: \(synthesisPreview.suggestedNodeCount) nodes (\(synthesisPreview.nodeDeltaString)), \(synthesisPreview.suggestedLinkCount) links (\(synthesisPreview.linkDeltaString))."
+                        "Suggested: \(synthesisPreview.suggestedNodeCount) nodes (\(synthesisPreview.nodeDeltaString)), \(synthesisPreview.suggestedLinkCount) links (\(synthesisPreview.linkDeltaString))"
                     )
-                    .font(.footnote)
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
 
-                    if !synthesisPreview.addedNodeNames.isEmpty {
-                        Text("Adds: \(synthesisPreview.addedNodeNames.joined(separator: ", "))")
-                            .font(.footnote)
+                    Button {
+                        applySynthesizedStructure()
+                    } label: {
+                        Label("Apply", systemImage: "checkmark.circle")
                     }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.mini)
 
-                    if !synthesisPreview.removedNodeNames.isEmpty {
-                        Text("Replaces: \(synthesisPreview.removedNodeNames.joined(separator: ", "))")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
+                    Button("Discard", role: .destructive) {
+                        discardSynthesizedStructure()
                     }
-
-                    HStack(spacing: 10) {
-                        Button {
-                            applySynthesizedStructure()
-                        } label: {
-                            Label("Apply Suggested Structure", systemImage: "checkmark.circle")
-                        }
-                        .buttonStyle(.borderedProminent)
-
-                        Button("Discard Suggestion", role: .destructive) {
-                            discardSynthesizedStructure()
-                        }
-                        .buttonStyle(.bordered)
-                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
                 }
             }
 
             if let synthesisStatusMessage {
                 Text(synthesisStatusMessage)
-                    .font(.footnote)
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
             }
 
             if let generateStructureError {
                 Text(generateStructureError)
-                    .font(.footnote)
+                    .font(.caption2)
                     .foregroundStyle(.red)
             }
-
-            if let latestCoordinatorPlan {
-                Text("Planned \(latestCoordinatorPlan.packets.count) task packets from coordinator \(latestCoordinatorPlan.coordinatorName).")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-
-            if let latestCoordinatorRun {
-                Text(
-                    "Last \(latestCoordinatorRun.mode.label.lowercased()) run: \(latestCoordinatorRun.succeededCount)/\(latestCoordinatorRun.results.count) tasks succeeded."
-                )
-                    .font(.footnote)
-                    .foregroundStyle(latestCoordinatorRun.succeededCount == latestCoordinatorRun.results.count ? .green : .orange)
-            }
-
-            if
-                let pendingCoordinatorExecution,
-                pendingCoordinatorExecution.awaitingHumanPacketID == nil,
-                !isExecutingCoordinator
-            {
-                Button("Resume Pending Run") {
-                    isExecutingCoordinator = true
-                    Task { await continueCoordinatorExecution() }
-                }
-                .buttonStyle(.borderedProminent)
-            }
-
-            if let pendingHumanPacket {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Human Inbox")
-                        .font(.footnote.weight(.semibold))
-                        .foregroundStyle(.secondary)
-
-                    Text("\(pendingHumanPacket.assignedNodeName) is waiting for a human decision.")
-                        .font(.footnote)
-
-                    Text(pendingHumanPacket.objective)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(3)
-
-                    Text("Expected output: \(pendingHumanPacket.requiredOutputSchema)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    TextField("Decision note (optional)", text: $humanDecisionNote)
-                        .textFieldStyle(.roundedBorder)
-
-                    HStack(spacing: 10) {
-                        Button("Approve & Continue") {
-                            resolveHumanTask(.approve)
-                        }
-                        .buttonStyle(.borderedProminent)
-
-                        Button("Reject") {
-                            resolveHumanTask(.reject)
-                        }
-                        .buttonStyle(.bordered)
-
-                        Button("Needs Info") {
-                            resolveHumanTask(.needsInfo)
-                        }
-                        .buttonStyle(.bordered)
-
-                        Button("Open Inbox") {
-                            isShowingHumanInbox = true
-                        }
-                        .buttonStyle(.bordered)
-                    }
-                }
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text("Run Trace")
-                        .font(.footnote.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Button("Clear") {
-                        coordinatorTrace = []
-                        persistCoordinatorExecutionState()
-                    }
-                    .buttonStyle(.borderless)
-                    .font(.footnote)
-                    .disabled(isExecutingCoordinator)
-                }
-
-                if coordinatorTrace.isEmpty {
-                    ContentUnavailableView(
-                        "No Results Yet",
-                        systemImage: "doc.text.magnifyingglass",
-                        description: Text("Run the coordinator to generate trace results.")
-                    )
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.vertical, 8)
-                } else {
-                    ScrollView {
-                        VStack(spacing: 8) {
-                            ForEach(Array(coordinatorTrace.enumerated()), id: \.element.id) { index, step in
-                                let resolution = traceResolution(for: step)
-                                CoordinatorTraceRow(
-                                    stepNumber: index + 1,
-                                    step: step,
-                                    resolution: resolution.map { $0.presentation },
-                                    onResolve: resolution == nil
-                                        ? nil
-                                        : { applyTraceResolution(for: step) },
-                                    onRetryWithFeedback: isExecutingCoordinator
-                                        ? nil
-                                        : { feedback in retryPipelineWithFeedback(feedback, from: step) }
-                                )
-                            }
-                        }
-                        .padding(.vertical, 2)
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .layoutPriority(1)
         }
-        .padding(.horizontal, 24)
-        .padding(.vertical, 12)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
         .background(Color(uiColor: .secondarySystemBackground))
     }
 
@@ -1878,6 +1924,9 @@ struct ContentView: View {
         )
         isExecutingCoordinator = true
         liveStatusMessage = "Planning execution…"
+        withAnimation(.snappy(duration: 0.3)) {
+            resultsDrawerOpen = true
+        }
         persistCoordinatorExecutionState()
         Task {
             await continueCoordinatorExecution()
@@ -2676,6 +2725,20 @@ struct ContentView: View {
         clearLinkDragState()
         selectedLinkID = nil
         selectedNodeID = (selectedNodeID == node.id) ? nil : node.id
+
+        // If there's a trace step for this node, open the drawer and scroll to it
+        if let traceStep = coordinatorTrace.first(where: { $0.assignedNodeID == node.id }) {
+            if !resultsDrawerOpen {
+                withAnimation(.snappy(duration: 0.3)) {
+                    resultsDrawerOpen = true
+                }
+            }
+            // Small delay to let drawer open before scrolling
+            Task {
+                try? await Task.sleep(for: .milliseconds(resultsDrawerOpen ? 50 : 350))
+                scrollToTraceID = traceStep.id
+            }
+        }
     }
 
     private func toggleLinkStart(for nodeID: UUID) {
