@@ -282,6 +282,7 @@ struct ContentView: View {
                 } detail: {
                     editorWorkspace
                         .navigationBarTitleDisplayMode(.inline)
+                        .toolbar(.hidden, for: .navigationBar)
                         .toolbarBackground(.hidden, for: .navigationBar)
                 }
                 .navigationSplitViewStyle(.balanced)
