@@ -1125,6 +1125,17 @@ struct ContentView: View {
                         .buttonStyle(.plain)
                         .help("Copy JSON")
                     }
+                    if !isUser, let rawResponse = entry.rawResponse, !rawResponse.isEmpty {
+                        Button {
+                            copyTextToClipboard(rawResponse)
+                        } label: {
+                            Image(systemName: "doc.on.clipboard")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Copy raw LLM response")
+                    }
                 }
                 if debugJSON != nil {
                     Text("Custom structure applied")
@@ -1448,7 +1459,7 @@ struct ContentView: View {
             let result = try parseStructureChatModelResponse(from: raw)
             switch result {
             case .chat(let message):
-                structureChatMessages.append(StructureChatMessageEntry(role: .assistant, text: message))
+                structureChatMessages.append(StructureChatMessageEntry(role: .assistant, text: message, rawResponse: raw))
                 structureChatStatusMessage = "Response received."
             case .update(let message, let snapshot):
                 applyStructureSnapshot(snapshot, registerUndo: true)
@@ -1456,7 +1467,8 @@ struct ContentView: View {
                     StructureChatMessageEntry(
                         role: .assistant,
                         text: message,
-                        appliedStructureUpdate: true
+                        appliedStructureUpdate: true,
+                        rawResponse: raw
                     )
                 )
                 structureChatStatusMessage = "Applied structure update. Use Undo to revert."
@@ -3144,6 +3156,31 @@ struct ContentView: View {
             providerRule = "- Configured providers are: \(providerList). Use only these."
         }
 
+        // Build available tools list from built-in tools + connected apps
+        var toolDescriptions: [String] = []
+        for tool in MCPToolRegistry.allTools {
+            toolDescriptions.append("  - \"\(tool.id)\": \(tool.description)")
+        }
+        let mcpManager = MCPServerManager.shared
+        for connection in mcpServerConnections where connection.isEnabled {
+            let tools = mcpManager.discoveredTools[connection.id] ?? mcpManager.cachedTools(for: connection.id)
+            if !tools.isEmpty {
+                let toolNames = tools.prefix(10).map(\.name).joined(separator: ", ")
+                toolDescriptions.append("  - \"\(connection.name.lowercased())\": Connected app with tools: \(toolNames)")
+            }
+        }
+        let toolsSection: String
+        if toolDescriptions.isEmpty {
+            toolsSection = ""
+        } else {
+            toolsSection = """
+
+            Available tools that can be assigned to nodes:
+            \(toolDescriptions.joined(separator: "\n"))
+            When the user mentions using a connected app or tool, include the relevant tool IDs in the node's assignedTools array.
+            """
+        }
+
         return """
         You are a structure copilot for a multi-agent graph editor.
         Your job is to either:
@@ -3154,10 +3191,32 @@ struct ContentView: View {
         {"mode":"chat","message":"..."}
         {"mode":"update","message":"...","structure":{"nodes":[...],"links":[...]}}
 
+        Node schema (all fields required unless marked optional):
+        {
+          "id": "string (UUID or short ID)",
+          "name": "string",
+          "title": "string (short display label)",
+          "department": "string (e.g. Analysis, Automation, Synthesis, Research)",
+          "type": "agent",
+          "provider": "string (one of the configured providers)",
+          "roleDescription": "string (what this agent does)",
+          "outputSchema": "string (optional, e.g. Task Result, LLM Analysis)",
+          "outputSchemaDescription": "string (optional, describes the output)",
+          "securityAccess": ["string"] (optional),
+          "assignedTools": ["string"] (optional, tool IDs to enable on this node),
+          "positionX": number (optional),
+          "positionY": number (optional)
+        }
+
+        Link schema:
+        {"fromID": "string", "toID": "string", "tone": "string (optional: blue, teal, purple, green)"}
+        \(toolsSection)
+
         Rules for update mode:
         \(providerRule)
         - Do NOT include input/output nodes; those are managed by the app.
         - Keep links valid and acyclic.
+        - Only include links between the work nodes you define — links to/from input and output are added automatically.
         - Keep node IDs stable where possible when editing existing nodes.
         - Include a short message summarizing what changed.
         - If clarification is needed, use chat mode with a question.
