@@ -16,6 +16,7 @@ final class GraphDocument {
     var structureStrategy: String?
     var snapshotData: Data
     var executionStateData: Data?
+    var structureChatData: Data?
     var createdAt: Date?
     var updatedAt: Date
 
@@ -26,6 +27,7 @@ final class GraphDocument {
         structureStrategy: String? = "",
         snapshotData: Data,
         executionStateData: Data? = nil,
+        structureChatData: Data? = nil,
         createdAt: Date? = Date(),
         updatedAt: Date = Date()
     ) {
@@ -35,6 +37,7 @@ final class GraphDocument {
         self.structureStrategy = structureStrategy
         self.snapshotData = snapshotData
         self.executionStateData = executionStateData
+        self.structureChatData = structureChatData
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }

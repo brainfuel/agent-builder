@@ -60,10 +60,12 @@ struct ContentView: View {
     @State private var newTaskGoal = ""
     @State private var newTaskContext = ""
     @State private var newTaskStructureStrategy = ""
-    @State private var newTaskCreationOption: DraftCreationOption = .baselineTeam
+    @State private var newTaskCreationOption: DraftCreationOption = .simpleTask
     @State private var isShowingTaskResults = false
     @State private var taskResultsDocumentKey: String?
     @State private var sidebarTab: SidebarTab = .tasks
+    @State private var inspectorPanelTab: InspectorPanelTab = .nodeDetails
+    @State private var isInspectorPanelVisible = true
     @State private var isShowingSettingsPlaceholderSheet = false
     @State private var activeDraftInfo: DraftInfoTopic?
     @State private var isShowingNodeTemplateLibrary = false
@@ -76,6 +78,13 @@ struct ContentView: View {
     @State private var isShowingGenerateProviderPicker = false
     @State private var isGeneratingStructure = false
     @State private var generateStructureError: String?
+    @State private var structureChatMessages: [StructureChatMessageEntry] = []
+    @State private var structureChatInput = ""
+    @State private var structureChatProvider: APIKeyProvider = .chatGPT
+    @State private var isStructureChatRunning = false
+    @State private var structureChatStatusMessage: String?
+    @State private var structureChatDebugRunningMessageIDs: Set<UUID> = []
+    @State private var structureChatDebugCompletedMessageIDs: Set<UUID> = []
     @FocusState private var focusedDraftField: DraftField?
 
     init(
@@ -134,6 +143,17 @@ struct ContentView: View {
         return title.isEmpty ? "Task" : title
     }
 
+    private var activeTaskTitleTextBinding: Binding<String> {
+        Binding(
+            get: {
+                activeGraphDocument?.title ?? ""
+            },
+            set: { newValue in
+                updateActiveTaskTitle(newValue)
+            }
+        )
+    }
+
     private var normalizedTaskQuestion: String {
         orchestrationGoal.trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -147,10 +167,6 @@ struct ContentView: View {
             return normalizedStructureStrategy
         }
         return normalizedTaskQuestion
-    }
-
-    private var canGenerateStructurePrompt: Bool {
-        !effectiveStructureStrategy.isEmpty
     }
 
     private var usesTaskSplitView: Bool {
@@ -248,6 +264,13 @@ struct ContentView: View {
             case .settings: return "key.horizontal"
             }
         }
+    }
+
+    private enum InspectorPanelTab: String, CaseIterable, Identifiable {
+        case nodeDetails = "Node Details"
+        case structureChat = "Structure Chat"
+
+        var id: String { rawValue }
     }
 
     var body: some View {
@@ -426,10 +449,14 @@ struct ContentView: View {
                     chartCanvas
                     resultsDrawer
                 }
-                if inspectorNodeBinding != nil {
+                if isInspectorPanelVisible {
                     Divider()
                     inspectorPanel
                         .frame(minWidth: 320, idealWidth: 360, maxWidth: 420)
+                        .transition(.move(edge: .trailing).combined(with: .opacity))
+                } else {
+                    Divider()
+                    inspectorToggleRail
                         .transition(.move(edge: .trailing).combined(with: .opacity))
                 }
             }
@@ -664,69 +691,6 @@ struct ContentView: View {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .fill(Color(uiColor: .secondarySystemBackground))
             )
-
-            Menu {
-                ForEach(PresetHierarchyTemplate.allCases) { template in
-                    Button(template.title) {
-                        applyStructureSnapshot(template.snapshot())
-                    }
-                }
-            } label: {
-                headerControlLabel(
-                    title: "Templates",
-                    systemImage: "square.grid.2x2",
-                    height: headerControlHeight,
-                    prominent: false,
-                    enabled: true
-                )
-            }
-            .buttonStyle(.plain)
-
-            Menu {
-                let availableProviders = availableGenerateProviders()
-                if availableProviders.isEmpty {
-                    Button("No API keys configured") {}
-                        .disabled(true)
-                    Button("Open API Keys…") {
-                        sidebarTab = .settings
-                    }
-                } else {
-                    ForEach(availableProviders, id: \.self) { provider in
-                        Button {
-                            Task {
-                                await generateStructureWithLLM(provider: provider)
-                            }
-                        } label: {
-                            Label(provider.label, systemImage: providerIcon(for: provider))
-                        }
-                    }
-                    Divider()
-                    Button("Keyword-based (offline)") {
-                        generateSuggestedStructure()
-                    }
-                }
-            } label: {
-                if isGeneratingStructure {
-                    HStack(spacing: 6) {
-                        ProgressView()
-                            .controlSize(.small)
-                        Text("Generating…")
-                            .font(.caption.weight(.semibold))
-                    }
-                    .padding(.horizontal, 10)
-                    .frame(height: headerControlHeight)
-                } else {
-                    headerControlLabel(
-                        title: "Generate Structure",
-                        systemImage: "wand.and.stars",
-                        height: headerControlHeight,
-                        prominent: false,
-                        enabled: canGenerateStructurePrompt
-                    )
-                }
-            }
-            .buttonStyle(.plain)
-            .disabled(!canGenerateStructurePrompt || isGeneratingStructure)
 
             Button {
                 isShowingNodeTemplateLibrary = true
@@ -1084,6 +1048,399 @@ struct ContentView: View {
         }
     }
 
+    private func structureChatMessageRow(_ entry: StructureChatMessageEntry) -> some View {
+        let isUser = entry.role == .user
+        let debugJSON = entry.role == .assistant ? structureDebugJSONIfPresent(in: entry.text) : nil
+        let isDebugRunning = structureChatDebugRunningMessageIDs.contains(entry.id)
+        let isDebugCompleted = structureChatDebugCompletedMessageIDs.contains(entry.id)
+        return HStack {
+            if isUser { Spacer(minLength: 40) }
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    Text(entry.role == .user ? "You" : "Structure Copilot")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                    if isUser {
+                        Button {
+                            runStructureChatDebugBroadcast(for: entry)
+                        } label: {
+                            Group {
+                                if isDebugRunning {
+                                    ProgressView()
+                                        .controlSize(.mini)
+                                } else if isDebugCompleted {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(.green)
+                                } else {
+                                    Image(systemName: "ladybug")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            .frame(width: 16, height: 16)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(isStructureChatRunning || isDebugRunning)
+                        .help("Debug all providers and copy prompts/responses")
+                    }
+                    if let debugJSON {
+                        Button {
+                            copyTextToClipboard(debugJSON)
+                        } label: {
+                            Image(systemName: "doc.on.doc")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Copy JSON")
+                    }
+                }
+                if debugJSON != nil {
+                    Text("Custom structure applied")
+                        .font(.subheadline.weight(.semibold))
+                } else {
+                    SelectableText(
+                        markdown: entry.text,
+                        font: .preferredFont(forTextStyle: .subheadline)
+                    )
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                if entry.appliedStructureUpdate {
+                    Label("Applied to canvas", systemImage: "checkmark.circle.fill")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.green)
+                }
+            }
+            .padding(10)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(isUser ? AppTheme.brandTint.opacity(0.12) : Color(uiColor: .systemBackground))
+            )
+            if !isUser { Spacer(minLength: 40) }
+        }
+    }
+
+    private func structureDebugJSONIfPresent(in text: String) -> String? {
+        let cleaned = stripCodeFences(text)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard cleaned.first == "{", cleaned.last == "}" else { return nil }
+        guard let data = cleaned.data(using: .utf8) else { return nil }
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        let looksLikeStructurePayload =
+            object["mode"] != nil ||
+            object["structure"] != nil ||
+            object["nodes"] != nil ||
+            object["links"] != nil ||
+            object["edges"] != nil
+        return looksLikeStructurePayload ? cleaned : nil
+    }
+
+    private func startFreshStructureChat() {
+        structureChatMessages = []
+        structureChatInput = ""
+        structureChatStatusMessage = nil
+        structureChatDebugRunningMessageIDs = []
+        structureChatDebugCompletedMessageIDs = []
+        persistStructureChatState()
+    }
+
+    private func runStructureChatDebugBroadcast(for entry: StructureChatMessageEntry) {
+        guard !structureChatDebugRunningMessageIDs.contains(entry.id) else { return }
+        Task { await executeStructureChatDebugBroadcast(for: entry) }
+    }
+
+    @MainActor
+    private func executeStructureChatDebugBroadcast(for entry: StructureChatMessageEntry) async {
+        structureChatDebugRunningMessageIDs.insert(entry.id)
+        structureChatDebugCompletedMessageIDs.remove(entry.id)
+        defer { structureChatDebugRunningMessageIDs.remove(entry.id) }
+
+        let providers = availableGenerateProviders()
+        guard !providers.isEmpty else {
+            structureChatStatusMessage = "Debug failed: add at least one provider key in Keys."
+            return
+        }
+
+        let configuredProviders = providers.map(\.rawValue)
+        let systemPrompt = buildStructureChatSystemPrompt(availableProviders: configuredProviders)
+        let snapshotJSON = currentGraphSnapshotJSONString()
+        let turnPrompt = buildStructureChatTurnPrompt(userPrompt: entry.text, snapshotJSON: snapshotJSON)
+
+        let historyEntries: [StructureChatMessageEntry]
+        if let entryIndex = structureChatMessages.firstIndex(where: { $0.id == entry.id }) {
+            historyEntries = Array(structureChatMessages.prefix(entryIndex).suffix(12))
+        } else {
+            historyEntries = Array(structureChatMessages.suffix(12))
+        }
+
+        var messages = historyEntries.map { item in
+            ChatMessage(
+                role: item.role == .user ? .user : .assistant,
+                text: item.text,
+                attachments: []
+            )
+        }
+        messages.append(ChatMessage(role: .user, text: turnPrompt, attachments: []))
+
+        structureChatStatusMessage = "Debugging \(providers.count) provider(s)…"
+
+        var results: [StructureChatProviderDebugResult] = []
+        for provider in providers {
+            let preferredModelID = providerModelStore.defaultModel(for: provider)
+            let result = await executeStructureChatDebugRequest(
+                provider: provider,
+                preferredModelID: preferredModelID,
+                systemPrompt: systemPrompt,
+                messages: messages
+            )
+            results.append(result)
+        }
+
+        let orderedResults = results.sorted {
+            $0.provider.rawValue.localizedCaseInsensitiveCompare($1.provider.rawValue) == .orderedAscending
+        }
+        let report = structureChatDebugClipboardReport(
+            userMessage: entry.text,
+            historyEntries: historyEntries,
+            systemPrompt: systemPrompt,
+            turnPrompt: turnPrompt,
+            sentMessages: messages,
+            results: orderedResults
+        )
+        copyTextToClipboard(report)
+
+        structureChatDebugCompletedMessageIDs.insert(entry.id)
+        let successCount = orderedResults.filter { $0.errorMessage == nil }.count
+        structureChatStatusMessage = "Debug complete: \(successCount)/\(orderedResults.count) responded. Copied to clipboard."
+    }
+
+    @MainActor
+    private func executeStructureChatDebugRequest(
+        provider: APIKeyProvider,
+        preferredModelID: String?,
+        systemPrompt: String,
+        messages: [ChatMessage]
+    ) async -> StructureChatProviderDebugResult {
+        guard let apiKey = try? apiKeyStore.key(for: provider), !apiKey.isEmpty else {
+            return StructureChatProviderDebugResult(
+                provider: provider,
+                preferredModelID: preferredModelID,
+                resolvedModelID: nil,
+                responseText: nil,
+                errorMessage: "No API key found."
+            )
+        }
+
+        do {
+            let modelID = try await LiveProviderExecutionService.resolveModelPublic(
+                for: provider,
+                apiKey: apiKey,
+                preferredModelID: preferredModelID
+            )
+            let client = LiveProviderExecutionService.makeClientPublic(for: provider, apiKey: apiKey)
+            let stream = client.generateReplyStream(
+                modelID: modelID,
+                systemInstruction: systemPrompt,
+                messages: messages,
+                latestUserAttachments: []
+            )
+
+            var combined = ""
+            for try await chunk in stream {
+                if !chunk.text.isEmpty {
+                    combined += chunk.text
+                }
+            }
+
+            let response = combined.trimmingCharacters(in: .whitespacesAndNewlines)
+            if response.isEmpty {
+                return StructureChatProviderDebugResult(
+                    provider: provider,
+                    preferredModelID: preferredModelID,
+                    resolvedModelID: modelID,
+                    responseText: nil,
+                    errorMessage: "Empty response."
+                )
+            }
+
+            return StructureChatProviderDebugResult(
+                provider: provider,
+                preferredModelID: preferredModelID,
+                resolvedModelID: modelID,
+                responseText: response,
+                errorMessage: nil
+            )
+        } catch {
+            return StructureChatProviderDebugResult(
+                provider: provider,
+                preferredModelID: preferredModelID,
+                resolvedModelID: nil,
+                responseText: nil,
+                errorMessage: error.localizedDescription
+            )
+        }
+    }
+
+    private func structureChatDebugClipboardReport(
+        userMessage: String,
+        historyEntries: [StructureChatMessageEntry],
+        systemPrompt: String,
+        turnPrompt: String,
+        sentMessages: [ChatMessage],
+        results: [StructureChatProviderDebugResult]
+    ) -> String {
+        var lines: [String] = []
+        lines.append("Structure Chat Debug Broadcast")
+        lines.append("Generated: \(ISO8601DateFormatter().string(from: Date()))")
+        lines.append("")
+        lines.append("Original user text:")
+        lines.append(userMessage)
+        lines.append("")
+        lines.append("SYSTEM PROMPT")
+        lines.append(systemPrompt)
+        lines.append("")
+        lines.append("TURN PROMPT (includes current graph snapshot)")
+        lines.append(turnPrompt)
+        lines.append("")
+        lines.append("CHAT HISTORY SENT (\(historyEntries.count) messages)")
+        for (index, entry) in historyEntries.enumerated() {
+            lines.append("\(index + 1). [\(entry.role.rawValue)] \(entry.text)")
+        }
+        lines.append("")
+        lines.append("FINAL MESSAGE PAYLOAD SENT (\(sentMessages.count) messages)")
+        for (index, message) in sentMessages.enumerated() {
+            lines.append("\(index + 1). [\(message.role.rawValue)] \(message.text)")
+        }
+        lines.append("")
+        lines.append("PROVIDER RESPONSES")
+        for result in results {
+            lines.append("")
+            lines.append("=== \(result.provider.label) ===")
+            lines.append("Preferred model: \(result.preferredModelID ?? "auto")")
+            lines.append("Resolved model: \(result.resolvedModelID ?? "unresolved")")
+            if let errorMessage = result.errorMessage {
+                lines.append("Error: \(errorMessage)")
+            } else {
+                lines.append("Response:")
+                lines.append(result.responseText ?? "")
+            }
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private func applyTemplateFromStructureChat(_ template: PresetHierarchyTemplate?, label: String) {
+        let snapshot = template?.snapshot() ?? simpleTaskSnapshot()
+        applyStructureSnapshot(snapshot, registerUndo: true)
+        structureChatMessages.append(
+            StructureChatMessageEntry(
+                role: .assistant,
+                text: "Applied template: \(label).",
+                appliedStructureUpdate: true
+            )
+        )
+        structureChatStatusMessage = "Applied \(label)."
+        persistStructureChatState()
+    }
+
+    private func submitStructureChatTurn() {
+        let prompt = structureChatInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !prompt.isEmpty, !isStructureChatRunning else { return }
+
+        structureChatInput = ""
+        structureChatMessages.append(StructureChatMessageEntry(role: .user, text: prompt))
+        persistStructureChatState()
+
+        Task { await executeStructureChatTurn(userPrompt: prompt) }
+    }
+
+    @MainActor
+    private func executeStructureChatTurn(userPrompt: String) async {
+        guard let apiKey = try? apiKeyStore.key(for: structureChatProvider), !apiKey.isEmpty else {
+            structureChatMessages.append(
+                StructureChatMessageEntry(
+                    role: .assistant,
+                    text: "No API key found for \(structureChatProvider.label). Add one in Keys first."
+                )
+            )
+            structureChatStatusMessage = "Missing API key for \(structureChatProvider.label)."
+            persistStructureChatState()
+            return
+        }
+
+        isStructureChatRunning = true
+        structureChatStatusMessage = "Thinking…"
+        defer { isStructureChatRunning = false }
+
+        do {
+            let preferredModelID = providerModelStore.defaultModel(for: structureChatProvider)
+            let modelID = try await LiveProviderExecutionService.resolveModelPublic(
+                for: structureChatProvider,
+                apiKey: apiKey,
+                preferredModelID: preferredModelID
+            )
+            let client = LiveProviderExecutionService.makeClientPublic(for: structureChatProvider, apiKey: apiKey)
+
+            let availableProviders = availableGenerateProviders().map(\.rawValue)
+            let systemPrompt = buildStructureChatSystemPrompt(availableProviders: availableProviders)
+            let snapshotText = currentGraphSnapshotJSONString()
+            let turnPrompt = buildStructureChatTurnPrompt(userPrompt: userPrompt, snapshotJSON: snapshotText)
+
+            let history = Array(structureChatMessages.dropLast().suffix(12))
+            var messages = history.map { entry in
+                ChatMessage(
+                    role: entry.role == .user ? .user : .assistant,
+                    text: entry.text,
+                    attachments: []
+                )
+            }
+            messages.append(ChatMessage(role: .user, text: turnPrompt, attachments: []))
+
+            let stream = client.generateReplyStream(
+                modelID: modelID,
+                systemInstruction: systemPrompt,
+                messages: messages,
+                latestUserAttachments: []
+            )
+
+            var combinedText = ""
+            for try await chunk in stream {
+                if !chunk.text.isEmpty {
+                    combinedText += chunk.text
+                }
+            }
+
+            let raw = combinedText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !raw.isEmpty else {
+                throw LiveProviderExecutionError.emptyResponse
+            }
+
+            let result = try parseStructureChatModelResponse(from: raw)
+            switch result {
+            case .chat(let message):
+                structureChatMessages.append(StructureChatMessageEntry(role: .assistant, text: message))
+                structureChatStatusMessage = "Response received."
+            case .update(let message, let snapshot):
+                applyStructureSnapshot(snapshot, registerUndo: true)
+                structureChatMessages.append(
+                    StructureChatMessageEntry(
+                        role: .assistant,
+                        text: message,
+                        appliedStructureUpdate: true
+                    )
+                )
+                structureChatStatusMessage = "Applied structure update. Use Undo to revert."
+            }
+            persistStructureChatState()
+        } catch {
+            let message = "Structure chat failed: \(error.localizedDescription)"
+            structureChatMessages.append(StructureChatMessageEntry(role: .assistant, text: message))
+            structureChatStatusMessage = message
+            persistStructureChatState()
+        }
+    }
+
     private func runStatus(for document: GraphDocument) -> TaskRunStatus {
         guard
             let data = document.executionStateData,
@@ -1374,20 +1731,20 @@ struct ContentView: View {
     private var orchestrationConfigStrip: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
+                Image(systemName: "textformat")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 16)
+                TextField("Task title", text: activeTaskTitleTextBinding)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.caption)
+                    .lineLimit(1)
+
                 Image(systemName: "text.bubble")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .frame(width: 16)
                 TextField("What should the team answer?", text: $orchestrationGoal)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.caption)
-                    .lineLimit(1)
-
-                Image(systemName: "point.3.filled.connected.trianglepath.dotted")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(width: 16)
-                TextField("Structure strategy", text: $orchestrationStrategy)
                     .textFieldStyle(.roundedBorder)
                     .font(.caption)
                     .lineLimit(1)
@@ -1472,32 +1829,210 @@ struct ContentView: View {
     }
 
     private var inspectorPanel: some View {
-        return VStack(spacing: 0) {
-            ScrollView {
-                if let inspectorNodeBinding {
-                    if inspectorNodeBinding.wrappedValue.type == .input || inspectorNodeBinding.wrappedValue.type == .output {
-                        FixedNodeInspector(node: inspectorNodeBinding)
-                            .padding(20)
-                    } else {
-                        NodeInspector(
-                            node: inspectorNodeBinding,
-                            onDelete: { deleteSelectedNode() },
-                            onSaveAsTemplate: { saveNodeAsTemplate(inspectorNodeBinding.wrappedValue) },
-                            headerTitle: "Node Details"
-                        )
-                            .padding(20)
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Picker("Inspector Tab", selection: $inspectorPanelTab) {
+                    ForEach(InspectorPanelTab.allCases) { tab in
+                        Text(tab.rawValue).tag(tab)
                     }
-                } else {
-                    ContentUnavailableView(
-                        "No Node Selected",
-                        systemImage: "cursorarrow.click",
-                        description: Text("Select a node to edit schema and details.")
-                    )
-                        .padding(20)
                 }
+                .pickerStyle(.segmented)
+
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        isInspectorPanelVisible = false
+                    }
+                } label: {
+                    Image(systemName: "sidebar.trailing")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 28, height: 28)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(Color(uiColor: .tertiarySystemFill))
+                        )
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Hide Inspector")
+                .help("Hide Inspector")
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+
+            Divider()
+
+            switch inspectorPanelTab {
+            case .nodeDetails:
+                nodeDetailsInspectorContent
+            case .structureChat:
+                structureChatInspectorContent
             }
         }
         .background(Color(uiColor: .secondarySystemBackground))
+    }
+
+    private var inspectorToggleRail: some View {
+        VStack {
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    isInspectorPanelVisible = true
+                }
+            } label: {
+                Image(systemName: "sidebar.trailing")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 32, height: 32)
+                    .background(
+                        RoundedRectangle(cornerRadius: 9, style: .continuous)
+                            .fill(Color(uiColor: .tertiarySystemFill))
+                    )
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Show Inspector")
+            .help("Show Inspector")
+
+            Spacer()
+        }
+        .padding(.horizontal, 6)
+        .padding(.top, 10)
+        .frame(width: 44)
+        .background(Color(uiColor: .secondarySystemBackground))
+    }
+
+    private var nodeDetailsInspectorContent: some View {
+        ScrollView {
+            if let inspectorNodeBinding {
+                if inspectorNodeBinding.wrappedValue.type == .input || inspectorNodeBinding.wrappedValue.type == .output {
+                    FixedNodeInspector(node: inspectorNodeBinding)
+                        .padding(20)
+                } else {
+                    NodeInspector(
+                        node: inspectorNodeBinding,
+                        onDelete: { deleteSelectedNode() },
+                        onSaveAsTemplate: { saveNodeAsTemplate(inspectorNodeBinding.wrappedValue) },
+                        headerTitle: "Node Details"
+                    )
+                        .padding(20)
+                }
+            } else {
+                ContentUnavailableView(
+                    "No Node Selected",
+                    systemImage: "cursorarrow.click",
+                    description: Text("Select a node to edit schema and details.")
+                )
+                    .padding(20)
+            }
+        }
+    }
+
+    private var structureChatInspectorContent: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Menu {
+                    ForEach(availableGenerateProviders(), id: \.self) { provider in
+                        Button {
+                            structureChatProvider = provider
+                            persistStructureChatState()
+                        } label: {
+                            if structureChatProvider == provider {
+                                Label(provider.label, systemImage: "checkmark")
+                            } else {
+                                Text(provider.label)
+                            }
+                        }
+                    }
+                } label: {
+                    Label("Model: \(structureChatProvider.label)", systemImage: providerIcon(for: structureChatProvider))
+                }
+                .buttonStyle(.bordered)
+
+                Menu {
+                    Button("Simple Task") {
+                        applyTemplateFromStructureChat(nil, label: "Simple Task")
+                    }
+                    ForEach(PresetHierarchyTemplate.allCases) { template in
+                        Button(template.title) {
+                            applyTemplateFromStructureChat(template, label: template.title)
+                        }
+                    }
+                } label: {
+                    Label("Templates", systemImage: "square.grid.2x2")
+                }
+                .buttonStyle(.bordered)
+
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+
+            Divider()
+
+            HStack {
+                Spacer()
+                Button("Clear", role: .destructive) {
+                    startFreshStructureChat()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+                .font(.caption.weight(.semibold))
+                .disabled(isStructureChatRunning || structureChatMessages.isEmpty)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(Color(uiColor: .tertiarySystemFill))
+
+            Divider()
+
+            ScrollView {
+                if structureChatMessages.isEmpty {
+                    ContentUnavailableView(
+                        "No Structure Chat Yet",
+                        systemImage: "text.bubble",
+                        description: Text("Describe the team structure you want, then iterate with follow-up messages.")
+                    )
+                    .padding(20)
+                } else {
+                    LazyVStack(alignment: .leading, spacing: 10) {
+                        ForEach(structureChatMessages) { entry in
+                            structureChatMessageRow(entry)
+                        }
+                    }
+                    .padding(12)
+                }
+            }
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 8) {
+                if let structureChatStatusMessage {
+                    Text(structureChatStatusMessage)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                HStack(alignment: .bottom, spacing: 8) {
+                    TextField("Ask for structure changes…", text: $structureChatInput, axis: .vertical)
+                        .lineLimit(1...4)
+                        .textFieldStyle(.roundedBorder)
+                        .disabled(isStructureChatRunning)
+
+                    Button {
+                        submitStructureChatTurn()
+                    } label: {
+                        if isStructureChatRunning {
+                            ProgressView()
+                                .controlSize(.small)
+                                .frame(width: 32, height: 32)
+                        } else {
+                            Image(systemName: "arrow.up.circle.fill")
+                                .font(.title3)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isStructureChatRunning || structureChatInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+            .padding(12)
+        }
     }
 
     private var chartCanvas: some View {
@@ -2568,18 +3103,94 @@ struct ContentView: View {
         return prompt
     }
 
+    private func buildStructureChatSystemPrompt(availableProviders: [String]) -> String {
+        let providerList = availableProviders.joined(separator: ", ")
+        let providerRule: String
+        if availableProviders.isEmpty {
+            providerRule = "- If you propose providers, use only: chatGPT, gemini, claude, grok."
+        } else if availableProviders.count == 1 {
+            providerRule = "- The ONLY configured provider is \"\(availableProviders[0])\". Use that provider for all nodes."
+        } else {
+            providerRule = "- Configured providers are: \(providerList). Use only these."
+        }
+
+        return """
+        You are a structure copilot for a multi-agent graph editor.
+        Your job is to either:
+        1) reply conversationally, or
+        2) return an updated structure snapshot to apply to the canvas.
+
+        Return ONLY valid JSON in one of these forms:
+        {"mode":"chat","message":"..."}
+        {"mode":"update","message":"...","structure":{"nodes":[...],"links":[...]}}
+
+        Rules for update mode:
+        \(providerRule)
+        - Do NOT include input/output nodes; those are managed by the app.
+        - Keep links valid and acyclic.
+        - Keep node IDs stable where possible when editing existing nodes.
+        - Include a short message summarizing what changed.
+        - If clarification is needed, use chat mode with a question.
+        """
+    }
+
+    private func buildStructureChatTurnPrompt(userPrompt: String, snapshotJSON: String) -> String {
+        """
+        User request:
+        \(userPrompt)
+
+        Current canvas snapshot JSON (source of truth):
+        \(snapshotJSON)
+        """
+    }
+
+    private func currentGraphSnapshotJSONString() -> String {
+        let snapshot = captureStructureSnapshot()
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        guard let data = try? encoder.encode(snapshot), let text = String(data: data, encoding: .utf8) else {
+            return "{\"nodes\":[],\"links\":[]}"
+        }
+        return text
+    }
+
+    private func parseStructureChatModelResponse(from raw: String) throws -> StructureChatTurnResult {
+        let cleaned = stripCodeFences(raw)
+        guard let data = cleaned.data(using: .utf8) else {
+            return .chat(raw.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        guard let envelope = try? JSONDecoder().decode(StructureChatResponseEnvelope.self, from: data) else {
+            return .chat(raw.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+
+        let mode = (envelope.mode ?? "chat").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if mode == "update" || envelope.structure != nil || (envelope.nodes != nil && envelope.links != nil) {
+            let response: GeneratedStructureResponse?
+            if let structure = envelope.structure {
+                response = structure
+            } else if let nodes = envelope.nodes, let links = envelope.links {
+                response = GeneratedStructureResponse(nodes: nodes, links: links)
+            } else {
+                response = nil
+            }
+
+            if let response {
+                let snapshot = try snapshotFromGeneratedStructure(response)
+                let message = envelope.message?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let resolvedMessage = (message?.isEmpty == false) ? (message ?? "") : "Applied structure update."
+                return .update(message: resolvedMessage, snapshot: snapshot)
+            }
+        }
+
+        let message = envelope.message?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let message, !message.isEmpty {
+            return .chat(message)
+        }
+        return .chat(raw.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
     private func parseGeneratedStructure(from raw: String) throws -> HierarchySnapshot {
-        // Strip markdown code fences if the LLM wrapped the response
-        var cleaned = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        if cleaned.hasPrefix("```json") {
-            cleaned = String(cleaned.dropFirst(7))
-        } else if cleaned.hasPrefix("```") {
-            cleaned = String(cleaned.dropFirst(3))
-        }
-        if cleaned.hasSuffix("```") {
-            cleaned = String(cleaned.dropLast(3))
-        }
-        cleaned = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleaned = stripCodeFences(raw)
         print("[GenerateStructure] Cleaned JSON length: \(cleaned.count)")
         print("[GenerateStructure] JSON starts with: \(String(cleaned.prefix(100)))")
 
@@ -2608,7 +3219,14 @@ struct ContentView: View {
             throw GenerateStructureError.emptyStructure
         }
 
-        // Convert to HierarchySnapshot
+        return try snapshotFromGeneratedStructure(decoded)
+    }
+
+    private func snapshotFromGeneratedStructure(_ decoded: GeneratedStructureResponse) throws -> HierarchySnapshot {
+        guard !decoded.nodes.isEmpty else {
+            throw GenerateStructureError.emptyStructure
+        }
+
         let snapshotNodes = decoded.nodes.map { node in
             HierarchySnapshotNode(
                 id: node.parsedID,
@@ -2640,6 +3258,19 @@ struct ContentView: View {
         }
 
         return HierarchySnapshot(nodes: snapshotNodes, links: snapshotLinks)
+    }
+
+    private func stripCodeFences(_ text: String) -> String {
+        var cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if cleaned.hasPrefix("```json") {
+            cleaned = String(cleaned.dropFirst(7))
+        } else if cleaned.hasPrefix("```") {
+            cleaned = String(cleaned.dropFirst(3))
+        }
+        if cleaned.hasSuffix("```") {
+            cleaned = String(cleaned.dropLast(3))
+        }
+        return cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func applySynthesizedStructure() {
@@ -3440,9 +4071,19 @@ struct ContentView: View {
         makeHierarchySnapshot(nodes: nodes, links: links)
     }
 
-    private func applyStructureSnapshot(_ snapshot: HierarchySnapshot) {
+    private func applyStructureSnapshot(_ snapshot: HierarchySnapshot, registerUndo: Bool = false) {
+        let previousSnapshot = registerUndo ? captureStructureSnapshot() : nil
         performSemanticMutation {
             setGraph(from: snapshot, resetViewState: true)
+        }
+        if registerUndo, let previousSnapshot {
+            let undoTarget = UndoClosureTarget { [previousSnapshot] in
+                applyStructureSnapshot(previousSnapshot, registerUndo: true)
+            }
+            undoManager?.registerUndo(withTarget: undoTarget) { target in
+                target.invoke()
+            }
+            undoManager?.setActionName("Apply Structure Update")
         }
     }
 
@@ -3920,7 +4561,7 @@ struct ContentView: View {
         newTaskGoal = ""
         newTaskContext = ""
         newTaskStructureStrategy = ""
-        newTaskCreationOption = .baselineTeam
+        newTaskCreationOption = .simpleTask
     }
 
     private func openTaskEditor(key: String) {
@@ -4226,6 +4867,15 @@ struct ContentView: View {
         }
     }
 
+    private func updateActiveTaskTitle(_ title: String) {
+        ensureAnyGraphDocument()
+        guard let document = activeGraphDocument else { return }
+        guard (document.title ?? "") != title else { return }
+        document.title = title
+        document.updatedAt = Date()
+        try? modelContext.save()
+    }
+
     private var debugClipboardText: String {
         let activeDocument = activeGraphDocument
         let formatter = ISO8601DateFormatter()
@@ -4338,6 +4988,7 @@ struct ContentView: View {
         else {
             relayoutHierarchy()
             syncCoordinatorExecutionState(from: nil)
+            syncStructureChatState(from: nil)
             lastPersistedFingerprint = semanticFingerprint
             return
         }
@@ -4358,6 +5009,7 @@ struct ContentView: View {
             orchestrationStrategy = resolvedStrategy
         }
         syncCoordinatorExecutionState(from: document)
+        syncStructureChatState(from: document)
         lastPersistedFingerprint = semanticFingerprint
     }
 
@@ -4432,6 +5084,44 @@ struct ContentView: View {
         guard let data = try? JSONEncoder().encode(bundle) else { return }
 
         document.executionStateData = data
+        document.updatedAt = Date()
+        try? modelContext.save()
+    }
+
+    private func syncStructureChatState(from document: GraphDocument?) {
+        let defaultProvider = availableGenerateProviders().first ?? .chatGPT
+        guard
+            let data = document?.structureChatData,
+            let decoded = try? JSONDecoder().decode(StructureChatStateBundle.self, from: data)
+        else {
+            structureChatMessages = []
+            structureChatInput = ""
+            structureChatStatusMessage = nil
+            isStructureChatRunning = false
+            structureChatProvider = defaultProvider
+            structureChatDebugRunningMessageIDs = []
+            structureChatDebugCompletedMessageIDs = []
+            return
+        }
+
+        structureChatMessages = decoded.messages
+        structureChatProvider = APIKeyProvider(rawValue: decoded.providerRaw) ?? defaultProvider
+        structureChatInput = ""
+        structureChatStatusMessage = nil
+        isStructureChatRunning = false
+        structureChatDebugRunningMessageIDs = []
+        structureChatDebugCompletedMessageIDs = []
+    }
+
+    private func persistStructureChatState() {
+        ensureAnyGraphDocument()
+        guard let document = activeGraphDocument else { return }
+        let payload = StructureChatStateBundle(
+            messages: structureChatMessages,
+            providerRaw: structureChatProvider.rawValue
+        )
+        guard let data = try? JSONEncoder().encode(payload) else { return }
+        document.structureChatData = data
         document.updatedAt = Date()
         try? modelContext.save()
     }
@@ -6776,12 +7466,78 @@ private enum GenerateStructureError: LocalizedError {
     }
 }
 
-private struct GeneratedStructureResponse: Decodable {
+private enum StructureChatTurnResult {
+    case chat(String)
+    case update(message: String, snapshot: HierarchySnapshot)
+}
+
+private final class UndoClosureTarget: NSObject {
+    private let action: () -> Void
+
+    init(action: @escaping () -> Void) {
+        self.action = action
+    }
+
+    @objc
+    func invoke() {
+        action()
+    }
+}
+
+private enum StructureChatMessageRole: String, Codable {
+    case user
+    case assistant
+}
+
+private struct StructureChatMessageEntry: Codable, Identifiable {
+    let id: UUID
+    let role: StructureChatMessageRole
+    let text: String
+    let createdAt: Date
+    let appliedStructureUpdate: Bool
+
+    init(
+        id: UUID = UUID(),
+        role: StructureChatMessageRole,
+        text: String,
+        createdAt: Date = Date(),
+        appliedStructureUpdate: Bool = false
+    ) {
+        self.id = id
+        self.role = role
+        self.text = text
+        self.createdAt = createdAt
+        self.appliedStructureUpdate = appliedStructureUpdate
+    }
+}
+
+private struct StructureChatStateBundle: Codable {
+    var messages: [StructureChatMessageEntry]
+    var providerRaw: String
+}
+
+private struct StructureChatProviderDebugResult {
+    let provider: APIKeyProvider
+    let preferredModelID: String?
+    let resolvedModelID: String?
+    let responseText: String?
+    let errorMessage: String?
+}
+
+private struct StructureChatResponseEnvelope: Decodable {
+    let mode: String?
+    let message: String?
+    let structure: GeneratedStructureResponse?
+    let nodes: [GeneratedNode]?
+    let links: [GeneratedLink]?
+}
+
+private struct GeneratedStructureResponse: Codable {
     let nodes: [GeneratedNode]
     let links: [GeneratedLink]
 }
 
-private struct GeneratedNode: Decodable {
+private struct GeneratedNode: Codable {
     let id: String
     let name: String
     let title: String
@@ -6801,7 +7557,7 @@ private struct GeneratedNode: Decodable {
     }
 }
 
-private struct GeneratedLink: Decodable {
+private struct GeneratedLink: Codable {
     let fromID: String
     let toID: String
     let tone: String?
@@ -6860,6 +7616,8 @@ private struct SelectableText: UIViewRepresentable {
         textView.backgroundColor = .clear
         textView.textContainerInset = .zero
         textView.textContainer.lineFragmentPadding = 0
+        textView.textContainer.widthTracksTextView = true
+        textView.textContainer.lineBreakMode = .byWordWrapping
         textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         textView.setContentHuggingPriority(.defaultHigh, for: .vertical)
         return textView
@@ -6879,6 +7637,12 @@ private struct SelectableText: UIViewRepresentable {
             textView.textColor = textColor
         }
         textView.invalidateIntrinsicContentSize()
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView textView: RichCopyTextView, context: Context) -> CGSize? {
+        let targetWidth = proposal.width ?? UIScreen.main.bounds.width
+        let fitting = textView.sizeThatFits(CGSize(width: targetWidth, height: .greatestFiniteMagnitude))
+        return CGSize(width: targetWidth, height: fitting.height)
     }
 }
 
