@@ -3249,6 +3249,10 @@ struct ContentView: View {
             return .chat(raw.trimmingCharacters(in: .whitespacesAndNewlines))
         }
         guard let envelope = try? JSONDecoder().decode(StructureChatResponseEnvelope.self, from: data) else {
+            // Detect truncated JSON — the model likely hit its output token limit.
+            if looksLikeTruncatedJSON(cleaned) {
+                return .chat("⚠️ The response was cut off (output token limit). Try a more capable model for structure chat, or simplify your request.")
+            }
             return .chat(raw.trimmingCharacters(in: .whitespacesAndNewlines))
         }
 
@@ -3316,27 +3320,50 @@ struct ContentView: View {
             throw GenerateStructureError.emptyStructure
         }
 
+        // Build the string→UUID map ONCE so non-UUID IDs get a stable
+        // random UUID shared between nodes and links.
+        let nodeIDMap = Dictionary(uniqueKeysWithValues: decoded.nodes.map { ($0.id, $0.parsedID) })
+
+        // Map connected app server names (lowercased) → all their tool names,
+        // so an LLM returning "airtable" gets expanded to the individual tool IDs.
+        let mcpManager = MCPServerManager.shared
+        var serverToolExpansion: [String: [String]] = [:]
+        for connection in mcpServerConnections where connection.isEnabled {
+            let tools = mcpManager.discoveredTools[connection.id] ?? mcpManager.cachedTools(for: connection.id)
+            if !tools.isEmpty {
+                serverToolExpansion[connection.name.lowercased()] = tools.map(\.name)
+            }
+        }
+
         let snapshotNodes = decoded.nodes.map { node in
-            HierarchySnapshotNode(
-                id: node.parsedID,
+            // Expand server-level tool names to individual tool IDs
+            let resolvedTools: [String]? = node.assignedTools.map { tools in
+                tools.flatMap { toolID -> [String] in
+                    if let expanded = serverToolExpansion[toolID.lowercased()] {
+                        return expanded
+                    }
+                    return [toolID]
+                }
+            }
+
+            return HierarchySnapshotNode(
+                id: nodeIDMap[node.id] ?? UUID(),
                 name: node.name,
-                title: node.title,
-                department: node.department,
+                title: node.title ?? node.name,
+                department: node.department ?? "General",
                 type: NodeType(rawValue: node.type) ?? .agent,
                 provider: LLMProvider(rawValue: node.provider) ?? .chatGPT,
-                roleDescription: node.roleDescription,
+                roleDescription: node.roleDescription ?? node.name,
                 inputSchema: nil,
                 outputSchema: node.outputSchema,
                 outputSchemaDescription: node.outputSchemaDescription,
                 selectedRoles: [],
                 securityAccess: (node.securityAccess ?? []).compactMap { SecurityAccess(rawValue: $0) },
-                assignedTools: nil,
+                assignedTools: resolvedTools,
                 positionX: node.positionX ?? 400,
                 positionY: node.positionY ?? 0
             )
         }
-
-        let nodeIDMap = Dictionary(uniqueKeysWithValues: decoded.nodes.map { ($0.id, $0.parsedID) })
 
         let snapshotLinks = decoded.links.compactMap { link -> HierarchySnapshotLink? in
             guard let fromID = nodeIDMap[link.fromID], let toID = nodeIDMap[link.toID] else {
@@ -3360,6 +3387,16 @@ struct ContentView: View {
             cleaned = String(cleaned.dropLast(3))
         }
         return cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Returns true when the text looks like JSON that was cut off mid-stream
+    /// (e.g. the model hit its output token limit).
+    private func looksLikeTruncatedJSON(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix("{") || trimmed.hasPrefix("[") else { return false }
+        let opens = trimmed.filter { $0 == "{" || $0 == "[" }.count
+        let closes = trimmed.filter { $0 == "}" || $0 == "]" }.count
+        return opens > closes
     }
 
     private func applySynthesizedStructure() {
