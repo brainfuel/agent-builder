@@ -7638,19 +7638,22 @@ private struct StructureChatMessageEntry: Codable, Identifiable {
     let text: String
     let createdAt: Date
     let appliedStructureUpdate: Bool
+    let rawResponse: String?
 
     init(
         id: UUID = UUID(),
         role: StructureChatMessageRole,
         text: String,
         createdAt: Date = Date(),
-        appliedStructureUpdate: Bool = false
+        appliedStructureUpdate: Bool = false,
+        rawResponse: String? = nil
     ) {
         self.id = id
         self.role = role
         self.text = text
         self.createdAt = createdAt
         self.appliedStructureUpdate = appliedStructureUpdate
+        self.rawResponse = rawResponse
     }
 }
 
@@ -7683,14 +7686,15 @@ private struct GeneratedStructureResponse: Codable {
 private struct GeneratedNode: Codable {
     let id: String
     let name: String
-    let title: String
-    let department: String
+    let title: String?
+    let department: String?
     let type: String
     let provider: String
-    let roleDescription: String
+    let roleDescription: String?
     let outputSchema: String?
     let outputSchemaDescription: String?
     let securityAccess: [String]?
+    let assignedTools: [String]?
     let positionX: CGFloat?
     let positionY: CGFloat?
 

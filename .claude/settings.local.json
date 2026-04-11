@@ -17,7 +17,8 @@
       "WebFetch(domain:support.airtable.com)",
       "WebFetch(domain:community.airtable.com)",
       "WebFetch(domain:www.pulsemcp.com)",
-      "Bash(python3 -c \":*)"
+      "Bash(python3 -c \":*)",
+      "Bash(grep -r \"nodes\" /Users/benmilford/Documents/Projects/Agentic/*.swift)"
     ]
   }
 }
