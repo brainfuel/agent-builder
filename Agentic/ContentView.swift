@@ -4530,13 +4530,27 @@ struct ContentView: View {
         }
 
         let attachments = anchorAttachmentNodeIDs(nodes: mutableNodes, links: mutableLinks)
-        let resolvedRootID: UUID?
-        if let preferredRootID, workNodeIDs.contains(preferredRootID) {
-            resolvedRootID = preferredRootID
+
+        // Wire Input to ALL root nodes (no incoming work links) so parallel
+        // fan-out structures stay fully connected — not just a single root.
+        let internalLinks = mutableLinks.filter { workNodeIDs.contains($0.fromID) && workNodeIDs.contains($0.toID) }
+        let incomingByChildID = Dictionary(grouping: internalLinks, by: \.toID)
+        let allRootIDs = mutableNodes
+            .filter { workNodeIDs.contains($0.id) && incomingByChildID[$0.id] == nil }
+            .map(\.id)
+
+        let resolvedRootIDs: [UUID]
+        if !allRootIDs.isEmpty {
+            resolvedRootIDs = allRootIDs
+        } else if let preferredRootID, workNodeIDs.contains(preferredRootID) {
+            resolvedRootIDs = [preferredRootID]
+        } else if let fallback = attachments.rootID {
+            resolvedRootIDs = [fallback]
         } else {
-            resolvedRootID = attachments.rootID
+            resolvedRootIDs = []
         }
-        if let rootID = resolvedRootID {
+        let resolvedRootID = resolvedRootIDs.first
+        for rootID in resolvedRootIDs {
             mutableLinks.append(
                 NodeLink(fromID: inputID, toID: rootID, tone: .blue, edgeType: .primary)
             )
@@ -4560,7 +4574,7 @@ struct ContentView: View {
             let outgoingByParentID = Dictionary(grouping: internalLinks, by: \.fromID)
 
             var reachable: Set<UUID> = []
-            var queue: [UUID] = [resolvedRootID]
+            var queue: [UUID] = resolvedRootIDs
             var head = 0
             while head < queue.count {
                 let nodeID = queue[head]
