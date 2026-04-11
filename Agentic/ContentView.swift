@@ -13,7 +13,7 @@ struct ContentView: View {
     private static let defaultStructureStrategy = "Design a structure that best answers the task question, compares candidate outputs when useful, and returns one clear final response."
     private let cardSize = CGSize(width: 264, height: 88)
     private let minimumCanvasSize = CGSize(width: 1900, height: 1200)
-    private let minZoom: CGFloat = 0.6
+    private let minZoom: CGFloat = 0.3
     private let maxZoom: CGFloat = 1.5
     private let zoomStep: CGFloat = 0.1
     private let apiKeyStore: any APIKeyStoring
@@ -4683,6 +4683,9 @@ struct ContentView: View {
 
         currentGraphKey = key
         syncGraphFromStore()
+        withAnimation(.snappy(duration: 0.2)) {
+            resultsDrawerOpen = true
+        }
 
         if let pending = pendingCoordinatorExecution {
             if pending.awaitingHumanPacketID != nil {
