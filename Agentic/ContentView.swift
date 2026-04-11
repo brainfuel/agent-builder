@@ -445,10 +445,12 @@ struct ContentView: View {
             schemaControlsBar
             Divider()
             HStack(spacing: 0) {
-                ZStack(alignment: .bottom) {
+                VStack(spacing: 0) {
                     chartCanvas
+                    Divider()
                     resultsDrawer
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 if isInspectorPanelVisible {
                     Divider()
                     inspectorPanel
@@ -484,6 +486,33 @@ struct ContentView: View {
                     resultsDrawerOpen.toggle()
                 }
             } label: {
+#if targetEnvironment(macCatalyst)
+                HStack(spacing: 8) {
+                    Image(systemName: "text.line.last.and.arrowtriangle.forward")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(AppTheme.brandTint)
+
+                    Text("Run Trace")
+                        .font(.subheadline.weight(.semibold))
+
+                    if !coordinatorTrace.isEmpty {
+                        Text("\(coordinatorTrace.count)")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(AppTheme.brandTint, in: Capsule())
+                    }
+
+                    Spacer()
+
+                    Image(systemName: "rectangle.bottomthird.inset.filled")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(AppTheme.brandTint)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+#else
                 VStack(spacing: 6) {
                     Capsule()
                         .fill(Color(uiColor: .tertiaryLabel))
@@ -509,13 +538,14 @@ struct ContentView: View {
 
                         Spacer()
 
-                        Image(systemName: resultsDrawerOpen ? "chevron.down" : "chevron.up")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
+                        Image(systemName: "rectangle.bottomthird.inset.filled")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(AppTheme.brandTint)
                     }
                     .padding(.horizontal, 16)
                     .padding(.bottom, 6)
                 }
+#endif
             }
             .buttonStyle(.plain)
 
@@ -527,9 +557,6 @@ struct ContentView: View {
         }
         .background(.ultraThinMaterial)
         .clipShape(RoundedRectangle(cornerRadius: resultsDrawerOpen ? 16 : 12, style: .continuous))
-        .shadow(color: .black.opacity(0.12), radius: 12, y: -4)
-        .padding(.horizontal, 8)
-        .padding(.bottom, 4)
         .frame(maxHeight: resultsDrawerOpen ? UIScreen.main.bounds.height * 0.45 : nil)
         .animation(.snappy(duration: 0.3), value: resultsDrawerOpen)
     }
@@ -736,6 +763,7 @@ struct ContentView: View {
             .buttonStyle(.plain)
             .disabled(!canRedo)
             .keyboardShortcut("Z", modifiers: [.command, .shift])
+
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 10)
@@ -2166,7 +2194,7 @@ struct ContentView: View {
     }
 
     private var zoomControls: some View {
-        VStack(alignment: .trailing, spacing: 10) {
+        VStack(alignment: .trailing, spacing: 8) {
             Button {
                 zoom = 1.0
             } label: {
@@ -2179,31 +2207,32 @@ struct ContentView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
             }
 
-            HStack(spacing: 12) {
+            HStack(spacing: 8) {
                 Button {
                     adjustZoom(stepDelta: -1)
                 } label: {
                     Image(systemName: "minus")
-                        .font(.system(size: 16, weight: .semibold))
-                        .frame(width: 46, height: 46)
+                        .font(.system(size: 15, weight: .semibold))
+                        .frame(width: 30, height: 30)
                         .contentShape(Rectangle())
                 }
                 Text("\(Int((zoom * 100).rounded()))%")
-                    .frame(minWidth: 48)
-                    .font(.system(.headline, design: .rounded))
+                    .frame(minWidth: 52)
+                    .font(.system(.title3, design: .rounded).weight(.semibold))
                 Button {
                     adjustZoom(stepDelta: 1)
                 } label: {
                     Image(systemName: "plus")
-                        .frame(width: 28, height: 28)
+                        .font(.system(size: 15, weight: .semibold))
+                        .frame(width: 30, height: 30)
                 }
             }
             .buttonStyle(.plain)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 12)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
             .background(.ultraThinMaterial)
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .shadow(color: .black.opacity(0.12), radius: 10, y: 3)
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .shadow(color: .black.opacity(0.10), radius: 7, y: 2)
         }
     }
 
