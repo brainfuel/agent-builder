@@ -2216,6 +2216,11 @@ struct ContentView: View {
         VStack(alignment: .trailing, spacing: 8) {
             Button {
                 zoom = 1.0
+                if let inputNode = nodes.first(where: { $0.type == .input }) {
+                    withAnimation(.easeInOut(duration: 0.3)) {
+                        canvasScrollProxy?.scrollTo(inputNode.id, anchor: .top)
+                    }
+                }
             } label: {
                 Text("Center View")
                     .font(.subheadline.weight(.semibold))
