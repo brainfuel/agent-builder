@@ -33,6 +33,8 @@ struct ContentView: View {
     @State private var selectedNodeID: OrgNode.ID?
     @State private var searchText = ""
     @State private var zoom: CGFloat = 1.0
+    @State private var suppressLayoutAnimation = false
+    @State private var canvasScrollProxy: ScrollViewProxy?
     @State private var suppressStoreSync = false
     @State private var lastPersistedFingerprint = ""
     @State private var selectedLinkID: UUID?
@@ -2085,6 +2087,7 @@ struct ContentView: View {
         }
 
         return ZStack(alignment: .bottomTrailing) {
+            ScrollViewReader { scrollProxy in
             ScrollView([.horizontal, .vertical]) {
                 ZStack(alignment: .topLeading) {
                     DotGridBackground()
@@ -2108,9 +2111,10 @@ struct ContentView: View {
                             executionState: executionState(for: node.id)
                         )
                             .frame(width: cardSize.width, height: cardSize.height)
+                            .id(node.id)
                             .position(node.position)
-                            .animation(.spring(response: 0.5, dampingFraction: 0.82), value: node.position.x)
-                            .animation(.spring(response: 0.5, dampingFraction: 0.82), value: node.position.y)
+                            .animation(suppressLayoutAnimation ? nil : .spring(response: 0.5, dampingFraction: 0.82), value: node.position.x)
+                            .animation(suppressLayoutAnimation ? nil : .spring(response: 0.5, dampingFraction: 0.82), value: node.position.y)
                             .onTapGesture {
                                 handleNodeTap(node)
                             }
@@ -2200,6 +2204,8 @@ struct ContentView: View {
                 )
             }
             .background(Color(red: 0.92, green: 0.93, blue: 0.96))
+            .onAppear { canvasScrollProxy = scrollProxy }
+            }
 
             zoomControls
                 .padding(20)
