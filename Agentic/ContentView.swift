@@ -2854,7 +2854,7 @@ struct ContentView: View {
                 await continueCoordinatorExecution()
             }
         case .reject, .needsInfo:
-            latestCoordinatorRun = CoordinatorRun(
+            let completedRun = CoordinatorRun(
                 runID: pending.runID,
                 planID: pending.plan.planID,
                 mode: pending.mode,
@@ -2862,6 +2862,10 @@ struct ContentView: View {
                 startedAt: pending.startedAt,
                 finishedAt: Date()
             )
+            latestCoordinatorRun = completedRun
+            coordinatorRunHistory.append(CoordinatorRunHistoryEntry(run: completedRun, trace: coordinatorTrace))
+            selectedHistoryRunID = nil
+            lastCompletedExecution = pending
             pendingCoordinatorExecution = nil
             isExecutingCoordinator = false
             persistCoordinatorExecutionState()
@@ -5188,7 +5192,10 @@ struct ContentView: View {
         latestCoordinatorPlan = nil
         latestCoordinatorRun = nil
         pendingCoordinatorExecution = nil
+        lastCompletedExecution = nil
         coordinatorTrace = []
+        coordinatorRunHistory = []
+        selectedHistoryRunID = nil
         humanDecisionAudit = []
         humanDecisionNote = ""
         isShowingHumanInbox = false
@@ -5458,8 +5465,11 @@ struct ContentView: View {
             let decoded = try? JSONDecoder().decode(CoordinatorExecutionStateBundle.self, from: data)
         else {
             pendingCoordinatorExecution = nil
+            lastCompletedExecution = nil
             latestCoordinatorRun = nil
             coordinatorTrace = []
+            coordinatorRunHistory = []
+            selectedHistoryRunID = nil
             humanDecisionAudit = []
             if humanActorIdentity.isEmpty {
                 humanActorIdentity = "Human Reviewer"
@@ -5469,8 +5479,11 @@ struct ContentView: View {
         }
 
         pendingCoordinatorExecution = decoded.pendingExecution
+        lastCompletedExecution = decoded.lastCompletedExecution
         latestCoordinatorRun = decoded.latestRun
         coordinatorTrace = decoded.trace
+        coordinatorRunHistory = decoded.runHistory ?? []
+        selectedHistoryRunID = nil
         humanDecisionAudit = decoded.humanDecisionAudit
         humanActorIdentity = decoded.humanActorIdentity
         isExecutingCoordinator = false
@@ -5504,7 +5517,9 @@ struct ContentView: View {
             latestRun: latestCoordinatorRun,
             trace: coordinatorTrace,
             humanDecisionAudit: humanDecisionAudit,
-            humanActorIdentity: humanActorIdentity
+            humanActorIdentity: humanActorIdentity,
+            lastCompletedExecution: lastCompletedExecution,
+            runHistory: coordinatorRunHistory.isEmpty ? nil : coordinatorRunHistory
         )
         guard let data = try? JSONEncoder().encode(bundle) else { return }
 
@@ -8881,6 +8896,8 @@ private struct CoordinatorExecutionStateBundle: Codable {
     let trace: [CoordinatorTraceStep]
     let humanDecisionAudit: [HumanDecisionAuditEvent]
     let humanActorIdentity: String
+    var lastCompletedExecution: PendingCoordinatorExecution?
+    var runHistory: [CoordinatorRunHistoryEntry]?
 }
 
 private struct HandoffValidation {
@@ -8924,7 +8941,8 @@ private struct CoordinatorTaskResult: Identifiable, Codable {
     let finishedAt: Date
 }
 
-private struct CoordinatorRun: Codable {
+private struct CoordinatorRun: Codable, Identifiable {
+    var id: String { runID }
     let runID: String
     let planID: String
     let mode: CoordinatorExecutionMode
