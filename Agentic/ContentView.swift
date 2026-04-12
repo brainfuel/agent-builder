@@ -5164,8 +5164,10 @@ struct ContentView: View {
         }
 
         suppressStoreSync = true
+        suppressLayoutAnimation = true
         setGraph(from: snapshot, resetViewState: false)
         suppressStoreSync = false
+        DispatchQueue.main.async { suppressLayoutAnimation = false }
         let storedQuestion = document.goal ?? ""
         if orchestrationGoal != storedQuestion {
             orchestrationGoal = storedQuestion
@@ -5563,6 +5565,20 @@ struct ContentView: View {
             for id in rowIDs {
                 if let packedX = packed[id] {
                     xByID[id] = packedX
+                }
+            }
+        }
+
+        // Center the entire layout horizontally in the canvas so the graph
+        // isn't left-aligned. Use the minimum canvas width as reference.
+        let layoutXValues = layoutNodeIDs.compactMap { xByID[$0] }
+        if let layoutMinX = layoutXValues.min(), let layoutMaxX = layoutXValues.max() {
+            let layoutCenter = (layoutMinX + layoutMaxX) / 2
+            let canvasCenter = max(minimumCanvasSize.width, (layoutMaxX + cardSize.width / 2 + 240)) / 2
+            let shift = canvasCenter - layoutCenter
+            if abs(shift) > 1 {
+                for id in layoutNodeIDs {
+                    xByID[id] = (xByID[id] ?? 0) + shift
                 }
             }
         }
