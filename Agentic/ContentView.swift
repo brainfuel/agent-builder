@@ -8955,6 +8955,12 @@ private struct CoordinatorRun: Codable, Identifiable {
     }
 }
 
+private struct CoordinatorRunHistoryEntry: Codable, Identifiable {
+    var id: String { run.runID }
+    let run: CoordinatorRun
+    let trace: [CoordinatorTraceStep]
+}
+
 private protocol MCPClient {
     func execute(_ request: MCPTaskRequest) async -> MCPTaskResponse
 }
