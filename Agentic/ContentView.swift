@@ -4410,7 +4410,15 @@ struct ContentView: View {
         let attachments = anchorAttachmentNodeIDs(nodes: nodes, links: links)
         let rootNode = attachments.rootID.flatMap { id in nodes.first(where: { $0.id == id }) }
         let sinkNode = attachments.sinkID.flatMap { id in nodes.first(where: { $0.id == id }) }
+        let inputID = nodes.first(where: { $0.type == .input })?.id
         let outputID = nodes.first(where: { $0.type == .output })?.id
+
+        // Center Input above ALL its direct children, not just the single root.
+        let inputChildNodes: [OrgNode] = {
+            guard let inputID else { return [] }
+            let childIDs = Set(links.filter { $0.fromID == inputID }.map(\.toID))
+            return nodes.filter { childIDs.contains($0.id) && $0.type != .input && $0.type != .output }
+        }()
         let outputParentNodes: [OrgNode] = {
             guard let outputID else { return [] }
             let outputParentIDs = Set(
@@ -4421,8 +4429,16 @@ struct ContentView: View {
             return nodes.filter { outputParentIDs.contains($0.id) && $0.type != .input && $0.type != .output }
         }()
 
-        let inputX = rootNode?.position.x ?? defaultCenterX
-        let inputY = max(topInset, (rootNode?.position.y ?? topInset) - verticalOffset)
+        let inputX: CGFloat
+        let topChildY: CGFloat
+        if !inputChildNodes.isEmpty {
+            inputX = inputChildNodes.map(\.position.x).reduce(0, +) / CGFloat(inputChildNodes.count)
+            topChildY = inputChildNodes.map(\.position.y).min() ?? topInset
+        } else {
+            inputX = rootNode?.position.x ?? defaultCenterX
+            topChildY = rootNode?.position.y ?? topInset
+        }
+        let inputY = max(topInset, topChildY - verticalOffset)
 
         let outputX: CGFloat
         let proposedOutputY: CGFloat
@@ -5445,12 +5461,28 @@ struct ContentView: View {
         }
 
         // Multi-parent alignment: center each child under all of its parents.
-        // Then repack rows to preserve spacing and avoid overlaps.
+        // When a node moves, cascade the delta to its entire subtree so
+        // descendants stay centered under the shifted parent.
         let incomingParentIDsByChild = Dictionary(grouping: layoutLinks, by: \.toID).mapValues { grouped in
             grouped.map(\.fromID)
         }
-        for (childID, parentIDs) in incomingParentIDsByChild where parentIDs.count > 1 {
+
+        func shiftSubtree(_ nodeID: UUID, delta: CGFloat) {
+            for childID in treeChildrenByParentID[nodeID] ?? [] {
+                xByID[childID] = (xByID[childID] ?? 0) + delta
+                shiftSubtree(childID, delta: delta)
+            }
+        }
+
+        // Process by depth so parent shifts cascade correctly top-down.
+        let multiParentIDs = incomingParentIDsByChild
+            .filter { $0.value.count > 1 }
+            .keys
+            .sorted { (depthByID[$0] ?? 0) < (depthByID[$1] ?? 0) }
+
+        for childID in multiParentIDs {
             guard
+                let parentIDs = incomingParentIDsByChild[childID],
                 let childNode = nodeByID[childID],
                 childNode.type != .input,
                 childNode.type != .output
@@ -5458,7 +5490,13 @@ struct ContentView: View {
 
             let parentXs = parentIDs.compactMap { xByID[$0] }
             guard !parentXs.isEmpty else { continue }
-            xByID[childID] = parentXs.reduce(0, +) / CGFloat(parentXs.count)
+            let newX = parentXs.reduce(0, +) / CGFloat(parentXs.count)
+            let oldX = xByID[childID] ?? newX
+            xByID[childID] = newX
+            let delta = newX - oldX
+            if abs(delta) > 0.001 {
+                shiftSubtree(childID, delta: delta)
+            }
         }
 
         let minimumHorizontalSeparation = cardSize.width + siblingGap
