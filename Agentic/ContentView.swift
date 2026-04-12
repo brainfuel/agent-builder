@@ -615,6 +615,76 @@ struct ContentView: View {
         .animation(.snappy(duration: 0.3), value: resultsDrawerOpen)
     }
 
+    private var runHistoryPicker: some View {
+        Menu {
+            // Current / latest run option
+            Button {
+                withAnimation(.snappy(duration: 0.2)) { selectedHistoryRunID = nil }
+            } label: {
+                HStack {
+                    Text("Latest Run")
+                    if selectedHistoryRunID == nil {
+                        Image(systemName: "checkmark")
+                    }
+                }
+            }
+
+            Divider()
+
+            // Historical runs (newest first)
+            ForEach(coordinatorRunHistory.reversed()) { entry in
+                Button {
+                    withAnimation(.snappy(duration: 0.2)) { selectedHistoryRunID = entry.run.runID }
+                } label: {
+                    HStack {
+                        let allSucceeded = entry.run.succeededCount == entry.run.results.count
+                        Image(systemName: allSucceeded ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                        Text(runHistoryLabel(for: entry))
+                        if selectedHistoryRunID == entry.run.runID {
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "clock.arrow.circlepath")
+                    .font(.system(size: 10, weight: .semibold))
+                Text(selectedHistoryRunID == nil ? "Latest" : runHistoryPickerTitle)
+                    .font(.caption.weight(.medium))
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 8, weight: .semibold))
+            }
+            .foregroundStyle(isViewingHistoricalRun ? AppTheme.brandTint : .secondary)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(isViewingHistoricalRun ? AppTheme.brandTint.opacity(0.12) : Color(uiColor: .tertiarySystemFill))
+            )
+        }
+    }
+
+    private func runHistoryLabel(for entry: CoordinatorRunHistoryEntry) -> String {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .none
+        formatter.timeStyle = .medium
+        let succeeded = entry.run.succeededCount
+        let total = entry.run.results.count
+        return "\(formatter.string(from: entry.run.finishedAt)) — \(succeeded)/\(total) succeeded"
+    }
+
+    private var runHistoryPickerTitle: String {
+        guard let selectedHistoryRunID,
+              let entry = coordinatorRunHistory.first(where: { $0.run.runID == selectedHistoryRunID }) else {
+            return "Latest Run"
+        }
+        let formatter = DateFormatter()
+        formatter.dateStyle = .none
+        formatter.timeStyle = .short
+        return "Run at \(formatter.string(from: entry.run.finishedAt))"
+    }
+
     private var resultsDrawerContent: some View {
         ScrollViewReader { proxy in
             ScrollView {
@@ -629,56 +699,58 @@ struct ContentView: View {
                         .foregroundStyle(.secondary)
                     }
 
-                    if let latestCoordinatorRun {
+                    if let run = displayedRun {
                         Label(
-                            "Last run: \(latestCoordinatorRun.succeededCount)/\(latestCoordinatorRun.results.count) tasks succeeded.",
-                            systemImage: latestCoordinatorRun.succeededCount == latestCoordinatorRun.results.count
+                            "\(isViewingHistoricalRun ? "Run" : "Last run"): \(run.succeededCount)/\(run.results.count) tasks succeeded.",
+                            systemImage: run.succeededCount == run.results.count
                                 ? "checkmark.circle.fill" : "exclamationmark.triangle.fill"
                         )
                         .font(.caption.weight(.medium))
                         .foregroundStyle(
-                            latestCoordinatorRun.succeededCount == latestCoordinatorRun.results.count
+                            run.succeededCount == run.results.count
                                 ? .green : .orange
                         )
                     }
 
-                    // Resume / Human inbox
-                    if
-                        let pendingCoordinatorExecution,
-                        pendingCoordinatorExecution.awaitingHumanPacketID == nil,
-                        !isExecutingCoordinator
-                    {
-                        Button("Resume Pending Run") {
-                            isExecutingCoordinator = true
-                            Task { await continueCoordinatorExecution() }
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.small)
-                    }
-
-                    if let pendingHumanPacket {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Label("Human Decision Required", systemImage: "person.badge.clock")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.orange)
-
-                            Text("\(pendingHumanPacket.assignedNodeName): \(pendingHumanPacket.objective)")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(2)
-
-                            HStack(spacing: 8) {
-                                Button("Approve") { resolveHumanTask(.approve) }
-                                    .buttonStyle(.borderedProminent)
-                                Button("Reject") { resolveHumanTask(.reject) }
-                                    .buttonStyle(.bordered)
-                                Button("Inbox") { isShowingHumanInbox = true }
-                                    .buttonStyle(.bordered)
+                    // Resume / Human inbox — only for current run, not historical
+                    if !isViewingHistoricalRun {
+                        if
+                            let pendingCoordinatorExecution,
+                            pendingCoordinatorExecution.awaitingHumanPacketID == nil,
+                            !isExecutingCoordinator
+                        {
+                            Button("Resume Pending Run") {
+                                isExecutingCoordinator = true
+                                Task { await continueCoordinatorExecution() }
                             }
+                            .buttonStyle(.borderedProminent)
                             .controlSize(.small)
                         }
-                        .padding(10)
-                        .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+
+                        if let pendingHumanPacket {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Label("Human Decision Required", systemImage: "person.badge.clock")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.orange)
+
+                                Text("\(pendingHumanPacket.assignedNodeName): \(pendingHumanPacket.objective)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(2)
+
+                                HStack(spacing: 8) {
+                                    Button("Approve") { resolveHumanTask(.approve) }
+                                        .buttonStyle(.borderedProminent)
+                                    Button("Reject") { resolveHumanTask(.reject) }
+                                        .buttonStyle(.bordered)
+                                    Button("Inbox") { isShowingHumanInbox = true }
+                                        .buttonStyle(.bordered)
+                                }
+                                .controlSize(.small)
+                            }
+                            .padding(10)
+                            .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+                        }
                     }
 
                     // Trace list
@@ -687,7 +759,7 @@ struct ContentView: View {
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(.secondary)
                         Spacer()
-                        if !coordinatorTrace.isEmpty {
+                        if !isViewingHistoricalRun, !coordinatorTrace.isEmpty {
                             Button("Clear") {
                                 coordinatorTrace = []
                                 persistCoordinatorExecutionState()
@@ -698,7 +770,8 @@ struct ContentView: View {
                         }
                     }
 
-                    if coordinatorTrace.isEmpty {
+                    let traceToShow = displayedTrace
+                    if traceToShow.isEmpty {
                         VStack(spacing: 6) {
                             Image(systemName: "doc.text.magnifyingglass")
                                 .font(.title3)
@@ -711,8 +784,8 @@ struct ContentView: View {
                         .padding(.vertical, 16)
                     } else {
                         LazyVStack(spacing: 8) {
-                            ForEach(Array(coordinatorTrace.enumerated()), id: \.element.id) { index, step in
-                                let resolution = traceResolution(for: step)
+                            ForEach(Array(traceToShow.enumerated()), id: \.element.id) { index, step in
+                                let resolution = isViewingHistoricalRun ? nil : traceResolution(for: step)
                                 let isHighlighted = scrollToTraceID == step.id
                                 CoordinatorTraceRow(
                                     stepNumber: index + 1,
@@ -721,7 +794,7 @@ struct ContentView: View {
                                     onResolve: resolution == nil
                                         ? nil
                                         : { applyTraceResolution(for: step) },
-                                    onRetryWithFeedback: isExecutingCoordinator
+                                    onRetryWithFeedback: isViewingHistoricalRun || isExecutingCoordinator
                                         ? nil
                                         : { feedback in retryPipelineWithFeedback(feedback, from: step) }
                                 )
@@ -2251,6 +2324,41 @@ struct ContentView: View {
                             y: selectedNode.position.y + (cardSize.height / 2) + 18
                         )
                     }
+
+                    // "Run from here" button on completed/failed nodes that are selected.
+                    if let selID = selectedNodeID,
+                       let selNode = visibleNodes.first(where: { $0.id == selID }),
+                       selNode.type == .agent || selNode.type == .human,
+                       !isExecutingCoordinator,
+                       pendingCoordinatorExecution != nil || lastCompletedExecution != nil
+                    {
+                        let nodeExecState = executionState(for: selID)
+                        if nodeExecState == .succeeded || nodeExecState == .failed {
+                            Button {
+                                runCoordinatorFromNode(selID)
+                            } label: {
+                                HStack(spacing: 5) {
+                                    Image(systemName: "play.fill")
+                                        .font(.system(size: 11, weight: .bold))
+                                    Text("Run from here")
+                                        .font(.caption.weight(.semibold))
+                                }
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 6)
+                                .background(
+                                    Capsule()
+                                        .fill(Color.green)
+                                )
+                                .shadow(color: .black.opacity(0.15), radius: 4, y: 2)
+                            }
+                            .buttonStyle(.plain)
+                            .position(
+                                x: selNode.position.x,
+                                y: selNode.position.y - (cardSize.height / 2) - 18
+                            )
+                        }
+                    }
                 }
                 .coordinateSpace(name: "chart-canvas")
                 .simultaneousGesture(
@@ -2281,24 +2389,8 @@ struct ContentView: View {
     }
 
     private var zoomControls: some View {
-        VStack(alignment: .trailing, spacing: 8) {
-            Button {
-                zoom = 1.0
-                if let inputNode = nodes.first(where: { $0.type == .input }) {
-                    withAnimation(.easeInOut(duration: 0.3)) {
-                        canvasScrollProxy?.scrollTo(inputNode.id, anchor: .top)
-                    }
-                }
-            } label: {
-                Text("Center View")
-                    .font(.subheadline.weight(.semibold))
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 8)
-                    .background(AppTheme.brandTint)
-                    .foregroundStyle(.white)
-                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-            }
-
+        let zoomControlHeight: CGFloat = 46
+        return HStack(alignment: .center, spacing: 8) {
             HStack(spacing: 8) {
                 Button {
                     adjustZoom(stepDelta: -1)
@@ -2325,6 +2417,28 @@ struct ContentView: View {
             .background(.ultraThinMaterial)
             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
             .shadow(color: .black.opacity(0.10), radius: 7, y: 2)
+            .frame(height: zoomControlHeight)
+
+            Button {
+                zoom = 1.0
+                if let inputNode = nodes.first(where: { $0.type == .input }) {
+                    withAnimation(.easeInOut(duration: 0.3)) {
+                        canvasScrollProxy?.scrollTo(inputNode.id, anchor: .top)
+                    }
+                }
+            } label: {
+                Image(systemName: "location.north.line.fill")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: zoomControlHeight, height: zoomControlHeight)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(AppTheme.brandTint)
+                    )
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Center View")
+            .help("Center View")
         }
     }
 
@@ -2388,6 +2502,71 @@ struct ContentView: View {
 
     private func runCoordinatorPipeline() {
         runCoordinatorPipelineWithFeedback(nil)
+    }
+
+    /// Re-runs the pipeline starting from a specific node, reusing cached
+    /// outputs from all upstream nodes that already succeeded.
+    private func runCoordinatorFromNode(_ nodeID: UUID) {
+        guard !isExecutingCoordinator else { return }
+        guard let previousPending = pendingCoordinatorExecution ?? lastCompletedExecution else { return }
+
+        let plan = previousPending.plan
+
+        // Find the packet index for the target node.
+        guard let startIndex = plan.packets.firstIndex(where: { $0.assignedNodeID == nodeID }) else { return }
+
+        // Pre-populate outputsByNodeID with results from packets BEFORE the
+        // target so downstream handoff validation passes.
+        var cachedOutputs: [UUID: ProducedHandoff] = [:]
+        for i in 0..<startIndex {
+            let packet = plan.packets[i]
+            if let output = previousPending.outputsByNodeID[packet.assignedNodeID] {
+                cachedOutputs[packet.assignedNodeID] = output
+            }
+        }
+
+        // Keep completed results for packets before the target.
+        let keptResults = Array(previousPending.results.prefix(startIndex))
+
+        // Rebuild the trace: keep completed steps, reset target and beyond.
+        coordinatorTrace = plan.packets.enumerated().map { index, packet in
+            if index < startIndex, let existingStep = coordinatorTrace.first(where: { $0.packetID == packet.id }) {
+                return existingStep
+            }
+            return CoordinatorTraceStep(
+                packetID: packet.id,
+                assignedNodeID: packet.assignedNodeID,
+                assignedNodeName: packet.assignedNodeName,
+                objective: packet.objective,
+                status: .queued,
+                summary: nil,
+                confidence: nil,
+                startedAt: nil,
+                finishedAt: nil
+            )
+        }
+
+        selectedHistoryRunID = nil
+        pendingCoordinatorExecution = PendingCoordinatorExecution(
+            runID: "RUN-\(UUID().uuidString.prefix(8))",
+            plan: plan,
+            mode: previousPending.mode,
+            nextPacketIndex: startIndex,
+            results: keptResults,
+            outputsByNodeID: cachedOutputs,
+            startedAt: Date(),
+            awaitingHumanPacketID: nil,
+            retryFeedback: nil
+        )
+        isExecutingCoordinator = true
+        liveStatusMessage = "Resuming from \(plan.packets[startIndex].assignedNodeName)…"
+        withAnimation(.snappy(duration: 0.3)) {
+            resultsDrawerOpen = true
+        }
+        persistCoordinatorExecutionState()
+        Task {
+            await continueCoordinatorExecution()
+        }
     }
 
     @MainActor
@@ -2506,7 +2685,7 @@ struct ContentView: View {
             persistCoordinatorExecutionState()
         }
 
-        latestCoordinatorRun = CoordinatorRun(
+        let completedRun = CoordinatorRun(
             runID: pending.runID,
             planID: pending.plan.planID,
             mode: pending.mode,
@@ -2514,6 +2693,10 @@ struct ContentView: View {
             startedAt: pending.startedAt,
             finishedAt: Date()
         )
+        latestCoordinatorRun = completedRun
+        coordinatorRunHistory.append(CoordinatorRunHistoryEntry(run: completedRun, trace: coordinatorTrace))
+        selectedHistoryRunID = nil
+        lastCompletedExecution = pending
         pendingCoordinatorExecution = nil
         isExecutingCoordinator = false
         liveStatusMessage = ""
@@ -2566,6 +2749,8 @@ struct ContentView: View {
             )
         }
 
+        lastCompletedExecution = nil
+        selectedHistoryRunID = nil
         pendingCoordinatorExecution = PendingCoordinatorExecution(
             runID: "RUN-\(UUID().uuidString.prefix(8))",
             plan: plan,
