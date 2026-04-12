@@ -50,6 +50,9 @@ struct ContentView: View {
     @State private var liveStatusBannerPulse = false
     @State private var coordinatorTrace: [CoordinatorTraceStep] = []
     @State private var pendingCoordinatorExecution: PendingCoordinatorExecution?
+    @State private var lastCompletedExecution: PendingCoordinatorExecution?
+    @State private var coordinatorRunHistory: [CoordinatorRunHistoryEntry] = []
+    @State private var selectedHistoryRunID: String?
     @State private var humanDecisionAudit: [HumanDecisionAuditEvent] = []
     @State private var isShowingHumanInbox = false
     @State private var humanDecisionNote = ""
@@ -481,47 +484,37 @@ struct ContentView: View {
         }
     }
 
+    /// The trace steps to display — either the live/current trace, or a historical one.
+    private var displayedTrace: [CoordinatorTraceStep] {
+        if let selectedHistoryRunID,
+           let entry = coordinatorRunHistory.first(where: { $0.run.runID == selectedHistoryRunID }) {
+            return entry.trace
+        }
+        return coordinatorTrace
+    }
+
+    /// The run summary to display — either the latest or a historical one.
+    private var displayedRun: CoordinatorRun? {
+        if let selectedHistoryRunID,
+           let entry = coordinatorRunHistory.first(where: { $0.run.runID == selectedHistoryRunID }) {
+            return entry.run
+        }
+        return latestCoordinatorRun
+    }
+
+    /// Whether we are viewing a historical run (not the current/latest).
+    private var isViewingHistoricalRun: Bool {
+        selectedHistoryRunID != nil
+    }
+
     private var resultsDrawer: some View {
         VStack(spacing: 0) {
-            // Drag handle / header
-            Button {
-                withAnimation(.snappy(duration: 0.3)) {
-                    resultsDrawerOpen.toggle()
-                }
-            } label: {
+            // Header row with inline history picker
 #if targetEnvironment(macCatalyst)
-                HStack(spacing: 8) {
-                    Image(systemName: "text.line.last.and.arrowtriangle.forward")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(AppTheme.brandTint)
-
-                    Text("Run Trace")
-                        .font(.subheadline.weight(.semibold))
-
-                    if !coordinatorTrace.isEmpty {
-                        Text("\(coordinatorTrace.count)")
-                            .font(.caption2.weight(.bold))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(AppTheme.brandTint, in: Capsule())
-                    }
-
-                    Spacer()
-
-                    Image(systemName: "rectangle.bottomthird.inset.filled")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(AppTheme.brandTint)
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 10)
-#else
-                VStack(spacing: 6) {
-                    Capsule()
-                        .fill(Color(uiColor: .tertiaryLabel))
-                        .frame(width: 36, height: 5)
-                        .padding(.top, 8)
-
+            HStack(spacing: 8) {
+                Button {
+                    withAnimation(.snappy(duration: 0.3)) { resultsDrawerOpen.toggle() }
+                } label: {
                     HStack(spacing: 8) {
                         Image(systemName: "text.line.last.and.arrowtriangle.forward")
                             .font(.subheadline.weight(.semibold))
@@ -530,27 +523,85 @@ struct ContentView: View {
                         Text("Run Trace")
                             .font(.subheadline.weight(.semibold))
 
-                        if !coordinatorTrace.isEmpty {
-                            Text("\(coordinatorTrace.count)")
+                        if !displayedTrace.isEmpty {
+                            Text("\(displayedTrace.count)")
                                 .font(.caption2.weight(.bold))
                                 .foregroundStyle(.white)
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 2)
                                 .background(AppTheme.brandTint, in: Capsule())
                         }
+                    }
+                }
+                .buttonStyle(.plain)
 
-                        Spacer()
+                if coordinatorRunHistory.count > 1 {
+                    runHistoryPicker
+                }
 
+                Spacer()
+
+                Button {
+                    withAnimation(.snappy(duration: 0.3)) { resultsDrawerOpen.toggle() }
+                } label: {
+                    Image(systemName: "rectangle.bottomthird.inset.filled")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(AppTheme.brandTint)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+#else
+            VStack(spacing: 6) {
+                Capsule()
+                    .fill(Color(uiColor: .tertiaryLabel))
+                    .frame(width: 36, height: 5)
+                    .padding(.top, 8)
+
+                HStack(spacing: 8) {
+                    Button {
+                        withAnimation(.snappy(duration: 0.3)) { resultsDrawerOpen.toggle() }
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: "text.line.last.and.arrowtriangle.forward")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(AppTheme.brandTint)
+
+                            Text("Run Trace")
+                                .font(.subheadline.weight(.semibold))
+
+                            if !displayedTrace.isEmpty {
+                                Text("\(displayedTrace.count)")
+                                    .font(.caption2.weight(.bold))
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(AppTheme.brandTint, in: Capsule())
+                            }
+                        }
+                    }
+                    .buttonStyle(.plain)
+
+                    if coordinatorRunHistory.count > 1 {
+                        runHistoryPicker
+                    }
+
+                    Spacer()
+
+                    Button {
+                        withAnimation(.snappy(duration: 0.3)) { resultsDrawerOpen.toggle() }
+                    } label: {
                         Image(systemName: "rectangle.bottomthird.inset.filled")
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(AppTheme.brandTint)
                     }
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 6)
+                    .buttonStyle(.plain)
                 }
-#endif
+                .padding(.horizontal, 16)
+                .padding(.bottom, 6)
             }
-            .buttonStyle(.plain)
+#endif
 
             if resultsDrawerOpen {
                 Divider()
