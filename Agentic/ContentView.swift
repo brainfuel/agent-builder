@@ -1576,6 +1576,23 @@ struct ContentView: View {
                         )
                     }
                     .buttonStyle(.plain)
+                } else if splitViewVisibility == .detailOnly {
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            splitViewVisibility = .all
+                        }
+                    } label: {
+                        Image(systemName: "sidebar.leading")
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 38, height: 38)
+                            .background(
+                                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                    .fill(Color(uiColor: .tertiarySystemFill))
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .help("Show Task List")
                 }
 
                 VStack(alignment: .leading, spacing: 4) {
