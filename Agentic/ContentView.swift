@@ -947,20 +947,6 @@ struct ContentView: View {
                 }
 
                 Button {
-                    runOrContinueTask(for: document.key)
-                } label: {
-                    if isRunning {
-                        ProgressView()
-                            .controlSize(.small)
-                    } else {
-                        Image(systemName: taskRunButtonIcon(for: document))
-                    }
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(!canRun)
-                .accessibilityLabel(taskRunButtonLabel(for: document))
-
-                Button {
                     openHumanInbox(for: document.key)
                 } label: {
                     HumanInboxButtonLabel(pendingCount: inboxBadgeCount, showsTitle: false)
@@ -975,6 +961,20 @@ struct ContentView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .accessibilityLabel("Edit Task")
+
+                Button {
+                    runOrContinueTask(for: document.key)
+                } label: {
+                    if isRunning {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Image(systemName: taskRunButtonIcon(for: document))
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!canRun)
+                .accessibilityLabel(taskRunButtonLabel(for: document))
             }
         }
         .padding(16)
