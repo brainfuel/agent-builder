@@ -279,6 +279,12 @@ enum LiveProviderExecutionError: LocalizedError {
     }
 }
 
+struct LiveProviderExecutionResult {
+    let text: String
+    let inputTokens: Int
+    let outputTokens: Int
+}
+
 enum LiveProviderExecutionService {
     /// Shared status message for live UI updates during execution.
     @MainActor static var liveStatus: String = ""
@@ -291,7 +297,7 @@ enum LiveProviderExecutionService {
         apiKey: String,
         request: LiveProviderTaskRequest,
         preferredModelID: String?
-    ) async throws -> String {
+    ) async throws -> LiveProviderExecutionResult {
         let modelID = try await resolveModel(for: provider, apiKey: apiKey, preferredModelID: preferredModelID)
         let client = makeClient(for: provider, apiKey: apiKey)
         let systemPrompt = makeSystemPrompt(for: request)
@@ -435,7 +441,8 @@ enum LiveProviderExecutionService {
         UsageTracker.shared.record(provider: provider, modelID: modelID, inputTokens: totalInputTokens, outputTokens: totalOutputTokens)
         await MainActor.run { Self.liveStatus = "" }
 
-        return result.isEmpty ? "" : String(result.prefix(16000))
+        let finalText = result.isEmpty ? "" : String(result.prefix(16000))
+        return LiveProviderExecutionResult(text: finalText, inputTokens: totalInputTokens, outputTokens: totalOutputTokens)
     }
 
     /// Strips markdown code fences (```json ... ```) that LLMs often wrap JSON in.

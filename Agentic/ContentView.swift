@@ -53,6 +53,8 @@ struct ContentView: View {
     @State private var lastCompletedExecution: PendingCoordinatorExecution?
     @State private var coordinatorRunHistory: [CoordinatorRunHistoryEntry] = []
     @State private var selectedHistoryRunID: String?
+    @State private var runFromHereNodeID: UUID?
+    @State private var runFromHerePrompt = ""
     @State private var humanDecisionAudit: [HumanDecisionAuditEvent] = []
     @State private var isShowingHumanInbox = false
     @State private var humanDecisionNote = ""
@@ -440,6 +442,26 @@ struct ContentView: View {
             }
             .presentationDetents([.medium])
         }
+        .sheet(isPresented: Binding(
+            get: { runFromHereNodeID != nil },
+            set: { if !$0 { runFromHereNodeID = nil } }
+        )) {
+            if let nodeID = runFromHereNodeID {
+                RunFromHereSheet(
+                    nodeName: nodes.first(where: { $0.id == nodeID })?.name ?? "Node",
+                    prompt: $runFromHerePrompt,
+                    onRun: {
+                        let context = runFromHerePrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+                        runFromHereNodeID = nil
+                        runCoordinatorFromNode(nodeID, additionalContext: context.isEmpty ? nil : context)
+                    },
+                    onCancel: {
+                        runFromHereNodeID = nil
+                    }
+                )
+                .presentationDetents([.medium])
+            }
+        }
     }
 
     private var editorWorkspace: some View {
@@ -685,6 +707,91 @@ struct ContentView: View {
         return "Run at \(formatter.string(from: entry.run.finishedAt))"
     }
 
+    private func exportTraceResults() {
+        let trace = displayedTrace
+        let run = displayedRun
+        guard !trace.isEmpty else { return }
+
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateStyle = .medium
+        dateFormatter.timeStyle = .medium
+
+        var md = "# Run Trace Report\n\n"
+
+        // Header info
+        let goal = orchestrationGoal.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !goal.isEmpty {
+            md += "**Goal:** \(goal)\n\n"
+        }
+        if let run {
+            md += "**Run ID:** \(run.runID)\n"
+            md += "**Started:** \(dateFormatter.string(from: run.startedAt))\n"
+            md += "**Finished:** \(dateFormatter.string(from: run.finishedAt))\n"
+            let duration = run.finishedAt.timeIntervalSince(run.startedAt)
+            md += "**Duration:** \(String(format: "%.1fs", duration))\n"
+            md += "**Result:** \(run.succeededCount)/\(run.results.count) tasks succeeded\n\n"
+        }
+
+        md += "---\n\n"
+
+        // Each trace step
+        for (index, step) in trace.enumerated() {
+            let statusEmoji: String
+            switch step.status {
+            case .succeeded, .approved: statusEmoji = "\u{2705}"
+            case .failed, .blocked, .rejected, .needsInfo: statusEmoji = "\u{274C}"
+            case .running, .waitingHuman: statusEmoji = "\u{23F3}"
+            case .queued: statusEmoji = "\u{1F7E1}"
+            }
+
+            md += "## \(index + 1). \(step.assignedNodeName) \(statusEmoji)\n\n"
+            md += "**Objective:** \(step.objective)\n"
+            md += "**Status:** \(step.status.rawValue)\n"
+            if let duration = step.durationText {
+                md += "**Duration:** \(duration)\n"
+            }
+            if let input = step.inputTokens, let output = step.outputTokens, input + output > 0 {
+                md += "**Tokens:** \(input) in / \(output) out (\(input + output) total)\n"
+            }
+            if let confidence = step.confidence {
+                md += "**Confidence:** \(String(format: "%.0f%%", confidence * 100))\n"
+            }
+            md += "\n"
+            if let summary = step.summary, !summary.isEmpty {
+                md += "**Result:**\n\(summary)\n\n"
+            }
+            md += "---\n\n"
+        }
+
+        // Total token usage across all steps
+        let totalInput = trace.compactMap(\.inputTokens).reduce(0, +)
+        let totalOutput = trace.compactMap(\.outputTokens).reduce(0, +)
+        if totalInput + totalOutput > 0 {
+            md += "**Total Tokens:** \(totalInput) in / \(totalOutput) out (\(totalInput + totalOutput) total)\n\n"
+        }
+
+        md += "*Exported from Agentic on \(dateFormatter.string(from: Date()))*\n"
+
+        #if targetEnvironment(macCatalyst)
+        // Use share sheet via UIActivityViewController
+        let activityVC = UIActivityViewController(activityItems: [md], applicationActivities: nil)
+        if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+           let rootVC = windowScene.windows.first?.rootViewController {
+            // Find the topmost presented controller
+            var topVC = rootVC
+            while let presented = topVC.presentedViewController { topVC = presented }
+            activityVC.popoverPresentationController?.sourceView = topVC.view
+            activityVC.popoverPresentationController?.sourceRect = CGRect(
+                x: topVC.view.bounds.midX, y: topVC.view.bounds.midY, width: 0, height: 0
+            )
+            activityVC.popoverPresentationController?.permittedArrowDirections = []
+            topVC.present(activityVC, animated: true)
+        }
+        #else
+        UIPasteboard.general.string = md
+        #endif
+    }
+
     private var resultsDrawerContent: some View {
         ScrollViewReader { proxy in
             ScrollView {
@@ -700,16 +807,29 @@ struct ContentView: View {
                     }
 
                     if let run = displayedRun {
-                        Label(
-                            "\(isViewingHistoricalRun ? "Run" : "Last run"): \(run.succeededCount)/\(run.results.count) tasks succeeded.",
-                            systemImage: run.succeededCount == run.results.count
-                                ? "checkmark.circle.fill" : "exclamationmark.triangle.fill"
-                        )
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(
-                            run.succeededCount == run.results.count
-                                ? .green : .orange
-                        )
+                        HStack(spacing: 12) {
+                            Label(
+                                "\(isViewingHistoricalRun ? "Run" : "Last run"): \(run.succeededCount)/\(run.results.count) tasks succeeded.",
+                                systemImage: run.succeededCount == run.results.count
+                                    ? "checkmark.circle.fill" : "exclamationmark.triangle.fill"
+                            )
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(
+                                run.succeededCount == run.results.count
+                                    ? .green : .orange
+                            )
+
+                            let totalIn = displayedTrace.compactMap(\.inputTokens).reduce(0, +)
+                            let totalOut = displayedTrace.compactMap(\.outputTokens).reduce(0, +)
+                            if totalIn + totalOut > 0 {
+                                Label(
+                                    "\(CoordinatorTraceStep.formatTokens(totalIn + totalOut)) tokens",
+                                    systemImage: "circle.grid.3x3.fill"
+                                )
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            }
+                        }
                     }
 
                     // Resume / Human inbox — only for current run, not historical
@@ -759,6 +879,17 @@ struct ContentView: View {
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(.secondary)
                         Spacer()
+                        if !displayedTrace.isEmpty {
+                            Button {
+                                exportTraceResults()
+                            } label: {
+                                Image(systemName: "square.and.arrow.up")
+                                    .font(.caption)
+                            }
+                            .buttonStyle(.borderless)
+                            .accessibilityLabel("Export")
+                            .help("Export")
+                        }
                         if !isViewingHistoricalRun, !coordinatorTrace.isEmpty {
                             Button("Clear") {
                                 coordinatorTrace = []
@@ -2335,7 +2466,8 @@ struct ContentView: View {
                         let nodeExecState = executionState(for: selID)
                         if nodeExecState == .succeeded || nodeExecState == .failed {
                             Button {
-                                runCoordinatorFromNode(selID)
+                                runFromHerePrompt = ""
+                                runFromHereNodeID = selID
                             } label: {
                                 HStack(spacing: 5) {
                                     Image(systemName: "play.fill")
@@ -2488,7 +2620,8 @@ struct ContentView: View {
                 outputSchema: node.outputSchema,
                 outputSchemaDescription: node.outputSchemaDescription,
                 securityAccess: Set(node.securityAccess.map(\.rawValue)),
-                assignedTools: node.assignedTools
+                assignedTools: node.assignedTools,
+                positionX: node.position.x
             )
         }
         let validNodeIDs = Set(graphNodes.map(\.id))
@@ -2506,7 +2639,7 @@ struct ContentView: View {
 
     /// Re-runs the pipeline starting from a specific node, reusing cached
     /// outputs from all upstream nodes that already succeeded.
-    private func runCoordinatorFromNode(_ nodeID: UUID) {
+    private func runCoordinatorFromNode(_ nodeID: UUID, additionalContext: String? = nil) {
         guard !isExecutingCoordinator else { return }
         guard let previousPending = pendingCoordinatorExecution ?? lastCompletedExecution else { return }
 
@@ -2556,7 +2689,9 @@ struct ContentView: View {
             outputsByNodeID: cachedOutputs,
             startedAt: Date(),
             awaitingHumanPacketID: nil,
-            retryFeedback: nil
+            retryFeedback: nil,
+            runFromHereContext: additionalContext,
+            runFromHereStartNodeID: additionalContext != nil ? nodeID : nil
         )
         isExecutingCoordinator = true
         liveStatusMessage = "Resuming from \(plan.packets[startIndex].assignedNodeName)…"
@@ -2646,10 +2781,18 @@ struct ContentView: View {
                 }
             }
 
+            // Inject additional user context for the "Run from here" target node
+            var effectiveGoal = pending.plan.goal
+            if let context = pending.runFromHereContext,
+               !context.isEmpty,
+               packet.assignedNodeID == pending.runFromHereStartNodeID {
+                effectiveGoal += "\n\nADDITIONAL CONTEXT FROM USER: \(context)"
+            }
+
             let response = await executeLiveProviderPacket(
                 packet,
                 handoffSummaries: handoffValidation.handoffSummaries,
-                goal: pending.plan.goal
+                goal: effectiveGoal
             )
             statusTask.cancel()
 
@@ -2663,7 +2806,9 @@ struct ContentView: View {
                 summary: response.summary,
                 confidence: response.confidence,
                 completed: completed,
-                finishedAt: finishedAtStep
+                finishedAt: finishedAtStep,
+                inputTokens: response.inputTokens,
+                outputTokens: response.outputTokens
             )
             pending.results.append(result)
             if completed {
@@ -2679,7 +2824,9 @@ struct ContentView: View {
                 status: completed ? .succeeded : .failed,
                 summary: response.summary,
                 confidence: response.confidence,
-                finishedAt: finishedAtStep
+                finishedAt: finishedAtStep,
+                inputTokens: response.inputTokens,
+                outputTokens: response.outputTokens
             )
             pendingCoordinatorExecution = pending
             persistCoordinatorExecutionState()
@@ -2978,13 +3125,15 @@ struct ContentView: View {
                 request: request,
                 preferredModelID: preferredModel
             )
-            let normalized = output.trimmingCharacters(in: .whitespacesAndNewlines)
+            let normalized = output.text.trimmingCharacters(in: .whitespacesAndNewlines)
             let needsHumanReview = normalized.contains("HUMAN_REVIEW_REQUESTED")
             let completed = !normalized.lowercased().hasPrefix("blocked") && !needsHumanReview
             return MCPTaskResponse(
                 summary: normalized,
                 confidence: completed ? 0.9 : (needsHumanReview ? 0.7 : 0.4),
-                completed: completed
+                completed: completed,
+                inputTokens: output.inputTokens,
+                outputTokens: output.outputTokens
             )
         } catch {
             return MCPTaskResponse(
@@ -3145,7 +3294,9 @@ struct ContentView: View {
         summary: String? = nil,
         confidence: Double? = nil,
         startedAt: Date? = nil,
-        finishedAt: Date? = nil
+        finishedAt: Date? = nil,
+        inputTokens: Int? = nil,
+        outputTokens: Int? = nil
     ) {
         guard let index = coordinatorTrace.firstIndex(where: { $0.packetID == packetID }) else { return }
         coordinatorTrace[index].status = status
@@ -3160,6 +3311,12 @@ struct ContentView: View {
         }
         if let finishedAt {
             coordinatorTrace[index].finishedAt = finishedAt
+        }
+        if let inputTokens {
+            coordinatorTrace[index].inputTokens = inputTokens
+        }
+        if let outputTokens {
+            coordinatorTrace[index].outputTokens = outputTokens
         }
     }
 
@@ -6270,6 +6427,73 @@ private struct TraceResolutionRecommendation {
     let action: TraceResolutionAction
 }
 
+private struct RunFromHereSheet: View {
+    let nodeName: String
+    @Binding var prompt: String
+    let onRun: () -> Void
+    let onCancel: () -> Void
+    @FocusState private var isPromptFocused: Bool
+
+    var body: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack(spacing: 10) {
+                    Image(systemName: "play.fill")
+                        .font(.title3)
+                        .foregroundStyle(.green)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Run from \(nodeName)")
+                            .font(.headline)
+                        Text("Re-run the pipeline starting at this node.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Additional context (optional)")
+                        .font(.subheadline.weight(.medium))
+                    Text("Provide extra instructions or information to help the AI succeed — e.g. correct data, clarifications, or constraints.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    TextEditor(text: $prompt)
+                        .font(.body)
+                        .frame(minHeight: 140, maxHeight: .infinity)
+                        .padding(8)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(Color(uiColor: .secondarySystemBackground))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .stroke(Color(uiColor: .separator), lineWidth: 0.5)
+                        )
+                        .focused($isPromptFocused)
+                }
+                .frame(maxHeight: .infinity, alignment: .top)
+
+                HStack(spacing: 12) {
+                    Spacer()
+                    Button("Cancel") { onCancel() }
+                        .buttonStyle(.bordered)
+                    Button {
+                        onRun()
+                    } label: {
+                        Label("Run", systemImage: "play.fill")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.green)
+                }
+            }
+            .padding(20)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .navigationBarTitleDisplayMode(.inline)
+        }
+        .onAppear { isPromptFocused = true }
+    }
+}
+
 private struct CoordinatorTraceRow: View {
     let stepNumber: Int
     let step: CoordinatorTraceStep
@@ -6305,6 +6529,16 @@ private struct CoordinatorTraceRow: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Copy trace section")
+
+                if let tokenText = step.tokenText {
+                    HStack(spacing: 2) {
+                        Image(systemName: "circle.grid.3x3.fill")
+                            .font(.system(size: 7))
+                        Text(tokenText)
+                            .font(.caption2)
+                    }
+                    .foregroundStyle(.secondary)
+                }
 
                 if let durationText = step.durationText {
                     Text(durationText)
@@ -8787,6 +9021,8 @@ private struct CoordinatorTraceStep: Identifiable, Codable {
     var confidence: Double?
     var startedAt: Date?
     var finishedAt: Date?
+    var inputTokens: Int?
+    var outputTokens: Int?
 
     var durationText: String? {
         guard let startedAt else { return nil }
@@ -8796,6 +9032,24 @@ private struct CoordinatorTraceStep: Identifiable, Codable {
             return String(format: "%.0fms", duration * 1000)
         }
         return String(format: "%.2fs", duration)
+    }
+
+    var tokenText: String? {
+        guard let input = inputTokens, let output = outputTokens, input + output > 0 else { return nil }
+        return "\(Self.formatTokenCount(input + output)) tok"
+    }
+
+    static func formatTokens(_ count: Int) -> String {
+        formatTokenCount(count)
+    }
+
+    private static func formatTokenCount(_ count: Int) -> String {
+        if count >= 1_000_000 {
+            return String(format: "%.1fM", Double(count) / 1_000_000)
+        } else if count >= 1_000 {
+            return String(format: "%.1fK", Double(count) / 1_000)
+        }
+        return "\(count)"
     }
 }
 
@@ -8811,6 +9065,7 @@ private struct OrchestrationNode: Identifiable, Codable {
     let outputSchemaDescription: String
     let securityAccess: Set<String>
     let assignedTools: Set<String>
+    var positionX: CGFloat?
 }
 
 private struct OrchestrationEdge: Codable {
@@ -8848,6 +9103,8 @@ private struct PendingCoordinatorExecution: Codable {
     let startedAt: Date
     var awaitingHumanPacketID: String?
     var retryFeedback: String?
+    var runFromHereContext: String?
+    var runFromHereStartNodeID: UUID?
 }
 
 private enum HumanTaskDecision: String, Codable {
@@ -8929,6 +9186,8 @@ private struct MCPTaskResponse: Codable {
     let summary: String
     let confidence: Double
     let completed: Bool
+    var inputTokens: Int?
+    var outputTokens: Int?
 }
 
 private struct CoordinatorTaskResult: Identifiable, Codable {
@@ -8939,6 +9198,8 @@ private struct CoordinatorTaskResult: Identifiable, Codable {
     let confidence: Double
     let completed: Bool
     let finishedAt: Date
+    var inputTokens: Int?
+    var outputTokens: Int?
 }
 
 private struct CoordinatorRun: Codable, Identifiable {
@@ -9072,6 +9333,12 @@ private struct CoordinatorOrchestrator {
             if lhs == coordinatorID { return true }
             if rhs == coordinatorID { return false }
 
+            // Sort by X position (left-to-right) when available
+            let leftX = nodeByID[lhs]?.positionX ?? .greatestFiniteMagnitude
+            let rightX = nodeByID[rhs]?.positionX ?? .greatestFiniteMagnitude
+            if leftX != rightX { return leftX < rightX }
+
+            // Fallback to name-based ordering
             let left = nodeByID[lhs]?.name ?? lhs.uuidString
             let right = nodeByID[rhs]?.name ?? rhs.uuidString
             if left == right { return lhs.uuidString < rhs.uuidString }
