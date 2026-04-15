@@ -91,6 +91,11 @@ struct ContentView: View {
     @State private var templateSavedName: String?
     @State private var isShowingWipeDataConfirmation = false
     @State private var isShowingDeleteTaskConfirmation = false
+    private enum TraceDisplayMode: String, CaseIterable {
+        case trace = "Trace"
+        case rawAPI = "Raw API"
+    }
+    @State private var traceDisplayMode: TraceDisplayMode = .trace
     @State private var resultsDrawerOpen = false
     @State private var scrollToTraceID: String?
     @State private var splitViewVisibility: NavigationSplitViewVisibility = .all
@@ -574,6 +579,16 @@ struct ContentView: View {
                     runHistoryPicker
                 }
 
+                if resultsDrawerOpen, !displayedTrace.isEmpty {
+                    Picker("Display", selection: $traceDisplayMode) {
+                        ForEach(TraceDisplayMode.allCases, id: \.self) { mode in
+                            Text(mode.rawValue).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 160)
+                }
+
                 Spacer()
 
                 Button {
@@ -889,9 +904,9 @@ struct ContentView: View {
                         }
                     }
 
-                    // Trace list
+                    // Trace list header
                     HStack {
-                        Text("Trace")
+                        Text(traceDisplayMode == .trace ? "Trace" : "Raw API")
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(.secondary)
                         Spacer()
@@ -930,7 +945,7 @@ struct ContentView: View {
                         }
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 16)
-                    } else {
+                    } else if traceDisplayMode == .trace {
                         LazyVStack(spacing: 8) {
                             ForEach(Array(traceToShow.enumerated()), id: \.element.id) { index, step in
                                 let resolution = isViewingHistoricalRun ? nil : traceResolution(for: step)
@@ -952,6 +967,12 @@ struct ContentView: View {
                                         .stroke(AppTheme.brandTint, lineWidth: isHighlighted ? 2 : 0)
                                 )
                                 .animation(.easeInOut(duration: 0.3), value: isHighlighted)
+                            }
+                        }
+                    } else {
+                        LazyVStack(spacing: 8) {
+                            ForEach(Array(traceToShow.enumerated()), id: \.element.id) { index, step in
+                                RawAPITraceRow(stepNumber: index + 1, step: step)
                             }
                         }
                     }
@@ -1938,19 +1959,31 @@ struct ContentView: View {
                 .catalystTooltip("Delete Task")
 
 
-                Button {
-                    runCoordinatorPipeline()
-                } label: {
-                    if isExecutingCoordinator {
-                        ProgressView()
-                            .controlSize(.small)
-                            .frame(height: headerControlHeight)
-                            .padding(.horizontal, 16)
-                            .background(
-                                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                    .fill(AppTheme.brandTint.opacity(0.15))
-                            )
-                    } else {
+                if isExecutingCoordinator {
+                    Button {
+                        stopCoordinatorExecution()
+                    } label: {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                .fill(Color.red)
+                                .frame(width: 16, height: 16)
+                            ProgressView()
+                                .controlSize(.small)
+                                .tint(.white)
+                        }
+                        .frame(height: headerControlHeight)
+                        .padding(.horizontal, 16)
+                        .background(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .fill(Color.red.opacity(0.15))
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .catalystTooltip("Stop Execution")
+                } else {
+                    Button {
+                        runCoordinatorPipeline()
+                    } label: {
                         headerControlLabel(
                             title: "Run",
                             systemImage: "play.fill",
@@ -1959,10 +1992,10 @@ struct ContentView: View {
                             enabled: canRunCoordinator
                         )
                     }
+                    .buttonStyle(.plain)
+                    .disabled(!canRunCoordinator)
+                    .catalystTooltip("Run Task")
                 }
-                .buttonStyle(.plain)
-                .disabled(!canRunCoordinator)
-                .catalystTooltip("Run Task")
 
                 
             }
