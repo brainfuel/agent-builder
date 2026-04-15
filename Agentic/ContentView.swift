@@ -57,6 +57,7 @@ struct ContentView: View {
     @State private var latestCoordinatorPlan: CoordinatorPlan?
     @State private var latestCoordinatorRun: CoordinatorRun?
     @State private var isExecutingCoordinator = false
+    @State private var executionTask: Task<Void, Never>?
     @State private var liveStatusMessage = ""
     @State private var liveStatusBannerPulse = false
     @State private var coordinatorTrace: [CoordinatorTraceStep] = []
@@ -856,7 +857,7 @@ struct ContentView: View {
                         {
                             Button("Resume Pending Run") {
                                 isExecutingCoordinator = true
-                                Task { await continueCoordinatorExecution() }
+                                executionTask = Task { await continueCoordinatorExecution() }
                             }
                             .buttonStyle(.borderedProminent)
                             .controlSize(.small)
@@ -2653,6 +2654,11 @@ struct ContentView: View {
         runCoordinatorPipelineWithFeedback(nil)
     }
 
+    private func stopCoordinatorExecution() {
+        executionTask?.cancel()
+        executionTask = nil
+    }
+
     /// Re-runs the pipeline starting from a specific node, reusing cached
     /// outputs from all upstream nodes that already succeeded.
     private func runCoordinatorFromNode(_ nodeID: UUID, additionalContext: String? = nil) {
@@ -2715,7 +2721,7 @@ struct ContentView: View {
             resultsDrawerOpen = true
         }
         persistCoordinatorExecutionState()
-        Task {
+        executionTask = Task {
             await continueCoordinatorExecution()
         }
     }
@@ -2931,7 +2937,7 @@ struct ContentView: View {
             resultsDrawerOpen = true
         }
         persistCoordinatorExecutionState()
-        Task {
+        executionTask = Task {
             await continueCoordinatorExecution()
         }
     }
@@ -3013,7 +3019,7 @@ struct ContentView: View {
             pendingCoordinatorExecution = pending
             isExecutingCoordinator = true
             persistCoordinatorExecutionState()
-            Task {
+            executionTask = Task {
                 await continueCoordinatorExecution()
             }
         case .reject, .needsInfo:
@@ -3149,7 +3155,11 @@ struct ContentView: View {
                 confidence: completed ? 0.9 : (needsHumanReview ? 0.7 : 0.4),
                 completed: completed,
                 inputTokens: output.inputTokens,
-                outputTokens: output.outputTokens
+                outputTokens: output.outputTokens,
+                modelID: output.modelID,
+                systemPrompt: output.systemPrompt,
+                userPrompt: output.userPrompt,
+                rawResponse: output.rawResponse
             )
         } catch {
             return MCPTaskResponse(
@@ -3333,6 +3343,18 @@ struct ContentView: View {
         }
         if let outputTokens {
             coordinatorTrace[index].outputTokens = outputTokens
+        }
+        if let modelID {
+            coordinatorTrace[index].modelID = modelID
+        }
+        if let systemPrompt {
+            coordinatorTrace[index].systemPrompt = systemPrompt
+        }
+        if let userPrompt {
+            coordinatorTrace[index].userPrompt = userPrompt
+        }
+        if let rawResponse {
+            coordinatorTrace[index].rawResponse = rawResponse
         }
     }
 
@@ -5261,7 +5283,7 @@ struct ContentView: View {
                 return
             }
             isExecutingCoordinator = true
-            Task {
+            executionTask = Task {
                 await continueCoordinatorExecution()
             }
             return
@@ -6633,6 +6655,7 @@ private struct CoordinatorTraceRow: View {
                     }
                 }
             }
+
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
@@ -9039,6 +9062,10 @@ private struct CoordinatorTraceStep: Identifiable, Codable {
     var finishedAt: Date?
     var inputTokens: Int?
     var outputTokens: Int?
+    var modelID: String?
+    var systemPrompt: String?
+    var userPrompt: String?
+    var rawResponse: String?
 
     var durationText: String? {
         guard let startedAt else { return nil }
@@ -9204,6 +9231,10 @@ private struct MCPTaskResponse: Codable {
     let completed: Bool
     var inputTokens: Int?
     var outputTokens: Int?
+    var modelID: String?
+    var systemPrompt: String?
+    var userPrompt: String?
+    var rawResponse: String?
 }
 
 private struct CoordinatorTaskResult: Identifiable, Codable {
