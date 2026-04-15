@@ -283,6 +283,10 @@ struct LiveProviderExecutionResult {
     let text: String
     let inputTokens: Int
     let outputTokens: Int
+    let modelID: String
+    let systemPrompt: String
+    let userPrompt: String
+    let rawResponse: String
 }
 
 enum LiveProviderExecutionService {
@@ -313,6 +317,7 @@ enum LiveProviderExecutionService {
         ]
 
         var finalOutput = ""
+        var rawLLMOutput = ""
         var totalInputTokens = 0
         var totalOutputTokens = 0
 
@@ -352,6 +357,15 @@ enum LiveProviderExecutionService {
 
             totalInputTokens += chunkInputTokens
             totalOutputTokens += chunkOutputTokens
+
+            // Capture raw LLM output for debugging
+            if !combinedText.isEmpty {
+                if rawLLMOutput.isEmpty {
+                    rawLLMOutput = combinedText
+                } else {
+                    rawLLMOutput += "\n---\n" + combinedText
+                }
+            }
 
             let normalized = combinedText.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !normalized.isEmpty || sawText else {
@@ -442,7 +456,15 @@ enum LiveProviderExecutionService {
         await MainActor.run { Self.liveStatus = "" }
 
         let finalText = result.isEmpty ? "" : String(result.prefix(16000))
-        return LiveProviderExecutionResult(text: finalText, inputTokens: totalInputTokens, outputTokens: totalOutputTokens)
+        return LiveProviderExecutionResult(
+            text: finalText,
+            inputTokens: totalInputTokens,
+            outputTokens: totalOutputTokens,
+            modelID: modelID,
+            systemPrompt: systemPrompt,
+            userPrompt: userPrompt,
+            rawResponse: rawLLMOutput
+        )
     }
 
     /// Strips markdown code fences (```json ... ```) that LLMs often wrap JSON in.
