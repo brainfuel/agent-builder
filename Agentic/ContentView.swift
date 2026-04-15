@@ -639,6 +639,16 @@ struct ContentView: View {
                         runHistoryPicker
                     }
 
+                    if resultsDrawerOpen, !displayedTrace.isEmpty {
+                        Picker("Display", selection: $traceDisplayMode) {
+                            ForEach(TraceDisplayMode.allCases, id: \.self) { mode in
+                                Text(mode.rawValue).tag(mode)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .frame(width: 160)
+                    }
+
                     Spacer()
 
                     Button {
@@ -787,9 +797,21 @@ struct ContentView: View {
             if let confidence = step.confidence {
                 md += "**Confidence:** \(String(format: "%.0f%%", confidence * 100))\n"
             }
+            if let modelID = step.modelID {
+                md += "**Model:** \(modelID)\n"
+            }
             md += "\n"
             if let summary = step.summary, !summary.isEmpty {
                 md += "**Result:**\n\(summary)\n\n"
+            }
+            if let systemPrompt = step.systemPrompt, !systemPrompt.isEmpty {
+                md += "<details><summary>System Prompt</summary>\n\n```\n\(systemPrompt)\n```\n</details>\n\n"
+            }
+            if let userPrompt = step.userPrompt, !userPrompt.isEmpty {
+                md += "<details><summary>User Prompt</summary>\n\n```\n\(userPrompt)\n```\n</details>\n\n"
+            }
+            if let rawResponse = step.rawResponse, !rawResponse.isEmpty {
+                md += "<details><summary>Raw Response</summary>\n\n```\n\(rawResponse)\n```\n</details>\n\n"
             }
             md += "---\n\n"
         }
@@ -2764,6 +2786,15 @@ struct ContentView: View {
         guard var pending = pendingCoordinatorExecution else { return }
 
         while pending.nextPacketIndex < pending.plan.packets.count {
+            // Check for cancellation (stop button)
+            if Task.isCancelled {
+                liveStatusMessage = ""
+                isExecutingCoordinator = false
+                pendingCoordinatorExecution = pending
+                persistCoordinatorExecutionState()
+                return
+            }
+
             let packet = pending.plan.packets[pending.nextPacketIndex]
             let startedAtStep = Date()
             let nodeIndex = pending.nextPacketIndex + 1
@@ -2851,6 +2882,16 @@ struct ContentView: View {
             )
             statusTask.cancel()
 
+            // Check for cancellation after LLM call
+            if Task.isCancelled {
+                updateTraceStep(packetID: packet.id, status: .failed, summary: "Stopped by user.", finishedAt: Date())
+                liveStatusMessage = ""
+                isExecutingCoordinator = false
+                pendingCoordinatorExecution = pending
+                persistCoordinatorExecutionState()
+                return
+            }
+
             let finishedAtStep = Date()
             let completed = response.completed
             liveStatusMessage = "\(statusPrefix) — \(completed ? "done ✓" : "failed ✗")"
@@ -2881,7 +2922,11 @@ struct ContentView: View {
                 confidence: response.confidence,
                 finishedAt: finishedAtStep,
                 inputTokens: response.inputTokens,
-                outputTokens: response.outputTokens
+                outputTokens: response.outputTokens,
+                modelID: response.modelID,
+                systemPrompt: response.systemPrompt,
+                userPrompt: response.userPrompt,
+                rawResponse: response.rawResponse
             )
             pendingCoordinatorExecution = pending
             persistCoordinatorExecutionState()
@@ -3355,7 +3400,11 @@ struct ContentView: View {
         startedAt: Date? = nil,
         finishedAt: Date? = nil,
         inputTokens: Int? = nil,
-        outputTokens: Int? = nil
+        outputTokens: Int? = nil,
+        modelID: String? = nil,
+        systemPrompt: String? = nil,
+        userPrompt: String? = nil,
+        rawResponse: String? = nil
     ) {
         guard let index = coordinatorTrace.firstIndex(where: { $0.packetID == packetID }) else { return }
         coordinatorTrace[index].status = status
@@ -6736,6 +6785,99 @@ private struct CoordinatorTraceRow: View {
             sections.append(summary)
         }
         return sections.joined(separator: "\n\n")
+    }
+}
+
+// MARK: - Raw API Trace Row
+
+private struct RawAPITraceRow: View {
+    let stepNumber: Int
+    let step: CoordinatorTraceStep
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text("\(stepNumber). \(step.assignedNodeName)")
+                    .font(.footnote.weight(.semibold))
+                    .lineLimit(1)
+
+                Spacer()
+
+                if let modelID = step.modelID {
+                    Text(modelID)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+
+                if let input = step.inputTokens, let output = step.outputTokens, input + output > 0 {
+                    Text("\(CoordinatorTraceStep.formatTokens(input + output)) tokens")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if let systemPrompt = step.systemPrompt, !systemPrompt.isEmpty {
+                apiDetailBlock(title: "System Prompt", content: systemPrompt)
+            }
+            if let userPrompt = step.userPrompt, !userPrompt.isEmpty {
+                apiDetailBlock(title: "User Prompt", content: userPrompt)
+            }
+            if let rawResponse = step.rawResponse, !rawResponse.isEmpty {
+                apiDetailBlock(title: "Raw Response", content: rawResponse)
+            }
+
+            if step.systemPrompt == nil, step.userPrompt == nil, step.rawResponse == nil {
+                Text("No API data recorded for this step.")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 8)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color(uiColor: .systemBackground))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(Color.black.opacity(0.06), lineWidth: 1)
+        )
+    }
+
+    private func apiDetailBlock(title: String, content: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(title)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button {
+                    copyMarkdownToClipboard(content)
+                } label: {
+                    Image(systemName: "doc.on.doc")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.tertiary)
+                }
+                .buttonStyle(.plain)
+            }
+            Text(content)
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(.primary.opacity(0.8))
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(maxHeight: 150)
+                .padding(6)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(Color(uiColor: .secondarySystemBackground))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .stroke(Color(uiColor: .separator).opacity(0.3), lineWidth: 0.5)
+                )
+        }
     }
 }
 
