@@ -21,6 +21,7 @@ private extension View {
 }
 
 struct ContentView: View {
+    private static let appDisplayName = "Agent Builder"
     private static let defaultStructureStrategy = "Design a structure that best answers the task question, compares candidate outputs when useful, and returns one clear final response."
     private let cardSize = CGSize(width: 264, height: 88)
     private let minimumCanvasSize = CGSize(width: 1900, height: 1200)
@@ -80,8 +81,10 @@ struct ContentView: View {
     @State private var newTaskContext = ""
     @State private var newTaskStructureStrategy = ""
     @State private var newTaskCreationOption: DraftCreationOption = .simpleTask
-    @State private var isShowingTaskResults = false
-    @State private var taskResultsDocumentKey: String?
+    private struct TaskResultsTarget: Identifiable, Equatable {
+        let id: String
+    }
+    @State private var taskResultsTarget: TaskResultsTarget?
     @State private var sidebarTab: SidebarTab = .tasks
     @State private var inspectorPanelTab: InspectorPanelTab = .nodeDetails
     @State private var isInspectorPanelVisible = true
@@ -350,6 +353,7 @@ struct ContentView: View {
         .animation(.snappy(duration: 0.28, extraBounce: 0.02), value: isShowingTaskList)
         .onAppear {
             modelContext.undoManager = undoManager
+            configureWindowTitleIfNeeded()
             ensureAnyGraphDocument()
             if currentGraphKey == nil {
                 currentGraphKey = taskDocuments.first?.key
@@ -407,17 +411,16 @@ struct ContentView: View {
             )
             .presentationDetents([.medium, .large])
         }
-        .sheet(isPresented: $isShowingTaskResults) {
+        .sheet(item: $taskResultsTarget) { target in
             TaskResultsPanel(
-                document: taskDocuments.first(where: { $0.key == taskResultsDocumentKey }),
+                document: taskDocuments.first(where: { $0.key == target.id }),
                 onClose: {
-                    isShowingTaskResults = false
-                    taskResultsDocumentKey = nil
+                    taskResultsTarget = nil
                 },
                 onRetryWithFeedback: isExecutingCoordinator
                     ? nil
                     : { feedback in
-                        isShowingTaskResults = false
+                        taskResultsTarget = nil
                         retryPipelineWithFeedback(feedback, from: nil)
                     }
             )
@@ -479,6 +482,17 @@ struct ContentView: View {
                 .presentationDetents([.medium])
             }
         }
+    }
+
+    private func configureWindowTitleIfNeeded() {
+#if targetEnvironment(macCatalyst)
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .forEach { scene in
+                scene.title = Self.appDisplayName
+                scene.titlebar?.titleVisibility = .hidden
+            }
+#endif
     }
 
     private var editorWorkspace: some View {
@@ -748,6 +762,15 @@ struct ContentView: View {
         return "Run at \(formatter.string(from: entry.run.finishedAt))"
     }
 
+    private func exportCurrentResults() {
+        switch traceDisplayMode {
+        case .trace:
+            exportTraceResults()
+        case .rawAPI:
+            exportRawAPIResults()
+        }
+    }
+
     private func exportTraceResults() {
         let trace = displayedTrace
         let run = displayedRun
@@ -823,14 +846,65 @@ struct ContentView: View {
             md += "**Total Tokens:** \(totalInput) in / \(totalOutput) out (\(totalInput + totalOutput) total)\n\n"
         }
 
-        md += "*Exported from Agentic on \(dateFormatter.string(from: Date()))*\n"
+        md += "*Exported from \(Self.appDisplayName) on \(dateFormatter.string(from: Date()))*\n"
 
+        presentExportText(md)
+    }
+
+    private func exportRawAPIResults() {
+        let trace = displayedTrace
+        let run = displayedRun
+        guard !trace.isEmpty else { return }
+
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateStyle = .medium
+        dateFormatter.timeStyle = .medium
+
+        var md = "# Raw API Report\n\n"
+
+        let goal = orchestrationGoal.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !goal.isEmpty {
+            md += "**Goal:** \(goal)\n\n"
+        }
+        if let run {
+            md += "**Run ID:** \(run.runID)\n"
+            md += "**Started:** \(dateFormatter.string(from: run.startedAt))\n"
+            md += "**Finished:** \(dateFormatter.string(from: run.finishedAt))\n\n"
+        }
+
+        md += "---\n\n"
+
+        for (index, step) in trace.enumerated() {
+            md += "## \(index + 1). \(step.assignedNodeName)\n\n"
+            if let modelID = step.modelID {
+                md += "**Model:** \(modelID)\n"
+            }
+            if let input = step.inputTokens, let output = step.outputTokens, input + output > 0 {
+                md += "**Tokens:** \(input) in / \(output) out (\(input + output) total)\n"
+            }
+            md += "\n"
+
+            if let systemPrompt = step.systemPrompt, !systemPrompt.isEmpty {
+                md += "### System Prompt\n\n```\n\(systemPrompt)\n```\n\n"
+            }
+            if let userPrompt = step.userPrompt, !userPrompt.isEmpty {
+                md += "### User Prompt\n\n```\n\(userPrompt)\n```\n\n"
+            }
+            if let rawResponse = step.rawResponse, !rawResponse.isEmpty {
+                md += "### Raw Response\n\n```\n\(rawResponse)\n```\n\n"
+            }
+            md += "---\n\n"
+        }
+
+        md += "*Exported from \(Self.appDisplayName) on \(dateFormatter.string(from: Date()))*\n"
+        presentExportText(md)
+    }
+
+    private func presentExportText(_ text: String) {
         #if targetEnvironment(macCatalyst)
-        // Use share sheet via UIActivityViewController
-        let activityVC = UIActivityViewController(activityItems: [md], applicationActivities: nil)
+        let activityVC = UIActivityViewController(activityItems: [text], applicationActivities: nil)
         if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
            let rootVC = windowScene.windows.first?.rootViewController {
-            // Find the topmost presented controller
             var topVC = rootVC
             while let presented = topVC.presentedViewController { topVC = presented }
             activityVC.popoverPresentationController?.sourceView = topVC.view
@@ -841,7 +915,7 @@ struct ContentView: View {
             topVC.present(activityVC, animated: true)
         }
         #else
-        UIPasteboard.general.string = md
+        UIPasteboard.general.string = text
         #endif
     }
 
@@ -934,14 +1008,14 @@ struct ContentView: View {
                         Spacer()
                         if !displayedTrace.isEmpty {
                             Button {
-                                exportTraceResults()
+                                exportCurrentResults()
                             } label: {
                                 Image(systemName: "square.and.arrow.up")
                                     .font(.caption)
                             }
                             .buttonStyle(.borderless)
-                            .accessibilityLabel("Export")
-                            .catalystTooltip("Export Run Trace")
+                            .accessibilityLabel(traceDisplayMode == .trace ? "Export Trace" : "Export Raw API")
+                            .catalystTooltip(traceDisplayMode == .trace ? "Export Trace" : "Export Raw API")
                         }
                         if !isViewingHistoricalRun, !coordinatorTrace.isEmpty {
                             Button("Clear") {
@@ -1100,22 +1174,8 @@ struct ContentView: View {
                 sidebarSettingsContent
             }
         }
-        .navigationTitle(usesTaskSplitView ? "Agentic" : "")
+        .navigationTitle(usesTaskSplitView ? Self.appDisplayName : "")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            if usesTaskSplitView {
-                ToolbarItemGroup(placement: .topBarTrailing) {
-                    Button {
-                        isShowingSettingsPlaceholderSheet = true
-                    } label: {
-                        Label("Settings", systemImage: "gearshape")
-                    }
-                    .labelStyle(.iconOnly)
-                    .accessibilityLabel("Settings")
-                    .help("Settings")
-                }
-            }
-        }
     }
 
     private var sidebarTasksContent: some View {
@@ -2422,6 +2482,7 @@ struct ContentView: View {
 
     private var chartCanvas: some View {
         let canvasSize = canvasContentSize
+        let selectedNodeControlOffset: CGFloat = 19
         let visibleIDs = Set(visibleNodes.map(\.id))
         let orphanIDs = orphanNodeIDsInCurrentGraph
         let visibleLinks = links.filter { link in
@@ -2522,7 +2583,7 @@ struct ContentView: View {
                         }
                         .position(
                             x: selectedNode.position.x,
-                            y: selectedNode.position.y + (cardSize.height / 2) + 18
+                            y: selectedNode.position.y + (cardSize.height / 2) + selectedNodeControlOffset
                         )
                     }
 
@@ -2557,7 +2618,7 @@ struct ContentView: View {
                             .buttonStyle(.plain)
                             .position(
                                 x: selNode.position.x,
-                                y: selNode.position.y - (cardSize.height / 2) - 18
+                                y: selNode.position.y - (cardSize.height / 2) - selectedNodeControlOffset
                             )
                         }
                     }
@@ -5344,8 +5405,7 @@ struct ContentView: View {
     }
 
     private func openTaskResults(for key: String) {
-        taskResultsDocumentKey = key
-        isShowingTaskResults = true
+        taskResultsTarget = TaskResultsTarget(id: key)
     }
 
     private func runOrContinueTask(for key: String) {
@@ -5476,8 +5536,7 @@ struct ContentView: View {
         humanDecisionAudit = []
         humanDecisionNote = ""
         isShowingHumanInbox = false
-        isShowingTaskResults = false
-        taskResultsDocumentKey = nil
+        taskResultsTarget = nil
         isExecutingCoordinator = false
         orchestrationStrategy = ContentView.defaultStructureStrategy
         synthesisContext = ""
@@ -5596,7 +5655,7 @@ struct ContentView: View {
             ?? "none"
 
         var lines: [String] = [
-            "Agentic Debug Context",
+            "\(Self.appDisplayName) Debug Context",
             "Generated At: \(generatedAt)",
             "",
             "Task",

@@ -71,7 +71,7 @@ private struct InitializeParams: Encodable {
         }
     }
     struct ClientInfo: Encodable {
-        let name = "Agentic"
+        let name = "Agent Builder"
         let version = "1.0.0"
     }
 }
@@ -448,7 +448,7 @@ final class MCPOAuthHandler: NSObject, ASWebAuthenticationPresentationContextPro
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
             let body: [String: Any] = [
-                "client_name": "Agentic",
+                "client_name": "Agent Builder",
                 "redirect_uris": [Self.redirectURI],
                 "grant_types": ["authorization_code"],
                 "response_types": ["code"],
@@ -551,7 +551,7 @@ final class MCPOAuthHandler: NSObject, ASWebAuthenticationPresentationContextPro
                 try? await Task.sleep(nanoseconds: Self.authTimeoutNanoseconds)
                 guard !didResume else { return }
                 self.activeWebAuthSession?.cancel()
-                finish(.failure(MCPClientError.oauthFailed("Authentication timed out before returning to Agentic.")))
+                finish(.failure(MCPClientError.oauthFailed("Authentication timed out before returning to Agent Builder.")))
             }
         }
 
