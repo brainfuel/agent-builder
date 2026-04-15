@@ -335,7 +335,7 @@ struct ContentView: View {
                 }
             }
         }
-        .background(Color(uiColor: .systemGroupedBackground))
+        .background(AppTheme.surfaceGrouped)
         .overlay(alignment: .bottom) {
             if let templateSavedName {
                 Text("Saved \"\(templateSavedName)\" as node template")
@@ -1108,7 +1108,7 @@ struct ContentView: View {
             .frame(width: 300, height: headerControlHeight)
             .background(
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(Color(uiColor: .secondarySystemBackground))
+                    .fill(AppTheme.surfaceSecondary)
             )
 
             Spacer(minLength: 0)
@@ -1148,7 +1148,7 @@ struct ContentView: View {
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 10)
-        .background(Color(uiColor: .systemBackground))
+        .background(AppTheme.surfacePrimary)
     }
 
     private var taskListView: some View {
@@ -1231,7 +1231,7 @@ struct ContentView: View {
             }
             .padding(.horizontal, 24)
             .padding(.vertical, 14)
-            .background(Color(uiColor: .systemBackground))
+            .background(AppTheme.surfacePrimary)
             .animation(.easeInOut(duration: 0.2), value: newTaskCreationOption.usesStructureStrategyField)
 
             Divider()
@@ -1355,7 +1355,7 @@ struct ContentView: View {
                 .fill(
                     isSelectedTask
                         ? AppTheme.brandTint.opacity(0.12)
-                        : Color(uiColor: .secondarySystemBackground)
+                        : AppTheme.surfaceSecondary
                 )
         )
         .overlay(
@@ -1387,7 +1387,7 @@ struct ContentView: View {
             .frame(height: 38)
             .background(
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(Color(uiColor: .systemBackground))
+                    .fill(AppTheme.surfacePrimary)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
@@ -1526,7 +1526,7 @@ struct ContentView: View {
             .padding(10)
             .background(
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(isUser ? AppTheme.brandTint.opacity(0.12) : Color(uiColor: .systemBackground))
+                    .fill(isUser ? AppTheme.brandTint.opacity(0.12) : AppTheme.surfacePrimary)
             )
             if !isUser { Spacer(minLength: 40) }
         }
@@ -1967,7 +1967,7 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(activeTaskTitle)
                         .font(.system(size: 30, weight: .bold, design: .rounded))
-                    Text("Hierarchy editor for humans and AI agents.")
+                    Text("Visual agent workflow builder")
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -2086,30 +2086,30 @@ struct ContentView: View {
             if isExecutingCoordinator, !liveStatusMessage.isEmpty {
                 HStack(spacing: 10) {
                     Circle()
-                        .fill(Color.blue)
+                        .fill(AppTheme.brandTint)
                         .frame(width: 8, height: 8)
                         .opacity(liveStatusBannerPulse ? 0.55 : 1)
 
                     Text(liveStatusMessage)
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(Color.blue.opacity(0.92))
+                        .foregroundStyle(AppTheme.brandTint.opacity(0.92))
                         .lineLimit(1)
                         .truncationMode(.tail)
                         .frame(maxWidth: .infinity, alignment: .leading)
 
                     ProgressView()
                         .controlSize(.small)
-                        .tint(Color.blue.opacity(0.9))
+                        .tint(AppTheme.brandTint.opacity(0.9))
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
                 .background(
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(Color.blue.opacity(liveStatusBannerPulse ? 0.12 : 0.06))
+                        .fill(AppTheme.brandTint.opacity(liveStatusBannerPulse ? 0.08 : 0.04))
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .stroke(Color.blue.opacity(liveStatusBannerPulse ? 0.35 : 0.20), lineWidth: 1)
+                        .stroke(AppTheme.brandTint.opacity(liveStatusBannerPulse ? 0.25 : 0.12), lineWidth: 1)
                 )
                 .padding(.horizontal, 24)
                 .transition(.move(edge: .top).combined(with: .opacity))
@@ -2126,7 +2126,7 @@ struct ContentView: View {
         }
         .padding(.top, usesTaskSplitView ? 0 : 18)
         .padding(.bottom, 14)
-        .background(Color(uiColor: .systemBackground))
+        .background(AppTheme.surfacePrimary)
         .animation(.easeInOut(duration: 0.2), value: liveStatusMessage)
         .animation(.easeInOut(duration: 0.2), value: isExecutingCoordinator)
     }
@@ -2169,7 +2169,7 @@ struct ContentView: View {
             return enabled ? AppTheme.brandTint : AppTheme.brandTint.opacity(0.45)
         }
         return enabled
-            ? Color(uiColor: .secondarySystemBackground)
+            ? AppTheme.surfaceSecondary
             : Color(uiColor: .tertiarySystemFill)
     }
 
@@ -2270,7 +2270,7 @@ struct ContentView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
-        .background(Color(uiColor: .secondarySystemBackground))
+        .background(AppTheme.surfaceSecondary)
     }
 
     private var inspectorPanel: some View {
@@ -2313,7 +2313,7 @@ struct ContentView: View {
                 structureChatInspectorContent
             }
         }
-        .background(Color(uiColor: .secondarySystemBackground))
+        .background(AppTheme.surfaceSecondary)
     }
 
     private var inspectorToggleRail: some View {
@@ -2341,7 +2341,7 @@ struct ContentView: View {
         .padding(.horizontal, 6)
         .padding(.top, 10)
         .frame(width: 44)
-        .background(Color(uiColor: .secondarySystemBackground))
+        .background(AppTheme.surfaceSecondary)
     }
 
     private var nodeDetailsInspectorContent: some View {
@@ -2642,7 +2642,7 @@ struct ContentView: View {
                     alignment: .topLeading
                 )
             }
-            .background(Color(red: 0.92, green: 0.93, blue: 0.96))
+            .background(AppTheme.canvasBackground)
             .onAppear { canvasScrollProxy = scrollProxy }
             }
 
@@ -6398,7 +6398,7 @@ private struct NodeInspector: View {
                             TextEditor(text: $node.roleDescription)
                                 .frame(minHeight: 110)
                                 .padding(6)
-                                .background(Color(uiColor: .systemBackground))
+                                .background(AppTheme.surfacePrimary)
                                 .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                         }
                     } label: {
@@ -6579,7 +6579,7 @@ private struct FixedNodeInspector: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 10)
                         .padding(.vertical, 10)
-                        .background(Color(uiColor: .systemBackground))
+                        .background(AppTheme.surfacePrimary)
                         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                 }
             } label: {
@@ -6642,7 +6642,7 @@ private struct RunFromHereSheet: View {
                         .padding(8)
                         .background(
                             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .fill(Color(uiColor: .secondarySystemBackground))
+                                .fill(AppTheme.surfaceSecondary)
                         )
                         .overlay(
                             RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -6778,7 +6778,7 @@ private struct CoordinatorTraceRow: View {
                         } label: {
                             Text(isExpanded ? "Show less" : "Show more")
                                 .font(.caption2.weight(.medium))
-                                .foregroundStyle(.blue)
+                                .foregroundStyle(AppTheme.brandTint)
                         }
                         .buttonStyle(.plain)
 
@@ -6802,11 +6802,11 @@ private struct CoordinatorTraceRow: View {
         .padding(.vertical, 8)
         .background(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color(uiColor: .systemBackground))
+                .fill(AppTheme.surfacePrimary)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(Color.black.opacity(0.06), lineWidth: 1)
+                .stroke(AppTheme.cardBorder, lineWidth: 1)
         )
     }
 
@@ -6897,11 +6897,11 @@ private struct RawAPITraceRow: View {
         .padding(.vertical, 8)
         .background(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color(uiColor: .systemBackground))
+                .fill(AppTheme.surfacePrimary)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(Color.black.opacity(0.06), lineWidth: 1)
+                .stroke(AppTheme.cardBorder, lineWidth: 1)
         )
     }
 
@@ -6930,7 +6930,7 @@ private struct RawAPITraceRow: View {
             .padding(6)
             .background(
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(Color(uiColor: .secondarySystemBackground))
+                    .fill(AppTheme.surfaceSecondary)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
@@ -7346,7 +7346,7 @@ private struct TaskResultsPanel: View {
                                 .font(.caption.weight(.semibold))
                                 .padding(.horizontal, 8)
                                 .padding(.vertical, 4)
-                                .background(.blue.opacity(0.12), in: Capsule())
+                                .background(AppTheme.brandTint.opacity(0.12), in: Capsule())
                             Text("\(run.succeededCount)/\(run.results.count) tasks succeeded")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
@@ -7442,7 +7442,7 @@ private struct TaskResultCard: View {
         .padding(10)
         .background(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color(uiColor: .secondarySystemBackground))
+                .fill(AppTheme.surfaceSecondary)
         )
     }
 
@@ -7671,21 +7671,21 @@ private struct LinkHandle: View {
 
     var body: some View {
         Circle()
-            .fill(isActive ? Color.green : Color.blue)
+            .fill(isActive ? AppTheme.nodeHuman : AppTheme.brandTint)
             .overlay(
                 Image(systemName: "arrow.up.right")
                     .font(.system(size: 10, weight: .bold))
                     .foregroundStyle(.white)
             )
             .frame(width: 24, height: 24)
-            .shadow(color: .black.opacity(0.18), radius: 6, y: 2)
+            .shadow(color: AppTheme.cardShadow, radius: 6, y: 2)
     }
 }
 
 private struct AddChildHandle: View {
     var body: some View {
         Circle()
-            .fill(Color.blue)
+            .fill(AppTheme.brandTint)
             .overlay(
                 Image(systemName: "plus")
                     .font(.system(size: 12, weight: .bold))
@@ -7887,10 +7887,10 @@ private struct NodeCard: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                     Circle()
-                        .fill(Color.orange)
-                        .frame(width: 6, height: 6)
+                        .fill(Color(uiColor: .tertiaryLabel))
+                        .frame(width: 4, height: 4)
                     Text(node.department)
-                        .foregroundStyle(.primary)
+                        .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
                 .font(.subheadline)
@@ -7912,38 +7912,40 @@ private struct NodeCard: View {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .stroke(
                     executionBorderColor ?? (isSelected
-                        ? Color.orange
-                        : (isLinkTargeted ? Color.green : defaultBorderColor)),
+                        ? AppTheme.brandTint
+                        : (isLinkTargeted ? AppTheme.nodeHuman : defaultBorderColor)),
                     style: StrokeStyle(
-                        lineWidth: isSelected || isLinkTargeted || executionState != .idle ? 2 : 1,
+                        lineWidth: isSelected || isLinkTargeted || executionState != .idle ? 2.5 : 1,
                         dash: isOrphan && !isSelected && !isLinkTargeted ? [6, 4] : []
                     )
                 )
         )
         .opacity(isOrphan ? 0.55 : 1)
         .shadow(
-            color: executionGlowColor ?? .black.opacity(0.08),
-            radius: executionState == .running ? 12 : 10,
-            y: executionState == .running ? 0 : 2
+            color: executionGlowColor ?? AppTheme.cardShadow,
+            radius: executionState == .running ? 14 : 8,
+            y: executionState == .running ? 0 : 3
         )
     }
 
     private var cardBackgroundColor: Color {
         switch node.type {
         case .input:
-            return Color.blue.opacity(0.08)
+            return AppTheme.nodeInput.opacity(0.06)
         case .output:
-            return Color.teal.opacity(0.08)
-        case .agent, .human:
-            return Color(uiColor: .systemBackground)
+            return AppTheme.nodeOutput.opacity(0.06)
+        case .agent:
+            return AppTheme.surfacePrimary
+        case .human:
+            return AppTheme.surfacePrimary
         }
     }
 
     private var executionBorderColor: Color? {
         switch executionState {
         case .idle: return nil
-        case .running: return .blue
-        case .succeeded: return .green
+        case .running: return AppTheme.brandTint
+        case .succeeded: return AppTheme.nodeHuman
         case .failed: return .red
         }
     }
@@ -7951,35 +7953,51 @@ private struct NodeCard: View {
     private var executionGlowColor: Color? {
         switch executionState {
         case .idle: return nil
-        case .running: return .blue.opacity(0.35)
-        case .succeeded: return .green.opacity(0.25)
-        case .failed: return .red.opacity(0.25)
+        case .running: return AppTheme.brandTint.opacity(0.3)
+        case .succeeded: return AppTheme.nodeHuman.opacity(0.2)
+        case .failed: return Color.red.opacity(0.2)
         }
     }
 
     private var defaultBorderColor: Color {
         switch node.type {
         case .input:
-            return Color.blue.opacity(0.55)
+            return AppTheme.nodeInput.opacity(0.4)
         case .output:
-            return Color.teal.opacity(0.55)
-        case .agent, .human:
-            return Color.black.opacity(0.08)
+            return AppTheme.nodeOutput.opacity(0.4)
+        case .agent:
+            return AppTheme.cardBorder
+        case .human:
+            return AppTheme.nodeHuman.opacity(0.3)
         }
     }
 
     private var avatar: some View {
         Circle()
             .fill(LinearGradient(
-                colors: [Color.orange.opacity(0.5), Color.blue.opacity(0.5)],
+                colors: avatarGradientColors,
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             ))
             .overlay(
                 Text(node.initials)
                     .font(.subheadline.bold())
+                    .foregroundStyle(.white)
             )
             .frame(width: 42, height: 42)
+    }
+
+    private var avatarGradientColors: [Color] {
+        switch node.type {
+        case .agent:
+            return [AppTheme.nodeAgent, AppTheme.brandTint]
+        case .human:
+            return [AppTheme.nodeHuman, AppTheme.nodeHuman.opacity(0.7)]
+        case .input:
+            return [AppTheme.nodeInput, AppTheme.nodeInput.opacity(0.7)]
+        case .output:
+            return [AppTheme.nodeOutput, AppTheme.nodeOutput.opacity(0.7)]
+        }
     }
 
     private var typeBadge: some View {
@@ -7996,13 +8014,13 @@ private struct NodeCard: View {
     private var typeBadgeColor: Color {
         switch node.type {
         case .agent:
-            return Color.blue.opacity(0.16)
+            return AppTheme.nodeAgent.opacity(0.14)
         case .human:
-            return Color.green.opacity(0.18)
+            return AppTheme.nodeHuman.opacity(0.14)
         case .input:
-            return Color.blue.opacity(0.22)
+            return AppTheme.nodeInput.opacity(0.14)
         case .output:
-            return Color.teal.opacity(0.22)
+            return AppTheme.nodeOutput.opacity(0.14)
         }
     }
 
