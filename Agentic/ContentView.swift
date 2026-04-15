@@ -9,6 +9,17 @@ import UIKit
 import AppKit
 #endif
 
+private extension View {
+    @ViewBuilder
+    func catalystTooltip(_ text: String) -> some View {
+#if targetEnvironment(macCatalyst)
+        self.help(text)
+#else
+        self
+#endif
+    }
+}
+
 struct ContentView: View {
     private static let defaultStructureStrategy = "Design a structure that best answers the task question, compares candidate outputs when useful, and returns one clear final response."
     private let cardSize = CGSize(width: 264, height: 88)
@@ -556,6 +567,7 @@ struct ContentView: View {
                     }
                 }
                 .buttonStyle(.plain)
+                .catalystTooltip(resultsDrawerOpen ? "Collapse Run Trace" : "Expand Run Trace")
 
                 if coordinatorRunHistory.count > 1 {
                     runHistoryPicker
@@ -571,6 +583,7 @@ struct ContentView: View {
                         .foregroundStyle(AppTheme.brandTint)
                 }
                 .buttonStyle(.plain)
+                .catalystTooltip(resultsDrawerOpen ? "Collapse Run Trace" : "Expand Run Trace")
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
@@ -604,6 +617,7 @@ struct ContentView: View {
                         }
                     }
                     .buttonStyle(.plain)
+                    .catalystTooltip(resultsDrawerOpen ? "Collapse Run Trace" : "Expand Run Trace")
 
                     if coordinatorRunHistory.count > 1 {
                         runHistoryPicker
@@ -619,6 +633,7 @@ struct ContentView: View {
                             .foregroundStyle(AppTheme.brandTint)
                     }
                     .buttonStyle(.plain)
+                    .catalystTooltip(resultsDrawerOpen ? "Collapse Run Trace" : "Expand Run Trace")
                 }
                 .padding(.horizontal, 16)
                 .padding(.bottom, 6)
@@ -888,7 +903,7 @@ struct ContentView: View {
                             }
                             .buttonStyle(.borderless)
                             .accessibilityLabel("Export")
-                            .help("Export")
+                            .catalystTooltip("Export Run Trace")
                         }
                         if !isViewingHistoricalRun, !coordinatorTrace.isEmpty {
                             Button("Clear") {
@@ -898,6 +913,7 @@ struct ContentView: View {
                             .buttonStyle(.borderless)
                             .font(.caption)
                             .disabled(isExecutingCoordinator)
+                            .catalystTooltip("Clear current run trace")
                         }
                     }
 
@@ -977,19 +993,6 @@ struct ContentView: View {
                     .fill(Color(uiColor: .secondarySystemBackground))
             )
 
-            Button {
-                isShowingNodeTemplateLibrary = true
-            } label: {
-                headerControlLabel(
-                    title: "Node Templates",
-                    systemImage: "rectangle.stack.badge.person.crop",
-                    height: headerControlHeight,
-                    prominent: false,
-                    enabled: true
-                )
-            }
-            .buttonStyle(.plain)
-
             Spacer(minLength: 0)
 
             Button {
@@ -1006,6 +1009,7 @@ struct ContentView: View {
             .buttonStyle(.plain)
             .disabled(!canUndo)
             .keyboardShortcut("z", modifiers: [.command])
+            .catalystTooltip("Undo")
 
             Button {
                 redo()
@@ -1021,6 +1025,7 @@ struct ContentView: View {
             .buttonStyle(.plain)
             .disabled(!canRedo)
             .keyboardShortcut("Z", modifiers: [.command, .shift])
+            .catalystTooltip("Redo")
 
         }
         .padding(.horizontal, 24)
@@ -1199,6 +1204,7 @@ struct ContentView: View {
                     }
                     .buttonStyle(.bordered)
                     .accessibilityLabel("View Results")
+                    .catalystTooltip("View Results")
                 }
 
                 Button {
@@ -1208,6 +1214,7 @@ struct ContentView: View {
                 }
                 .buttonStyle(.bordered)
                 .accessibilityLabel("Human Inbox")
+                .catalystTooltip("Open Human Inbox")
 
                 Button {
                     openTaskEditor(key: document.key)
@@ -1216,6 +1223,7 @@ struct ContentView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .accessibilityLabel("Edit Task")
+                .catalystTooltip("Edit Task")
 
                 Button {
                     runOrContinueTask(for: document.key)
@@ -1230,6 +1238,7 @@ struct ContentView: View {
                 .buttonStyle(.borderedProminent)
                 .disabled(!canRun)
                 .accessibilityLabel(taskRunButtonLabel(for: document))
+                .catalystTooltip(taskRunButtonLabel(for: document))
             }
         }
         .padding(16)
@@ -1831,6 +1840,7 @@ struct ContentView: View {
                         )
                     }
                     .buttonStyle(.plain)
+                    .catalystTooltip("Show Tasks")
                 } else if splitViewVisibility == .detailOnly {
                     Button {
                         withAnimation(.easeInOut(duration: 0.2)) {
@@ -1846,8 +1856,8 @@ struct ContentView: View {
                                     .fill(Color(uiColor: .tertiarySystemFill))
                             )
                     }
-                    .buttonStyle(.plain)
-                    .help("Show Task List")
+                .buttonStyle(.plain)
+                .catalystTooltip("Show Task List")
                 }
 
                 VStack(alignment: .leading, spacing: 4) {
@@ -1881,6 +1891,7 @@ struct ContentView: View {
                     }
                 }
                 .buttonStyle(.plain)
+                .catalystTooltip("Open Human Inbox")
 
                 Button {
                     copyTextToClipboard(debugClipboardText)
@@ -1895,6 +1906,7 @@ struct ContentView: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(!canCopyDebugPayload)
+                .catalystTooltip("Copy Debug Context")
 
                 Button(role: .destructive) {
                     isShowingDeleteTaskConfirmation = true
@@ -1922,6 +1934,7 @@ struct ContentView: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel("Delete Task")
                 .disabled(!canDeleteTask)
+                .catalystTooltip("Delete Task")
 
 
                 Button {
@@ -1948,6 +1961,7 @@ struct ContentView: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(!canRunCoordinator)
+                .catalystTooltip("Run Task")
 
                 
             }
@@ -2532,6 +2546,7 @@ struct ContentView: View {
                         .frame(width: 30, height: 30)
                         .contentShape(Rectangle())
                 }
+                .catalystTooltip("Zoom Out")
                 Text("\(Int((zoom * 100).rounded()))%")
                     .frame(minWidth: 52)
                     .font(.system(.title3, design: .rounded).weight(.semibold))
@@ -2542,6 +2557,7 @@ struct ContentView: View {
                         .font(.system(size: 15, weight: .semibold))
                         .frame(width: 30, height: 30)
                 }
+                .catalystTooltip("Zoom In")
             }
             .buttonStyle(.plain)
             .padding(.horizontal, 10)
@@ -2570,7 +2586,7 @@ struct ContentView: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Center View")
-            .help("Center View")
+            .catalystTooltip("Center View")
         }
     }
 
