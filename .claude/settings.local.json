@@ -18,7 +18,8 @@
       "WebFetch(domain:community.airtable.com)",
       "WebFetch(domain:www.pulsemcp.com)",
       "Bash(python3 -c \":*)",
-      "Bash(grep -r \"nodes\" /Users/benmilford/Documents/Projects/Agentic/*.swift)"
+      "Bash(grep -r \"nodes\" /Users/benmilford/Documents/Projects/Agentic/*.swift)",
+      "Bash(xcodebuild -scheme Agentic -destination 'platform=macOS' -derivedDataPath /tmp/AgenticBuild build)"
     ]
   }
 }
