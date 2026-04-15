@@ -6862,21 +6862,21 @@ private struct RawAPITraceRow: View {
                 }
                 .buttonStyle(.plain)
             }
-            Text(content)
-                .font(.system(size: 11, design: .monospaced))
-                .foregroundStyle(.primary.opacity(0.8))
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .frame(maxHeight: 150)
-                .padding(6)
-                .background(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(Color(uiColor: .secondarySystemBackground))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .stroke(Color(uiColor: .separator).opacity(0.3), lineWidth: 0.5)
-                )
+            SelectablePlainText(
+                text: content,
+                font: .monospacedSystemFont(ofSize: 11, weight: .regular),
+                textColor: UIColor.label.withAlphaComponent(0.8)
+            )
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(6)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(Color(uiColor: .secondarySystemBackground))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .stroke(Color(uiColor: .separator).opacity(0.3), lineWidth: 0.5)
+            )
         }
     }
 }
@@ -8568,6 +8568,40 @@ private struct SelectableText: UIViewRepresentable {
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, uiView textView: RichCopyTextView, context: Context) -> CGSize? {
+        let targetWidth = proposal.width ?? UIScreen.main.bounds.width
+        let fitting = textView.sizeThatFits(CGSize(width: targetWidth, height: .greatestFiniteMagnitude))
+        return CGSize(width: targetWidth, height: fitting.height)
+    }
+}
+
+private struct SelectablePlainText: UIViewRepresentable {
+    let text: String
+    var font: UIFont = .preferredFont(forTextStyle: .caption1)
+    var textColor: UIColor = .label
+
+    func makeUIView(context: Context) -> UITextView {
+        let textView = UITextView()
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.isScrollEnabled = false
+        textView.backgroundColor = .clear
+        textView.textContainerInset = .zero
+        textView.textContainer.lineFragmentPadding = 0
+        textView.textContainer.widthTracksTextView = true
+        textView.textContainer.lineBreakMode = .byWordWrapping
+        textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        textView.setContentHuggingPriority(.defaultHigh, for: .vertical)
+        return textView
+    }
+
+    func updateUIView(_ textView: UITextView, context: Context) {
+        textView.text = text.replacingOccurrences(of: "\r\n", with: "\n")
+        textView.font = font
+        textView.textColor = textColor
+        textView.invalidateIntrinsicContentSize()
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView textView: UITextView, context: Context) -> CGSize? {
         let targetWidth = proposal.width ?? UIScreen.main.bounds.width
         let fitting = textView.sizeThatFits(CGSize(width: targetWidth, height: .greatestFiniteMagnitude))
         return CGSize(width: targetWidth, height: fitting.height)
