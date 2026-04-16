@@ -33,6 +33,35 @@ final class CanvasViewModel {
     var suppressStoreSync = false
     var lastPersistedFingerprint = ""
 
+    /// Loads graph state from a document, or resets to default layout if nil.
+    func load(from document: GraphDocument?) {
+        guard
+            let document,
+            let snapshot = try? JSONDecoder().decode(HierarchySnapshot.self, from: document.snapshotData)
+        else {
+            relayoutHierarchy()
+            lastPersistedFingerprint = semanticFingerprint
+            return
+        }
+        suppressStoreSync = true
+        suppressLayoutAnimation = true
+        setGraph(from: snapshot, resetViewState: false)
+        suppressStoreSync = false
+        DispatchQueue.main.async { [weak self] in self?.suppressLayoutAnimation = false }
+        lastPersistedFingerprint = semanticFingerprint
+    }
+
+    /// Writes the current graph snapshot to the document and calls `onSave` if changed.
+    func persistIfNeeded(for newFingerprint: String, to document: GraphDocument, onSave: () -> Void) {
+        guard !suppressStoreSync else { return }
+        guard newFingerprint != lastPersistedFingerprint else { return }
+        guard let data = try? JSONEncoder().encode(captureStructureSnapshot()) else { return }
+        document.snapshotData = data
+        document.updatedAt = Date()
+        onSave()
+        lastPersistedFingerprint = newFingerprint
+    }
+
     // MARK: - Undo
 
     weak var undoManager: UndoManager?
@@ -649,9 +678,7 @@ final class CanvasViewModel {
             nodes.removeAll { $0.id == nodeToDelete }
             links.removeAll { $0.fromID == nodeToDelete || $0.toID == nodeToDelete }
             selectedNodeID = nil
-            withAnimation(.spring(response: 0.6, dampingFraction: 0.85)) {
-                relayoutHierarchy()
-            }
+            relayoutHierarchy()
         }
     }
 
@@ -1199,14 +1226,7 @@ final class CanvasViewModel {
     func stabilizeLayout(afterAddingAtY rowY: CGFloat, parentID: UUID?) {
         _ = rowY
         _ = parentID
-        withAnimation(
-            .spring(
-                response: AppConfiguration.Motion.layoutSpringResponse,
-                dampingFraction: AppConfiguration.Motion.layoutSpringDamping
-            )
-        ) {
-            relayoutHierarchy()
-        }
+        relayoutHierarchy()
     }
 
     func relayoutHierarchy() {
