@@ -226,26 +226,23 @@ final class StructureViewModel {
         defer { isStructureChatRunning = false }
 
         do {
-            let preferredModelID = providerModelStore.defaultModel(for: structureChatProvider)
-            let providerStrings = availableProviders.map(\.rawValue)
+            let preferredModelID = deps.providerModelStore.defaultModel(for: structureChatProvider)
+            let providerStrings = deps.availableProviders().map(\.rawValue)
+            let serverToolExpansion = deps.makeServerToolExpansionMap(connections: mcpServerConnections)
             let systemPrompt = buildStructureChatSystemPrompt(
                 availableProviders: providerStrings,
                 mcpServerConnections: mcpServerConnections,
-                mcpManager: mcpManager
+                mcpManager: deps.mcpManager
             )
             let turnPrompt = buildStructureChatTurnPrompt(userPrompt: userPrompt, snapshotJSON: currentSnapshotJSON)
 
             let history = Array(structureChatMessages.dropLast().suffix(12))
             var messages = history.map { entry in
-                ChatMessage(
-                    role: entry.role == .user ? .user : .assistant,
-                    text: entry.text,
-                    attachments: []
-                )
+                ChatMessage(role: entry.role == .user ? .user : .assistant, text: entry.text, attachments: [])
             }
             messages.append(ChatMessage(role: .user, text: turnPrompt, attachments: []))
 
-            let llmService = LLMResponseService(liveProviderExecutor: liveProviderExecutor)
+            let llmService = LLMResponseService(liveProviderExecutor: deps.liveProviderExecutor)
             let llmResponse = try await llmService.requestRawText(
                 provider: structureChatProvider,
                 apiKey: apiKey,
@@ -284,46 +281,25 @@ final class StructureViewModel {
 
     // MARK: - Debug Broadcast
 
-    func runStructureChatDebugBroadcast(
-        for entry: StructureChatMessageEntry,
-        apiKeyStore: any APIKeyStoring,
-        providerModelStore: any ProviderModelPreferencesStoring,
-        liveProviderExecutor: any LiveProviderExecuting,
-        availableProviders: [APIKeyProvider],
-        currentSnapshotJSON: String,
-        mcpServerConnections: [MCPServerConnection],
-        mcpManager: MCPServerManager
-    ) {
+    func runStructureChatDebugBroadcast(for entry: StructureChatMessageEntry, currentSnapshotJSON: String) {
         guard !structureChatDebugRunningMessageIDs.contains(entry.id) else { return }
         Task { [weak self] in
-            await self?.executeStructureChatDebugBroadcast(
-                for: entry,
-                apiKeyStore: apiKeyStore,
-                providerModelStore: providerModelStore,
-                liveProviderExecutor: liveProviderExecutor,
-                availableProviders: availableProviders,
-                currentSnapshotJSON: currentSnapshotJSON,
-                mcpServerConnections: mcpServerConnections,
-                mcpManager: mcpManager
-            )
+            await self?.executeStructureChatDebugBroadcast(for: entry, currentSnapshotJSON: currentSnapshotJSON)
         }
     }
 
     @MainActor
     private func executeStructureChatDebugBroadcast(
         for entry: StructureChatMessageEntry,
-        apiKeyStore: any APIKeyStoring,
-        providerModelStore: any ProviderModelPreferencesStoring,
-        liveProviderExecutor: any LiveProviderExecuting,
-        availableProviders: [APIKeyProvider],
-        currentSnapshotJSON: String,
-        mcpServerConnections: [MCPServerConnection],
-        mcpManager: MCPServerManager
+        currentSnapshotJSON: String
     ) async {
+        guard let deps = dependencies else { return }
+
         structureChatDebugRunningMessageIDs.insert(entry.id)
         structureChatDebugCompletedMessageIDs.remove(entry.id)
         defer { structureChatDebugRunningMessageIDs.remove(entry.id) }
 
+        let availableProviders = deps.availableProviders()
         guard !availableProviders.isEmpty else {
             structureChatStatusMessage = "Debug failed: add at least one provider key in Keys."
             return
@@ -333,7 +309,7 @@ final class StructureViewModel {
         let systemPrompt = buildStructureChatSystemPrompt(
             availableProviders: providerStrings,
             mcpServerConnections: mcpServerConnections,
-            mcpManager: mcpManager
+            mcpManager: deps.mcpManager
         )
         let turnPrompt = buildStructureChatTurnPrompt(userPrompt: entry.text, snapshotJSON: currentSnapshotJSON)
 
@@ -351,17 +327,11 @@ final class StructureViewModel {
 
         structureChatStatusMessage = "Debugging \(availableProviders.count) provider(s)…"
 
-        let llmService = LLMResponseService(liveProviderExecutor: liveProviderExecutor)
+        let llmService = LLMResponseService(liveProviderExecutor: deps.liveProviderExecutor)
         var results: [StructureChatProviderDebugResult] = []
         for provider in availableProviders {
-            let preferredModelID = providerModelStore.defaultModel(for: provider)
-            let apiKey: String?
-            do {
-                let key = try apiKeyStore.key(for: provider)
-                apiKey = key
-            } catch {
-                apiKey = nil
-            }
+            let preferredModelID = deps.providerModelStore.defaultModel(for: provider)
+            let apiKey = try? deps.apiKeyStore.key(for: provider)
             let result = await llmService.executeDebugRequest(
                 provider: provider,
                 apiKey: apiKey,

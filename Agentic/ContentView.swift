@@ -310,6 +310,10 @@ struct ContentView: View {
         .onChange(of: execution.humanActorIdentity) { _, _ in
             persistCoordinatorExecutionState()
         }
+        .onChange(of: mcpServerConnections) { _, new in
+            execution.mcpServerConnections = Array(new)
+            structure.mcpServerConnections = Array(new)
+        }
         .confirmationDialog("Wipe All Data?", isPresented: $isShowingWipeDataConfirmation) {
             Button("Wipe All Data", role: .destructive) {
                 wipeAllDataForTesting()
@@ -424,6 +428,17 @@ struct ContentView: View {
         structure.onApplySnapshot = { [self] snapshot, registerUndo in
             canvas.applyStructureSnapshot(snapshot, registerUndo: registerUndo)
         }
+
+        let deps = AppDependencies(
+            apiKeyStore: apiKeyStore,
+            providerModelStore: providerModelStore,
+            liveProviderExecutor: liveProviderExecutor,
+            mcpManager: mcpManager
+        )
+        execution.dependencies = deps
+        structure.dependencies = deps
+        execution.mcpServerConnections = Array(mcpServerConnections)
+        structure.mcpServerConnections = Array(mcpServerConnections)
     }
 
     private func configureWindowTitleIfNeeded() {
@@ -1358,16 +1373,7 @@ struct ContentView: View {
     }
 
     private func runStructureChatDebugBroadcast(for entry: StructureChatMessageEntry) {
-        structure.runStructureChatDebugBroadcast(
-            for: entry,
-            apiKeyStore: apiKeyStore,
-            providerModelStore: providerModelStore,
-            liveProviderExecutor: liveProviderExecutor,
-            availableProviders: availableGenerateProviders(),
-            currentSnapshotJSON: currentGraphSnapshotJSONString(),
-            mcpServerConnections: mcpServerConnections,
-            mcpManager: mcpManager
-        )
+        structure.runStructureChatDebugBroadcast(for: entry, currentSnapshotJSON: currentGraphSnapshotJSONString())
     }
 
     private func applyTemplateFromStructureChat(_ template: PresetHierarchyTemplate?, label: String) {
@@ -1379,16 +1385,7 @@ struct ContentView: View {
     }
 
     private func submitStructureChatTurn() {
-        structure.submitStructureChatTurn(
-            apiKeyStore: apiKeyStore,
-            providerModelStore: providerModelStore,
-            liveProviderExecutor: liveProviderExecutor,
-            availableProviders: availableGenerateProviders(),
-            serverToolExpansion: makeServerToolExpansionMap(),
-            currentSnapshotJSON: currentGraphSnapshotJSONString(),
-            mcpServerConnections: mcpServerConnections,
-            mcpManager: mcpManager
-        )
+        structure.submitStructureChatTurn(currentSnapshotJSON: currentGraphSnapshotJSONString())
     }
 
     private func runStatus(for document: GraphDocument) -> TaskRunStatus {
@@ -2299,68 +2296,26 @@ struct ContentView: View {
 
     private func runCoordinatorFromNode(_ nodeID: UUID, additionalContext: String? = nil) {
         withAnimation(.snappy(duration: 0.3)) { resultsDrawerOpen = true }
-        execution.runFromNode(
-            nodeID,
-            additionalContext: additionalContext,
-            nodes: canvas.nodes,
-            apiKeyStore: apiKeyStore,
-            providerModelStore: providerModelStore,
-            liveProviderExecutor: liveProviderExecutor,
-            mcpManager: mcpManager,
-            mcpServerConnections: mcpServerConnections
-        )
+        execution.runFromNode(nodeID, additionalContext: additionalContext, nodes: canvas.nodes)
     }
 
     private func continueCoordinatorExecution() async {
-        await execution.continueExecution(
-            nodes: canvas.nodes,
-            apiKeyStore: apiKeyStore,
-            providerModelStore: providerModelStore,
-            liveProviderExecutor: liveProviderExecutor,
-            mcpManager: mcpManager,
-            mcpServerConnections: mcpServerConnections
-        )
+        await execution.continueExecution(nodes: canvas.nodes)
     }
 
     private func retryPipelineWithFeedback(_ feedback: String, from step: CoordinatorTraceStep?) {
         withAnimation(.snappy(duration: 0.3)) { resultsDrawerOpen = true }
-        execution.retryPipelineWithFeedback(
-            feedback, from: step,
-            orchestrationGraph: orchestrationGraph,
-            nodes: canvas.nodes,
-            apiKeyStore: apiKeyStore,
-            providerModelStore: providerModelStore,
-            liveProviderExecutor: liveProviderExecutor,
-            mcpManager: mcpManager,
-            mcpServerConnections: mcpServerConnections
-        )
+        execution.retryPipelineWithFeedback(feedback, from: step, orchestrationGraph: orchestrationGraph, nodes: canvas.nodes)
     }
 
     private func runCoordinatorPipelineWithFeedback(_ feedback: String?) {
         withAnimation(.snappy(duration: 0.3)) { resultsDrawerOpen = true }
-        execution.runPipelineWithFeedback(
-            feedback,
-            orchestrationGraph: orchestrationGraph,
-            nodes: canvas.nodes,
-            apiKeyStore: apiKeyStore,
-            providerModelStore: providerModelStore,
-            liveProviderExecutor: liveProviderExecutor,
-            mcpManager: mcpManager,
-            mcpServerConnections: mcpServerConnections
-        )
+        execution.runPipelineWithFeedback(feedback, orchestrationGraph: orchestrationGraph, nodes: canvas.nodes)
     }
 
     @MainActor
     private func resolveHumanTask(_ decision: HumanTaskDecision) {
-        execution.resolveHumanTask(
-            decision,
-            nodes: canvas.nodes,
-            apiKeyStore: apiKeyStore,
-            providerModelStore: providerModelStore,
-            liveProviderExecutor: liveProviderExecutor,
-            mcpManager: mcpManager,
-            mcpServerConnections: mcpServerConnections
-        )
+        execution.resolveHumanTask(decision, nodes: canvas.nodes)
     }
 
     private func simulatePacketExecution(
@@ -2430,17 +2385,6 @@ struct ContentView: View {
         }
     }
 
-    private func makeServerToolExpansionMap() -> [String: [String]] {
-        var serverToolExpansion: [String: [String]] = [:]
-        for connection in mcpServerConnections where connection.isEnabled {
-            let tools = mcpManager.discoveredTools[connection.id] ?? mcpManager.cachedTools(for: connection.id)
-            if !tools.isEmpty {
-                serverToolExpansion[connection.name.lowercased()] = tools.map(\.name)
-            }
-        }
-        return serverToolExpansion
-    }
-
     private func providerIcon(for provider: APIKeyProvider) -> String {
         switch provider {
         case .chatGPT: return "brain.head.profile"
@@ -2452,23 +2396,10 @@ struct ContentView: View {
 
     @MainActor
     private func generateStructureWithLLM(provider: APIKeyProvider) async {
-        let apiKey: String
-        switch loadAPIKey(for: provider) {
-        case .success(let key): apiKey = key
-        case .failure(let workflowError):
-            structure.generateStructureError = workflowError.userMessage
-            return
-        }
-
         await structure.generateStructureWithLLM(
             provider: provider,
             taskQuestion: normalizedTaskQuestion,
-            structureStrategy: effectiveStructureStrategy,
-            apiKey: apiKey,
-            preferredModelID: providerModelStore.defaultModel(for: provider),
-            availableProviders: availableGenerateProviders().map(\.rawValue),
-            serverToolExpansion: makeServerToolExpansionMap(),
-            liveProviderExecutor: liveProviderExecutor
+            structureStrategy: effectiveStructureStrategy
         )
     }
 
