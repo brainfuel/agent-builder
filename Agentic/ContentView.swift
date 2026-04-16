@@ -19,7 +19,6 @@ private extension View {
 
 struct ContentView: View {
     private static let appDisplayName = "Agent Builder"
-    private static let defaultStructureStrategy = "Design a structure that best answers the task question, compares candidate outputs when useful, and returns one clear final response."
     private let cardSize = AppConfiguration.Canvas.cardSize
     private let minimumCanvasSize = AppConfiguration.Canvas.minimumSize
     private let minZoom: CGFloat = AppConfiguration.Canvas.minZoom
@@ -2591,21 +2590,6 @@ struct ContentView: View {
         }
     }
 
-    private func decodeData<T: Decodable>(
-        _ type: T.Type,
-        from data: Data,
-        operation: String
-    ) -> T? {
-        do {
-            return try JSONDecoder().decode(type, from: data)
-        } catch {
-            reportNonFatalWorkflowError(
-                .decodingFailed(operation: operation, underlying: error)
-            )
-            return nil
-        }
-    }
-
     private func ensureAnyGraphDocument() {
         if !graphDocuments.isEmpty { return }
         guard let data = encodeData(canvas.simpleTaskSnapshot(), operation: "create default task snapshot") else {
@@ -2858,7 +2842,7 @@ struct ContentView: View {
         execution.isShowingHumanInbox = false
         taskResultsTarget = nil
         execution.isExecutingCoordinator = false
-        execution.orchestrationStrategy = ContentView.defaultStructureStrategy
+        execution.orchestrationStrategy = ExecutionViewModel.defaultOrchestrationStrategy
         structure.synthesisContext = ""
         structure.synthesisQuestions = []
         structure.synthesizedStructure = nil
