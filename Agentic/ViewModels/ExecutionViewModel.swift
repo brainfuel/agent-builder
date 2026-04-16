@@ -7,6 +7,8 @@ final class ExecutionViewModel {
 
     // MARK: - Task Configuration
 
+    static let defaultOrchestrationStrategy = "Design a structure that best answers the task question, compares candidate outputs when useful, and returns one clear final response."
+
     var orchestrationGoal = "Prepare a safe v1 launch plan"
     var orchestrationStrategy = "Design a structure that best answers the task question, compares candidate outputs when useful, and returns one clear final response."
 
@@ -844,5 +846,70 @@ final class ExecutionViewModel {
             lastCompletedExecution: lastCompletedExecution,
             runHistory: coordinatorRunHistory
         )
+    }
+
+    // MARK: - Document Sync
+
+    /// Restores orchestration config and execution state from a persisted document.
+    func load(from document: GraphDocument?) {
+        let storedGoal = document?.goal ?? ""
+        if orchestrationGoal != storedGoal { orchestrationGoal = storedGoal }
+
+        let fallback = storedGoal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? Self.defaultOrchestrationStrategy
+            : storedGoal
+        let stored = (document?.structureStrategy ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolved = stored.isEmpty ? fallback : stored
+        if orchestrationStrategy != resolved { orchestrationStrategy = resolved }
+
+        guard
+            let data = document?.executionStateData,
+            let decoded = try? JSONDecoder().decode(CoordinatorExecutionStateBundle.self, from: data)
+        else {
+            resetState()
+            return
+        }
+
+        pendingCoordinatorExecution = decoded.pendingExecution
+        lastCompletedExecution = decoded.lastCompletedExecution
+        latestCoordinatorRun = decoded.latestRun
+        coordinatorTrace = decoded.trace
+        coordinatorRunHistory = decoded.runHistory ?? []
+        selectedHistoryRunID = nil
+        humanDecisionAudit = decoded.humanDecisionAudit
+        humanActorIdentity = decoded.humanActorIdentity
+        isExecutingCoordinator = false
+    }
+
+    /// Writes execution state to the document and calls `onSave`.
+    func persist(to document: GraphDocument, onSave: () -> Void) {
+        let sanitized = humanActorIdentity.trimmingCharacters(in: .whitespacesAndNewlines)
+        humanActorIdentity = sanitized.isEmpty ? "Human Reviewer" : sanitized
+
+        guard
+            pendingCoordinatorExecution != nil ||
+            latestCoordinatorRun != nil ||
+            !coordinatorTrace.isEmpty ||
+            !humanDecisionAudit.isEmpty
+        else {
+            document.executionStateData = nil
+            document.updatedAt = Date()
+            onSave()
+            return
+        }
+
+        let bundle = CoordinatorExecutionStateBundle(
+            pendingExecution: pendingCoordinatorExecution,
+            latestRun: latestCoordinatorRun,
+            trace: coordinatorTrace,
+            humanDecisionAudit: humanDecisionAudit,
+            humanActorIdentity: humanActorIdentity,
+            lastCompletedExecution: lastCompletedExecution,
+            runHistory: coordinatorRunHistory.isEmpty ? nil : coordinatorRunHistory
+        )
+        guard let data = try? JSONEncoder().encode(bundle) else { return }
+        document.executionStateData = data
+        document.updatedAt = Date()
+        onSave()
     }
 }

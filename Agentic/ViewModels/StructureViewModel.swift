@@ -642,6 +642,45 @@ final class StructureViewModel {
         )
     }
 
+    // MARK: - Document Sync
+
+    /// Restores structure chat state from a persisted document.
+    func load(from document: GraphDocument?, defaultProvider: APIKeyProvider) {
+        guard
+            let data = document?.structureChatData,
+            let decoded = try? JSONDecoder().decode(StructureChatStateBundle.self, from: data)
+        else {
+            structureChatMessages = []
+            structureChatInput = ""
+            structureChatStatusMessage = nil
+            isStructureChatRunning = false
+            structureChatProvider = defaultProvider
+            structureChatDebugRunningMessageIDs = []
+            structureChatDebugCompletedMessageIDs = []
+            return
+        }
+
+        structureChatMessages = decoded.messages
+        structureChatProvider = APIKeyProvider(rawValue: decoded.providerRaw) ?? defaultProvider
+        structureChatInput = ""
+        structureChatStatusMessage = nil
+        isStructureChatRunning = false
+        structureChatDebugRunningMessageIDs = []
+        structureChatDebugCompletedMessageIDs = []
+    }
+
+    /// Writes structure chat state to the document and calls `onSave`.
+    func persist(to document: GraphDocument, onSave: () -> Void) {
+        let payload = StructureChatStateBundle(
+            messages: structureChatMessages,
+            providerRaw: structureChatProvider.rawValue
+        )
+        guard let data = try? JSONEncoder().encode(payload) else { return }
+        document.structureChatData = data
+        document.updatedAt = Date()
+        onSave()
+    }
+
     // MARK: - Helpers
 
     static func userFacingErrorMessage(_ error: Error) -> String {

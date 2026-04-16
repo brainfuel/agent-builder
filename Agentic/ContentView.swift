@@ -2990,166 +2990,33 @@ struct ContentView: View {
     }
 
     private func syncGraphFromStore() {
-        guard
-            let document = activeGraphDocument,
-            let snapshot = decodeData(HierarchySnapshot.self, from: document.snapshotData, operation: "load graph snapshot")
-        else {
-            canvas.relayoutHierarchy()
-            syncCoordinatorExecutionState(from: nil)
-            syncStructureChatState(from: nil)
-            canvas.lastPersistedFingerprint = canvas.semanticFingerprint
-            return
-        }
-
-        canvas.suppressStoreSync = true
-        canvas.suppressLayoutAnimation = true
-        canvas.setGraph(from: snapshot, resetViewState: false)
-        canvas.suppressStoreSync = false
-        DispatchQueue.main.async { canvas.suppressLayoutAnimation = false }
-        let storedQuestion = document.goal ?? ""
-        if execution.orchestrationGoal != storedQuestion {
-            execution.orchestrationGoal = storedQuestion
-        }
-        let fallbackStrategy = storedQuestion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? ContentView.defaultStructureStrategy
-            : storedQuestion
-        let storedStrategy = (document.structureStrategy ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        let resolvedStrategy = storedStrategy.isEmpty ? fallbackStrategy : storedStrategy
-        if execution.orchestrationStrategy != resolvedStrategy {
-            execution.orchestrationStrategy = resolvedStrategy
-        }
-        syncCoordinatorExecutionState(from: document)
-        syncStructureChatState(from: document)
-        canvas.lastPersistedFingerprint = canvas.semanticFingerprint
+        let doc = activeGraphDocument
+        canvas.load(from: doc)
+        execution.load(from: doc)
+        structure.load(from: doc, defaultProvider: availableGenerateProviders().first ?? .chatGPT)
     }
 
     private func persistGraphIfNeeded(for newFingerprint: String) {
-        guard !canvas.suppressStoreSync else { return }
-        guard newFingerprint != canvas.lastPersistedFingerprint else { return }
-        guard
-            let document = activeGraphDocument,
-            let data = encodeData(canvas.captureStructureSnapshot(), operation: "persist graph snapshot")
-        else { return }
-
-        document.snapshotData = data
-        document.updatedAt = Date()
-        _ = saveModelContext(operation: "persist graph snapshot")
-        canvas.lastPersistedFingerprint = newFingerprint
-    }
-
-    private func syncCoordinatorExecutionState(from document: GraphDocument?) {
-        guard
-            let data = document?.executionStateData,
-            let decoded = decodeData(
-                CoordinatorExecutionStateBundle.self,
-                from: data,
-                operation: "load coordinator execution state"
-            )
-        else {
-            execution.pendingCoordinatorExecution = nil
-            execution.lastCompletedExecution = nil
-            execution.latestCoordinatorRun = nil
-            execution.coordinatorTrace = []
-            execution.coordinatorRunHistory = []
-            execution.selectedHistoryRunID = nil
-            execution.humanDecisionAudit = []
-            if execution.humanActorIdentity.isEmpty {
-                execution.humanActorIdentity = "Human Reviewer"
-            }
-            execution.isExecutingCoordinator = false
-            return
+        guard let document = activeGraphDocument else { return }
+        canvas.persistIfNeeded(for: newFingerprint, to: document) {
+            _ = saveModelContext(operation: "persist graph snapshot")
         }
-
-        execution.pendingCoordinatorExecution = decoded.pendingExecution
-        execution.lastCompletedExecution = decoded.lastCompletedExecution
-        execution.latestCoordinatorRun = decoded.latestRun
-        execution.coordinatorTrace = decoded.trace
-        execution.coordinatorRunHistory = decoded.runHistory ?? []
-        execution.selectedHistoryRunID = nil
-        execution.humanDecisionAudit = decoded.humanDecisionAudit
-        execution.humanActorIdentity = decoded.humanActorIdentity
-        execution.isExecutingCoordinator = false
     }
 
     private func persistCoordinatorExecutionState() {
         ensureAnyGraphDocument()
         guard let document = activeGraphDocument else { return }
-
-        let sanitizedActor = execution.humanActorIdentity.trimmingCharacters(in: .whitespacesAndNewlines)
-        if sanitizedActor.isEmpty {
-            execution.humanActorIdentity = "Human Reviewer"
-        } else {
-            execution.humanActorIdentity = sanitizedActor
+        execution.persist(to: document) {
+            _ = saveModelContext(operation: "persist coordinator execution state")
         }
-
-        if
-            execution.pendingCoordinatorExecution == nil,
-            execution.latestCoordinatorRun == nil,
-            execution.coordinatorTrace.isEmpty,
-            execution.humanDecisionAudit.isEmpty
-        {
-            document.executionStateData = nil
-            document.updatedAt = Date()
-            _ = saveModelContext(operation: "clear coordinator execution state")
-            return
-        }
-
-        let bundle = CoordinatorExecutionStateBundle(
-            pendingExecution: execution.pendingCoordinatorExecution,
-            latestRun: execution.latestCoordinatorRun,
-            trace: execution.coordinatorTrace,
-            humanDecisionAudit: execution.humanDecisionAudit,
-            humanActorIdentity: execution.humanActorIdentity,
-            lastCompletedExecution: execution.lastCompletedExecution,
-            runHistory: execution.coordinatorRunHistory.isEmpty ? nil : execution.coordinatorRunHistory
-        )
-        guard let data = encodeData(bundle, operation: "persist coordinator execution state") else { return }
-
-        document.executionStateData = data
-        document.updatedAt = Date()
-        _ = saveModelContext(operation: "persist coordinator execution state")
-    }
-
-    private func syncStructureChatState(from document: GraphDocument?) {
-        let defaultProvider = availableGenerateProviders().first ?? .chatGPT
-        guard
-            let data = document?.structureChatData,
-            let decoded = decodeData(
-                StructureChatStateBundle.self,
-                from: data,
-                operation: "load structure chat state"
-            )
-        else {
-            structure.structureChatMessages = []
-            structure.structureChatInput = ""
-            structure.structureChatStatusMessage = nil
-            structure.isStructureChatRunning = false
-            structure.structureChatProvider = defaultProvider
-            structure.structureChatDebugRunningMessageIDs = []
-            structure.structureChatDebugCompletedMessageIDs = []
-            return
-        }
-
-        structure.structureChatMessages = decoded.messages
-        structure.structureChatProvider = APIKeyProvider(rawValue: decoded.providerRaw) ?? defaultProvider
-        structure.structureChatInput = ""
-        structure.structureChatStatusMessage = nil
-        structure.isStructureChatRunning = false
-        structure.structureChatDebugRunningMessageIDs = []
-        structure.structureChatDebugCompletedMessageIDs = []
     }
 
     private func persistStructureChatState() {
         ensureAnyGraphDocument()
         guard let document = activeGraphDocument else { return }
-        let payload = StructureChatStateBundle(
-            messages: structure.structureChatMessages,
-            providerRaw: structure.structureChatProvider.rawValue
-        )
-        guard let data = encodeData(payload, operation: "persist structure chat state") else { return }
-        document.structureChatData = data
-        document.updatedAt = Date()
-        _ = saveModelContext(operation: "persist structure chat state")
+        structure.persist(to: document) {
+            _ = saveModelContext(operation: "persist structure chat state")
+        }
     }
 
 }
