@@ -32,6 +32,14 @@ extension GeminiServicing {
 struct GeminiClient: GeminiServicing {
     let apiKey: String
 
+    private enum Config {
+        static let modelListPageSize = 50
+        static let modelListTimeout: TimeInterval = 25
+        static let generateTimeout: TimeInterval = 120
+        static let retryMaxAttempts = 3
+        static let retryBackoffNanoseconds: UInt64 = 700_000_000
+    }
+
     private let transientNetworkErrorCodes: Set<Int> = [
         NSURLErrorNetworkConnectionLost,
         NSURLErrorTimedOut,
@@ -46,7 +54,7 @@ struct GeminiClient: GeminiServicing {
         repeat {
             var components = URLComponents(string: "https://generativelanguage.googleapis.com/v1beta/models")
             components?.queryItems = [
-                URLQueryItem(name: "pageSize", value: "50")
+                URLQueryItem(name: "pageSize", value: String(Config.modelListPageSize))
             ]
             if let token = pageToken, !token.isEmpty {
                 components?.queryItems?.append(URLQueryItem(name: "pageToken", value: token))
@@ -56,10 +64,13 @@ struct GeminiClient: GeminiServicing {
             }
 
             var request = URLRequest(url: url)
-            request.timeoutInterval = 25
+            request.timeoutInterval = Config.modelListTimeout
             request.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
 
-            let (data, response) = try await performWithRetry(request: request, maxAttempts: 3)
+            let (data, response) = try await performWithRetry(
+                request: request,
+                maxAttempts: Config.retryMaxAttempts
+            )
             guard let http = response as? HTTPURLResponse else {
                 throw GeminiError.invalidResponse
             }
@@ -127,7 +138,7 @@ struct GeminiClient: GeminiServicing {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
-        request.timeoutInterval = 120
+        request.timeoutInterval = Config.generateTimeout
 
         let lastUserIndex = messages.lastIndex { $0.role == .user }
         let tools: [GeminiTool]? = webSearchEnabled ? [GeminiTool(googleSearch: GeminiGoogleSearch())] : nil
@@ -216,7 +227,10 @@ struct GeminiClient: GeminiServicing {
         )
     }
 
-    private func performWithRetry(request: URLRequest, maxAttempts: Int) async throws -> (Data, URLResponse) {
+    private func performWithRetry(
+        request: URLRequest,
+        maxAttempts: Int
+    ) async throws -> (Data, URLResponse) {
         var lastError: Error?
 
         for attempt in 1...maxAttempts {
@@ -228,7 +242,7 @@ struct GeminiClient: GeminiServicing {
                     throw error
                 }
 
-                let delayNanos = UInt64(attempt) * 700_000_000
+                let delayNanos = UInt64(attempt) * Config.retryBackoffNanoseconds
                 try? await Task.sleep(nanoseconds: delayNanos)
             }
         }

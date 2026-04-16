@@ -10,6 +10,11 @@ import SwiftData
 
 @main
 struct AgenticApp: App {
+    @StateObject private var mcpManager = MCPServerManager.shared
+    private let apiKeyStore: any APIKeyStoring = KeychainAPIKeyStore()
+    private let providerModelStore: any ProviderModelPreferencesStoring = UserDefaultsProviderModelStore()
+    private let liveProviderExecutor: any LiveProviderExecuting = DefaultLiveProviderExecutor()
+
     var sharedModelContainer: ModelContainer = {
         let schema = Schema([
             GraphDocument.self,
@@ -29,6 +34,10 @@ struct AgenticApp: App {
         WindowGroup {
             ContentView()
                 .tint(AppTheme.brandTint)
+                .environment(\.apiKeyStore, apiKeyStore)
+                .environment(\.providerModelStore, providerModelStore)
+                .environment(\.liveProviderExecutor, liveProviderExecutor)
+                .environmentObject(mcpManager)
         }
         .modelContainer(sharedModelContainer)
     }

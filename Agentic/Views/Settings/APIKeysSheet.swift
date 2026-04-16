@@ -1,134 +1,12 @@
 import SwiftUI
-import Security
-
-enum AppTheme {
-    // Primary brand — slate blue #4C75A1
-    static let brandTint = Color(red: 76.0 / 255.0, green: 117.0 / 255.0, blue: 161.0 / 255.0)
-
-    // Canvas
-    static let canvasBackground = Color(red: 0.96, green: 0.965, blue: 0.97)
-
-    // Surfaces
-    static let surfacePrimary = Color(uiColor: .systemBackground)
-    static let surfaceSecondary = Color(uiColor: .secondarySystemBackground)
-    static let surfaceGrouped = Color(uiColor: .systemGroupedBackground)
-
-    // Node card accents
-    static let nodeInput = Color(red: 76.0 / 255.0, green: 137.0 / 255.0, blue: 204.0 / 255.0)
-    static let nodeOutput = Color(red: 64.0 / 255.0, green: 166.0 / 255.0, blue: 153.0 / 255.0)
-    static let nodeAgent = Color(red: 76.0 / 255.0, green: 117.0 / 255.0, blue: 161.0 / 255.0)
-    static let nodeHuman = Color(red: 82.0 / 255.0, green: 172.0 / 255.0, blue: 120.0 / 255.0)
-
-    // Subtle border for cards
-    static let cardBorder = Color.black.opacity(0.06)
-    static let cardShadow = Color.black.opacity(0.06)
-}
-
-enum APIKeyProvider: String, CaseIterable, Identifiable {
-    case chatGPT
-    case gemini
-    case claude
-    case grok
-
-    var id: String { rawValue }
-
-    var label: String {
-        switch self {
-        case .chatGPT:
-            return "ChatGPT (OpenAI)"
-        case .gemini:
-            return "Gemini"
-        case .claude:
-            return "Claude (Anthropic)"
-        case .grok:
-            return "Grok (xAI)"
-        }
-    }
-
-    var placeholder: String {
-        switch self {
-        case .chatGPT:
-            return "OpenAI API key"
-        case .gemini:
-            return "Gemini API key"
-        case .claude:
-            return "Anthropic API key"
-        case .grok:
-            return "xAI API key"
-        }
-    }
-
-    var account: String {
-        "provider.\(rawValue).apiKey"
-    }
-}
-
-protocol APIKeyStoring {
-    func key(for provider: APIKeyProvider) throws -> String?
-    func setKey(_ key: String, for provider: APIKeyProvider) throws
-    func removeKey(for provider: APIKeyProvider) throws
-}
-
-protocol ProviderModelPreferencesStoring {
-    func cachedModels(for provider: APIKeyProvider) -> [String]
-    func persistCachedModels(_ models: [String], for provider: APIKeyProvider)
-    func defaultModel(for provider: APIKeyProvider) -> String?
-    func persistDefaultModel(_ modelID: String?, for provider: APIKeyProvider)
-}
-
-struct UserDefaultsProviderModelStore: ProviderModelPreferencesStoring {
-    private let defaults: UserDefaults
-    private let cachePrefix = "api.provider.models."
-    private let defaultPrefix = "api.provider.defaultModel."
-
-    init(defaults: UserDefaults = .standard) {
-        self.defaults = defaults
-    }
-
-    func cachedModels(for provider: APIKeyProvider) -> [String] {
-        defaults.stringArray(forKey: cachePrefix + provider.rawValue) ?? []
-    }
-
-    func persistCachedModels(_ models: [String], for provider: APIKeyProvider) {
-        let normalized = Array(Set(models)).sorted()
-        defaults.set(normalized, forKey: cachePrefix + provider.rawValue)
-    }
-
-    func defaultModel(for provider: APIKeyProvider) -> String? {
-        defaults.string(forKey: defaultPrefix + provider.rawValue)
-    }
-
-    func persistDefaultModel(_ modelID: String?, for provider: APIKeyProvider) {
-        defaults.set(modelID, forKey: defaultPrefix + provider.rawValue)
-    }
-}
-
-struct KeychainAPIKeyStore: APIKeyStoring {
-    private let keychain: KeychainStore
-
-    init(service: String = "com.moosia.Agentic") {
-        self.keychain = KeychainStore(service: service)
-    }
-
-    func key(for provider: APIKeyProvider) throws -> String? {
-        try keychain.string(for: provider.account)
-    }
-
-    func setKey(_ key: String, for provider: APIKeyProvider) throws {
-        try keychain.setString(key, for: provider.account)
-    }
-
-    func removeKey(for provider: APIKeyProvider) throws {
-        try keychain.removeValue(for: provider.account)
-    }
-}
 
 struct APIKeysSheet: View {
     var embedded: Bool = false
-    let store: any APIKeyStoring
-    let modelStore: any ProviderModelPreferencesStoring
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.apiKeyStore) private var store
+    @Environment(\.providerModelStore) private var modelStore
+    @Environment(\.liveProviderExecutor) private var liveProviderExecutor
     @State private var drafts: [APIKeyProvider: String] = [:]
     @State private var savedProviders: Set<APIKeyProvider> = []
     @State private var revealedProviders: Set<APIKeyProvider> = []
@@ -137,16 +15,6 @@ struct APIKeysSheet: View {
     @State private var loadingProviders: Set<APIKeyProvider> = []
     @State private var feedbackMessage: String?
     @State private var feedbackIsError = false
-
-    init(
-        embedded: Bool = false,
-        store: any APIKeyStoring,
-        modelStore: any ProviderModelPreferencesStoring = UserDefaultsProviderModelStore()
-    ) {
-        self.embedded = embedded
-        self.store = store
-        self.modelStore = modelStore
-    }
 
     var body: some View {
         if embedded {
@@ -403,7 +271,7 @@ struct APIKeysSheet: View {
         guard !key.isEmpty else { return }
 
         do {
-            let fetched = try await LiveProviderExecutionService.fetchModels(provider: provider, apiKey: key)
+            let fetched = try await liveProviderExecutor.fetchModels(provider: provider, apiKey: key)
             let normalized = Array(Set(fetched)).sorted()
             availableModelsByProvider[provider] = normalized
             modelStore.persistCachedModels(normalized, for: provider)
@@ -488,131 +356,5 @@ private struct APIKeyFieldStylingModifier: ViewModifier {
             .textInputAutocapitalization(.never)
             .autocorrectionDisabled(true)
             .textContentType(.oneTimeCode)
-    }
-}
-
-struct KeychainStore {
-    let service: String
-
-    private struct CacheKey: Hashable {
-        let service: String
-        let account: String
-    }
-
-    private enum CacheEntry {
-        case value(String)
-        case missing
-    }
-
-    private static let cacheLock = NSLock()
-    private static var cache: [CacheKey: CacheEntry] = [:]
-
-    init(service: String) {
-        self.service = service
-    }
-
-    func string(for account: String) throws -> String? {
-        let cacheKey = CacheKey(service: service, account: account)
-        if let cached = Self.cachedEntry(for: cacheKey) {
-            switch cached {
-            case .value(let value):
-                return value
-            case .missing:
-                return nil
-            }
-        }
-
-        var query = baseQuery(account: account)
-        query[kSecReturnData as String] = true
-        query[kSecMatchLimit as String] = kSecMatchLimitOne
-
-        var item: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &item)
-        switch status {
-        case errSecSuccess:
-            guard let data = item as? Data, let value = String(data: data, encoding: .utf8) else {
-                throw KeychainStoreError.unexpectedData
-            }
-            Self.storeCache(entry: .value(value), for: cacheKey)
-            return value
-        case errSecItemNotFound:
-            Self.storeCache(entry: .missing, for: cacheKey)
-            return nil
-        default:
-            throw KeychainStoreError.unexpectedStatus(status, operation: "read")
-        }
-    }
-
-    func setString(_ value: String, for account: String) throws {
-        let data = Data(value.utf8)
-        let query = baseQuery(account: account)
-        let cacheKey = CacheKey(service: service, account: account)
-
-        var addQuery = query
-        addQuery[kSecValueData as String] = data
-        addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-
-        let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
-        if addStatus == errSecDuplicateItem {
-            let attributesToUpdate = [kSecValueData as String: data]
-            let updateStatus = SecItemUpdate(query as CFDictionary, attributesToUpdate as CFDictionary)
-            guard updateStatus == errSecSuccess else {
-                throw KeychainStoreError.unexpectedStatus(updateStatus, operation: "update")
-            }
-            Self.storeCache(entry: .value(value), for: cacheKey)
-            return
-        }
-
-        guard addStatus == errSecSuccess else {
-            throw KeychainStoreError.unexpectedStatus(addStatus, operation: "add")
-        }
-        Self.storeCache(entry: .value(value), for: cacheKey)
-    }
-
-    func removeValue(for account: String) throws {
-        let cacheKey = CacheKey(service: service, account: account)
-        let status = SecItemDelete(baseQuery(account: account) as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else {
-            throw KeychainStoreError.unexpectedStatus(status, operation: "delete")
-        }
-        Self.storeCache(entry: .missing, for: cacheKey)
-    }
-
-    private func baseQuery(account: String) -> [String: Any] {
-        [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account
-        ]
-    }
-
-    private static func cachedEntry(for key: CacheKey) -> CacheEntry? {
-        cacheLock.lock()
-        defer { cacheLock.unlock() }
-        return cache[key]
-    }
-
-    private static func storeCache(entry: CacheEntry, for key: CacheKey) {
-        cacheLock.lock()
-        defer { cacheLock.unlock() }
-        cache[key] = entry
-    }
-}
-
-enum KeychainStoreError: LocalizedError {
-    case unexpectedData
-    case unexpectedStatus(OSStatus, operation: String)
-
-    var errorDescription: String? {
-        switch self {
-        case .unexpectedData:
-            return "Keychain data had an unexpected format."
-        case .unexpectedStatus(let status, let operation):
-            if status == errSecMissingEntitlement {
-                return "Keychain \(operation) failed (\(status)): missing entitlement. In Xcode, enable Signing for this target and add the Keychain Sharing capability."
-            }
-            let message = SecCopyErrorMessageString(status, nil) as String? ?? "Unknown error"
-            return "Keychain \(operation) failed (\(status)): \(message)"
-        }
     }
 }
