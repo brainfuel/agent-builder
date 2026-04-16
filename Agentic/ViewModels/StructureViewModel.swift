@@ -28,6 +28,13 @@ final class StructureViewModel {
     var structureChatDebugRunningMessageIDs: Set<UUID> = []
     var structureChatDebugCompletedMessageIDs: Set<UUID> = []
 
+    // MARK: - Injected Dependencies
+
+    /// Injected once by ContentView on appear — holds API key, model prefs, LLM executor, and MCP manager.
+    var dependencies: AppDependencies?
+    /// Kept in sync by ContentView via onChange — the live @Query result from SwiftData.
+    var mcpServerConnections: [MCPServerConnection] = []
+
     // MARK: - Callbacks
 
     /// Called after structure chat state changes that should be persisted.
@@ -103,17 +110,23 @@ final class StructureViewModel {
     func generateStructureWithLLM(
         provider: APIKeyProvider,
         taskQuestion: String,
-        structureStrategy: String,
-        apiKey: String,
-        preferredModelID: String?,
-        availableProviders: [String],
-        serverToolExpansion: [String: [String]],
-        liveProviderExecutor: any LiveProviderExecuting
+        structureStrategy: String
     ) async {
+        guard let deps = dependencies else { return }
         guard !structureStrategy.isEmpty else {
             synthesisStatusMessage = "Enter a task question or structure strategy first."
             return
         }
+        let apiKey: String
+        switch deps.loadAPIKey(for: provider) {
+        case .success(let key): apiKey = key
+        case .failure(let err):
+            generateStructureError = err.userMessage
+            return
+        }
+        let preferredModelID = deps.providerModelStore.defaultModel(for: provider)
+        let availableProviders = deps.availableProviders().map(\.rawValue)
+        let serverToolExpansion = deps.makeServerToolExpansionMap(connections: mcpServerConnections)
 
         isGeneratingStructure = true
         generateStructureError = nil
@@ -133,7 +146,7 @@ final class StructureViewModel {
         print("[GenerateStructure] User prompt length: \(userPrompt.count) chars")
 
         do {
-            let llmService = LLMResponseService(liveProviderExecutor: liveProviderExecutor)
+            let llmService = LLMResponseService(liveProviderExecutor: deps.liveProviderExecutor)
             let llmResponse = try await llmService.requestRawText(
                 provider: provider,
                 apiKey: apiKey,
@@ -178,16 +191,8 @@ final class StructureViewModel {
 
     // MARK: - Structure Chat Execution
 
-    func submitStructureChatTurn(
-        apiKeyStore: any APIKeyStoring,
-        providerModelStore: any ProviderModelPreferencesStoring,
-        liveProviderExecutor: any LiveProviderExecuting,
-        availableProviders: [APIKeyProvider],
-        serverToolExpansion: [String: [String]],
-        currentSnapshotJSON: String,
-        mcpServerConnections: [MCPServerConnection],
-        mcpManager: MCPServerManager
-    ) {
+    func submitStructureChatTurn(currentSnapshotJSON: String) {
+        guard dependencies != nil else { return }
         let prompt = structureChatInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !prompt.isEmpty, !isStructureChatRunning else { return }
 
@@ -196,46 +201,20 @@ final class StructureViewModel {
         onPersistChatState?()
 
         Task { [weak self] in
-            await self?.executeStructureChatTurn(
-                userPrompt: prompt,
-                apiKeyStore: apiKeyStore,
-                providerModelStore: providerModelStore,
-                liveProviderExecutor: liveProviderExecutor,
-                availableProviders: availableProviders,
-                serverToolExpansion: serverToolExpansion,
-                currentSnapshotJSON: currentSnapshotJSON,
-                mcpServerConnections: mcpServerConnections,
-                mcpManager: mcpManager
-            )
+            await self?.executeStructureChatTurn(userPrompt: prompt, currentSnapshotJSON: currentSnapshotJSON)
         }
     }
 
     @MainActor
-    private func executeStructureChatTurn(
-        userPrompt: String,
-        apiKeyStore: any APIKeyStoring,
-        providerModelStore: any ProviderModelPreferencesStoring,
-        liveProviderExecutor: any LiveProviderExecuting,
-        availableProviders: [APIKeyProvider],
-        serverToolExpansion: [String: [String]],
-        currentSnapshotJSON: String,
-        mcpServerConnections: [MCPServerConnection],
-        mcpManager: MCPServerManager
-    ) async {
+    private func executeStructureChatTurn(userPrompt: String, currentSnapshotJSON: String) async {
+        guard let deps = dependencies else { return }
+
         let apiKey: String
-        do {
-            let key = (try apiKeyStore.key(for: structureChatProvider) ?? "")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !key.isEmpty else {
-                let message = "No API key configured for \(structureChatProvider.label)."
-                structureChatMessages.append(StructureChatMessageEntry(role: .assistant, text: message))
-                structureChatStatusMessage = message
-                onPersistChatState?()
-                return
-            }
+        switch deps.loadAPIKey(for: structureChatProvider) {
+        case .success(let key):
             apiKey = key
-        } catch {
-            let message = "Failed to read API key: \(error.localizedDescription)"
+        case .failure:
+            let message = "No API key configured for \(structureChatProvider.label)."
             structureChatMessages.append(StructureChatMessageEntry(role: .assistant, text: message))
             structureChatStatusMessage = message
             onPersistChatState?()
