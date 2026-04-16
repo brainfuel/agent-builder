@@ -44,6 +44,13 @@ final class ExecutionViewModel {
     var humanDecisionNote = ""
     var humanActorIdentity = "Human Reviewer"
 
+    // MARK: - Injected Dependencies
+
+    /// Injected once by ContentView on appear — holds API key, model prefs, LLM executor, and MCP manager.
+    var dependencies: AppDependencies?
+    /// Kept in sync by ContentView via onChange — the live @Query result from SwiftData.
+    var mcpServerConnections: [MCPServerConnection] = []
+
     // MARK: - Callbacks
 
     /// Called after execution state changes that should be persisted.
@@ -286,13 +293,9 @@ final class ExecutionViewModel {
     func runPipelineWithFeedback(
         _ feedback: String?,
         orchestrationGraph: OrchestrationGraph,
-        nodes: [OrgNode],
-        apiKeyStore: any APIKeyStoring,
-        providerModelStore: any ProviderModelPreferencesStoring,
-        liveProviderExecutor: any LiveProviderExecuting,
-        mcpManager: MCPServerManager,
-        mcpServerConnections: [MCPServerConnection]
+        nodes: [OrgNode]
     ) {
+        guard dependencies != nil else { return }
         guard !orchestrationGraph.nodes.isEmpty else { return }
         ToolExecutionEngine.shared.resetMemory()
         var normalizedGoal = orchestrationGoal.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -331,14 +334,7 @@ final class ExecutionViewModel {
         liveStatusMessage = "Planning execution…"
         onPersistNeeded?()
         executionTask = Task { [weak self] in
-            await self?.continueExecution(
-                nodes: nodes,
-                apiKeyStore: apiKeyStore,
-                providerModelStore: providerModelStore,
-                liveProviderExecutor: liveProviderExecutor,
-                mcpManager: mcpManager,
-                mcpServerConnections: mcpServerConnections
-            )
+            await self?.continueExecution(nodes: nodes)
         }
     }
 
@@ -346,12 +342,7 @@ final class ExecutionViewModel {
     func runFromNode(
         _ nodeID: UUID,
         additionalContext: String? = nil,
-        nodes: [OrgNode],
-        apiKeyStore: any APIKeyStoring,
-        providerModelStore: any ProviderModelPreferencesStoring,
-        liveProviderExecutor: any LiveProviderExecuting,
-        mcpManager: MCPServerManager,
-        mcpServerConnections: [MCPServerConnection]
+        nodes: [OrgNode]
     ) {
         guard !isExecutingCoordinator else { return }
         guard let previousPending = pendingCoordinatorExecution ?? lastCompletedExecution else { return }
@@ -397,27 +388,14 @@ final class ExecutionViewModel {
         liveStatusMessage = "Resuming from \(plan.packets[startIndex].assignedNodeName)…"
         onPersistNeeded?()
         executionTask = Task { [weak self] in
-            await self?.continueExecution(
-                nodes: nodes,
-                apiKeyStore: apiKeyStore,
-                providerModelStore: providerModelStore,
-                liveProviderExecutor: liveProviderExecutor,
-                mcpManager: mcpManager,
-                mcpServerConnections: mcpServerConnections
-            )
+            await self?.continueExecution(nodes: nodes)
         }
     }
 
     /// Core execution loop — processes packets sequentially.
     @MainActor
-    func continueExecution(
-        nodes: [OrgNode],
-        apiKeyStore: any APIKeyStoring,
-        providerModelStore: any ProviderModelPreferencesStoring,
-        liveProviderExecutor: any LiveProviderExecuting,
-        mcpManager: MCPServerManager,
-        mcpServerConnections: [MCPServerConnection]
-    ) async {
+    func continueExecution(nodes: [OrgNode]) async {
+        guard let deps = dependencies else { return }
         guard var pending = pendingCoordinatorExecution else { return }
 
         while pending.nextPacketIndex < pending.plan.packets.count {
@@ -481,7 +459,7 @@ final class ExecutionViewModel {
             let statusTask = Task { @MainActor [weak self] in
                 while !Task.isCancelled {
                     try? await Task.sleep(nanoseconds: AppConfiguration.Timing.liveStatusPollIntervalNanoseconds)
-                    let detail = liveProviderExecutor.liveStatus
+                    let detail = deps.liveProviderExecutor.liveStatus
                     if !detail.isEmpty {
                         self?.liveStatusMessage = "\(statusPrefix) · \(detail)"
                     }
@@ -497,10 +475,10 @@ final class ExecutionViewModel {
 
             let packetExecutionService = CoordinatorPacketExecutionService(
                 nodes: nodes,
-                apiKeyStore: apiKeyStore,
-                providerModelStore: providerModelStore,
-                liveProviderExecutor: liveProviderExecutor,
-                mcpManager: mcpManager,
+                apiKeyStore: deps.apiKeyStore,
+                providerModelStore: deps.providerModelStore,
+                liveProviderExecutor: deps.liveProviderExecutor,
+                mcpManager: deps.mcpManager,
                 mcpServerConnections: mcpServerConnections
             )
             let response = await packetExecutionService.executeLiveProviderPacket(
@@ -572,42 +550,19 @@ final class ExecutionViewModel {
         _ feedback: String,
         from step: CoordinatorTraceStep?,
         orchestrationGraph: OrchestrationGraph,
-        nodes: [OrgNode],
-        apiKeyStore: any APIKeyStoring,
-        providerModelStore: any ProviderModelPreferencesStoring,
-        liveProviderExecutor: any LiveProviderExecuting,
-        mcpManager: MCPServerManager,
-        mcpServerConnections: [MCPServerConnection]
+        nodes: [OrgNode]
     ) {
         guard !isExecutingCoordinator else { return }
         let source = step?.assignedNodeName ?? "previous run"
         let feedbackText = "FEEDBACK FROM \(source): \(feedback)"
         print("[RetryWithFeedback] Injecting feedback from \(source), length: \(feedback.count) chars")
-
-        runPipelineWithFeedback(
-            feedbackText,
-            orchestrationGraph: orchestrationGraph,
-            nodes: nodes,
-            apiKeyStore: apiKeyStore,
-            providerModelStore: providerModelStore,
-            liveProviderExecutor: liveProviderExecutor,
-            mcpManager: mcpManager,
-            mcpServerConnections: mcpServerConnections
-        )
+        runPipelineWithFeedback(feedbackText, orchestrationGraph: orchestrationGraph, nodes: nodes)
     }
 
     // MARK: - Human Task Resolution
 
     @MainActor
-    func resolveHumanTask(
-        _ decision: HumanTaskDecision,
-        nodes: [OrgNode],
-        apiKeyStore: any APIKeyStoring,
-        providerModelStore: any ProviderModelPreferencesStoring,
-        liveProviderExecutor: any LiveProviderExecuting,
-        mcpManager: MCPServerManager,
-        mcpServerConnections: [MCPServerConnection]
-    ) {
+    func resolveHumanTask(_ decision: HumanTaskDecision, nodes: [OrgNode]) {
         guard
             var pending = pendingCoordinatorExecution,
             let packetID = pending.awaitingHumanPacketID,

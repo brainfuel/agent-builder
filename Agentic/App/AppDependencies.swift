@@ -73,6 +73,46 @@ private struct LiveProviderExecutorEnvironmentKey: EnvironmentKey {
     static let defaultValue: any LiveProviderExecuting = DefaultLiveProviderExecutor()
 }
 
+/// Bundles the four app-level services that ViewModels need for LLM execution and key management.
+/// Injected once via `ContentView.configureViewModelCallbacks()` — not passed on every call.
+struct AppDependencies {
+    let apiKeyStore: any APIKeyStoring
+    let providerModelStore: any ProviderModelPreferencesStoring
+    let liveProviderExecutor: any LiveProviderExecuting
+    let mcpManager: MCPServerManager
+
+    func loadAPIKey(for provider: APIKeyProvider) -> Result<String, WorkflowError> {
+        do {
+            let key = (try apiKeyStore.key(for: provider) ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !key.isEmpty else {
+                return .failure(.missingAPIKey(provider: provider))
+            }
+            return .success(key)
+        } catch {
+            return .failure(.apiKeyReadFailed(provider: provider, underlying: error))
+        }
+    }
+
+    func availableProviders() -> [APIKeyProvider] {
+        APIKeyProvider.allCases.filter {
+            if case .success = loadAPIKey(for: $0) { return true }
+            return false
+        }
+    }
+
+    func makeServerToolExpansionMap(connections: [MCPServerConnection]) -> [String: [String]] {
+        var result: [String: [String]] = [:]
+        for connection in connections where connection.isEnabled {
+            let tools = mcpManager.discoveredTools[connection.id] ?? mcpManager.cachedTools(for: connection.id)
+            if !tools.isEmpty {
+                result[connection.name.lowercased()] = tools.map(\.name)
+            }
+        }
+        return result
+    }
+}
+
 extension EnvironmentValues {
     var apiKeyStore: any APIKeyStoring {
         get { self[APIKeyStoreEnvironmentKey.self] }
