@@ -629,14 +629,7 @@ final class ExecutionViewModel {
             isExecutingCoordinator = true
             onPersistNeeded?()
             executionTask = Task { [weak self] in
-                await self?.continueExecution(
-                    nodes: nodes,
-                    apiKeyStore: apiKeyStore,
-                    providerModelStore: providerModelStore,
-                    liveProviderExecutor: liveProviderExecutor,
-                    mcpManager: mcpManager,
-                    mcpServerConnections: mcpServerConnections
-                )
+                await self?.continueExecution(nodes: nodes)
             }
         case .reject, .needsInfo:
             let completedRun = CoordinatorRun(
