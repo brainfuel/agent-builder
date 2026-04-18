@@ -1,3 +1,4 @@
+import SwiftData
 import SwiftUI
 
 enum InspectorPanelTab: String, CaseIterable, Identifiable {
@@ -23,6 +24,8 @@ struct InspectorPanelView: View {
     let onSaveNodeAsTemplate: (OrgNode) -> Void
     let onDeleteSelectedNode: () -> Void
     let onApplyTemplateFromStructureChat: (PresetHierarchyTemplate?, String) -> Void
+    let onApplyUserStructureTemplate: (UserStructureTemplate) -> Void
+    let onSaveCurrentAsStructureTemplate: (String) -> Void
     let onStartFreshStructureChat: () -> Void
     let onSubmitStructureChatTurn: () -> Void
     let onRunStructureChatDebugBroadcast: (StructureChatMessageEntry) -> Void
@@ -75,6 +78,8 @@ struct InspectorPanelView: View {
                     providerIcon: providerIcon,
                     onPersistStructureChatState: onPersistStructureChatState,
                     onApplyTemplateFromStructureChat: onApplyTemplateFromStructureChat,
+                    onApplyUserStructureTemplate: onApplyUserStructureTemplate,
+                    onSaveCurrentAsStructureTemplate: onSaveCurrentAsStructureTemplate,
                     onStartFreshStructureChat: onStartFreshStructureChat,
                     onSubmitStructureChatTurn: onSubmitStructureChatTurn,
                     onRunStructureChatDebugBroadcast: onRunStructureChatDebugBroadcast
@@ -157,9 +162,18 @@ struct StructureChatInspectorContent: View {
 
     let onPersistStructureChatState: () -> Void
     let onApplyTemplateFromStructureChat: (PresetHierarchyTemplate?, String) -> Void
+    let onApplyUserStructureTemplate: (UserStructureTemplate) -> Void
+    let onSaveCurrentAsStructureTemplate: (String) -> Void
     let onStartFreshStructureChat: () -> Void
     let onSubmitStructureChatTurn: () -> Void
     let onRunStructureChatDebugBroadcast: (StructureChatMessageEntry) -> Void
+
+    @Query(sort: \UserStructureTemplate.updatedAt, order: .reverse)
+    private var userStructureTemplates: [UserStructureTemplate]
+
+    @State private var isShowingSaveTemplateAlert = false
+    @State private var newTemplateName = ""
+    @State private var isShowingEditTemplatesSheet = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -179,8 +193,11 @@ struct StructureChatInspectorContent: View {
                     }
                 } label: {
                     Label("Model: \(structure.structureChatProvider.label)", systemImage: providerIcon(structure.structureChatProvider))
+                        .font(.caption)
+                        .lineLimit(1)
                 }
                 .buttonStyle(.bordered)
+                .controlSize(.small)
                 .help("Pick the model for structure chat")
 
                 Menu {
@@ -192,11 +209,61 @@ struct StructureChatInspectorContent: View {
                             onApplyTemplateFromStructureChat(template, template.title)
                         }
                     }
+
+                    if !userStructureTemplates.isEmpty {
+                        Divider()
+                        Section("Saved") {
+                            ForEach(userStructureTemplates) { template in
+                                Button(template.name) {
+                                    onApplyUserStructureTemplate(template)
+                                }
+                            }
+                        }
+                    }
+
+                    Divider()
+                    Button {
+                        newTemplateName = ""
+                        isShowingSaveTemplateAlert = true
+                    } label: {
+                        Label("Save current as template…", systemImage: "square.and.arrow.down")
+                    }
+                    Button {
+                        isShowingEditTemplatesSheet = true
+                    } label: {
+                        Label("Edit templates…", systemImage: "pencil")
+                    }
+                    .disabled(userStructureTemplates.isEmpty)
                 } label: {
                     Label("Templates", systemImage: "square.grid.2x2")
+                        .font(.caption)
+                        .lineLimit(1)
                 }
                 .buttonStyle(.bordered)
-                .help("Apply a preset team template")
+                .controlSize(.small)
+                .help("Apply a preset or saved team template")
+                .alert("Save Template", isPresented: $isShowingSaveTemplateAlert) {
+                    TextField("Template name", text: $newTemplateName)
+                    Button("Save") {
+                        let trimmed = newTemplateName.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard !trimmed.isEmpty else { return }
+                        onSaveCurrentAsStructureTemplate(trimmed)
+                        newTemplateName = ""
+                    }
+                    .disabled(newTemplateName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    Button("Cancel", role: .cancel) {
+                        newTemplateName = ""
+                    }
+                } message: {
+                    Text("Save the current team structure as a reusable template.")
+                }
+                .sheet(isPresented: $isShowingEditTemplatesSheet) {
+                    EditStructureTemplatesSheet(
+                        templates: userStructureTemplates,
+                        onDismiss: { isShowingEditTemplatesSheet = false }
+                    )
+                    .frame(minWidth: 420, minHeight: 360)
+                }
 
                 Spacer()
             }
