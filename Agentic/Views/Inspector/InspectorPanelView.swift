@@ -468,57 +468,41 @@ private func structureDebugJSONIfPresent(in text: String) -> String? {
 /// Sheet for renaming / deleting user-saved structure templates.
 struct EditStructureTemplatesSheet: View {
     let templates: [UserStructureTemplate]
+    let visiblePresets: [PresetHierarchyTemplate]
+    let onHidePreset: (PresetHierarchyTemplate) -> Void
     let onDismiss: () -> Void
 
     @Environment(\.modelContext) private var modelContext
-    @State private var editingName: [UUID: String] = [:]
+    @State private var editingName: [String: String] = [:]
 
     var body: some View {
         NavigationStack {
             Group {
-                if templates.isEmpty {
+                if templates.isEmpty && visiblePresets.isEmpty {
                     ContentUnavailableView(
-                        "No Saved Templates",
+                        "No Templates",
                         systemImage: "square.grid.2x2",
                         description: Text("Save a team structure from the Templates menu to edit it here.")
                     )
                 } else {
                     List {
-                        ForEach(templates) { template in
-                            HStack(spacing: 10) {
-                                TextField(
-                                    "Template name",
-                                    text: Binding(
-                                        get: { editingName[template.id] ?? template.name },
-                                        set: { editingName[template.id] = $0 }
-                                    )
+                        Section("Templates") {
+                            ForEach(visiblePresets) { preset in
+                                row(
+                                    key: "preset:\(preset.id)",
+                                    currentName: preset.title,
+                                    onRename: { newName in materializePreset(preset, newName: newName) },
+                                    onDelete: { onHidePreset(preset) }
                                 )
-                                .textFieldStyle(.roundedBorder)
-                                .onSubmit { commitRename(template) }
-                                .help("Rename this template")
-
-                                Button {
-                                    commitRename(template)
-                                } label: {
-                                    Label("Save", systemImage: "checkmark")
-                                        .labelStyle(.iconOnly)
-                                }
-                                .buttonStyle(.bordered)
-                                .controlSize(.small)
-                                .disabled(!isRenamePending(template))
-                                .help("Save new name")
-
-                                Button(role: .destructive) {
-                                    delete(template)
-                                } label: {
-                                    Label("Delete", systemImage: "trash")
-                                        .labelStyle(.iconOnly)
-                                }
-                                .buttonStyle(.bordered)
-                                .controlSize(.small)
-                                .help("Delete this template")
                             }
-                            .padding(.vertical, 4)
+                            ForEach(templates) { template in
+                                row(
+                                    key: "user:\(template.id.uuidString)",
+                                    currentName: template.name,
+                                    onRename: { newName in rename(template, to: newName) },
+                                    onDelete: { delete(template) }
+                                )
+                            }
                         }
                     }
                 }
@@ -540,25 +524,84 @@ struct EditStructureTemplatesSheet: View {
         }
     }
 
-    private func isRenamePending(_ template: UserStructureTemplate) -> Bool {
-        guard let pending = editingName[template.id] else { return false }
-        let trimmed = pending.trimmingCharacters(in: .whitespacesAndNewlines)
-        return !trimmed.isEmpty && trimmed != template.name
+    @ViewBuilder
+    private func row(
+        key: String,
+        currentName: String,
+        onRename: @escaping (String) -> Void,
+        onDelete: @escaping () -> Void
+    ) -> some View {
+        HStack(spacing: 10) {
+            TextField(
+                "Template name",
+                text: Binding(
+                    get: { editingName[key] ?? currentName },
+                    set: { editingName[key] = $0 }
+                )
+            )
+            .textFieldStyle(.roundedBorder)
+            .onSubmit { commitPending(key: key, currentName: currentName, onRename: onRename) }
+            .help("Rename this template")
+
+            Button {
+                commitPending(key: key, currentName: currentName, onRename: onRename)
+            } label: {
+                Label("Save", systemImage: "checkmark")
+                    .labelStyle(.iconOnly)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(!isRenamePending(key: key, currentName: currentName))
+            .help("Save new name")
+
+            Button(role: .destructive) {
+                onDelete()
+                editingName[key] = nil
+            } label: {
+                Label("Delete", systemImage: "trash")
+                    .labelStyle(.iconOnly)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .help("Delete this template")
+        }
+        .padding(.vertical, 4)
     }
 
-    private func commitRename(_ template: UserStructureTemplate) {
-        guard let pending = editingName[template.id] else { return }
+    private func isRenamePending(key: String, currentName: String) -> Bool {
+        guard let pending = editingName[key] else { return false }
         let trimmed = pending.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, trimmed != template.name else { return }
-        template.name = trimmed
+        return !trimmed.isEmpty && trimmed != currentName
+    }
+
+    private func commitPending(key: String, currentName: String, onRename: (String) -> Void) {
+        guard let pending = editingName[key] else { return }
+        let trimmed = pending.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != currentName else { return }
+        onRename(trimmed)
+        editingName[key] = nil
+    }
+
+    private func rename(_ template: UserStructureTemplate, to newName: String) {
+        template.name = newName
         template.updatedAt = Date()
         try? modelContext.save()
-        editingName[template.id] = nil
     }
 
     private func delete(_ template: UserStructureTemplate) {
         modelContext.delete(template)
         try? modelContext.save()
-        editingName[template.id] = nil
+    }
+
+    /// Renaming a built-in preset "materializes" it as a user-owned template (captured
+    /// from the preset's snapshot) and hides the original preset, so it becomes a single
+    /// editable/deletable entry going forward.
+    private func materializePreset(_ preset: PresetHierarchyTemplate, newName: String) {
+        let snapshot = preset.snapshot()
+        guard let data = try? JSONEncoder().encode(snapshot) else { return }
+        let template = UserStructureTemplate(name: newName, snapshotData: data)
+        modelContext.insert(template)
+        try? modelContext.save()
+        onHidePreset(preset)
     }
 }
