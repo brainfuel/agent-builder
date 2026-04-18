@@ -18,31 +18,31 @@ struct OrchestrationConfigStripView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .frame(width: 16)
-                TextField("Task title", text: activeTaskTitleText)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.caption)
-                    .lineLimit(1)
-                    .help("Task title")
+                clearableTopStripField(
+                    "Task title",
+                    text: activeTaskTitleText,
+                    helpText: "Task title"
+                )
 
                 Image(systemName: "text.bubble")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .frame(width: 16)
-                TextField("What should the team answer?", text: $execution.orchestrationGoal)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.caption)
-                    .lineLimit(1)
-                    .help("Describe the team's goal")
+                clearableTopStripField(
+                    "What should the team answer?",
+                    text: $execution.orchestrationGoal,
+                    helpText: "Describe the team's goal"
+                )
 
                 Image(systemName: "doc.text")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .frame(width: 16)
-                TextField("Context (optional)", text: $structure.synthesisContext)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.caption)
-                    .lineLimit(1)
-                    .help("Add extra context for the team")
+                clearableTopStripField(
+                    "Context (optional)",
+                    text: $structure.synthesisContext,
+                    helpText: "Add extra context for the team"
+                )
             }
 
             if orphanCount > 0 {
@@ -114,5 +114,43 @@ struct OrchestrationConfigStripView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
         .background(AppTheme.surfaceSecondary)
+    }
+
+    private func clearableTopStripField(
+        _ placeholder: String,
+        text: Binding<String>,
+        helpText: String
+    ) -> some View {
+        HStack(spacing: 4) {
+            TextField(placeholder, text: text)
+                .textFieldStyle(.plain)
+                .font(.caption)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .help(helpText)
+
+            if !text.wrappedValue.isEmpty {
+                Button {
+                    text.wrappedValue = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Clear \(placeholder)")
+                .help("Clear")
+            }
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4)
+        .background(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(Color(UIColor.systemBackground))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .stroke(Color(UIColor.separator).opacity(0.5), lineWidth: 0.5)
+        )
     }
 }
