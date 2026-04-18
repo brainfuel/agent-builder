@@ -4,6 +4,7 @@ import SwiftUI
 struct SchemaControlsBar: View {
     @Bindable var canvas: CanvasViewModel
     @Bindable var viewport: CanvasViewportState
+    @Bindable var execution: ExecutionViewModel
     let canUndo: Bool
     let canRedo: Bool
     let onUndo: () -> Void

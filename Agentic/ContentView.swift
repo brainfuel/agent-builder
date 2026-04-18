@@ -440,6 +440,7 @@ struct ContentView: View {
         SchemaControlsBar(
             canvas: canvas,
             viewport: canvas.viewport,
+            execution: execution,
             canUndo: undoManager?.canUndo ?? false,
             canRedo: undoManager?.canRedo ?? false,
             onUndo: { canvas.undo(syncGraphFromStore: syncGraphFromStore) },
