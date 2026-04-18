@@ -12,6 +12,8 @@ final class GraphDocument {
     var structureChatData: Data?
     var createdAt: Date?
     var updatedAt: Date
+    var scrollOffsetX: Double?
+    var scrollOffsetY: Double?
 
     init(
         key: String = UUID().uuidString,
@@ -22,7 +24,9 @@ final class GraphDocument {
         executionStateData: Data? = nil,
         structureChatData: Data? = nil,
         createdAt: Date? = Date(),
-        updatedAt: Date = Date()
+        updatedAt: Date = Date(),
+        scrollOffsetX: Double? = nil,
+        scrollOffsetY: Double? = nil
     ) {
         self.key = key
         self.title = title
@@ -33,5 +37,7 @@ final class GraphDocument {
         self.structureChatData = structureChatData
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+        self.scrollOffsetX = scrollOffsetX
+        self.scrollOffsetY = scrollOffsetY
     }
 }

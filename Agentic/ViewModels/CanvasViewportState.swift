@@ -11,6 +11,13 @@ final class CanvasViewportState {
     var suppressLayoutAnimation: Bool = false
     var canvasScrollProxy: ScrollViewProxy?
 
+    /// Current scroll offset of the canvas ScrollView, written by the view as the user scrolls.
+    var scrollOffset: CGPoint = .zero
+
+    /// One-shot restore request: set by `CanvasViewModel.load` so the view can scroll
+    /// to the persisted offset on the next layout pass. The view clears it after applying.
+    var pendingRestoreOffset: CGPoint?
+
     func adjustZoom(stepDelta: Int) {
         let raw = zoom + CGFloat(stepDelta) * AppConfiguration.Canvas.zoomStep
         zoom = min(max(raw, AppConfiguration.Canvas.minZoom), AppConfiguration.Canvas.maxZoom)

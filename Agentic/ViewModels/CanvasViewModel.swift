@@ -44,6 +44,14 @@ final class CanvasViewModel {
         suppressStoreSync = false
         DispatchQueue.main.async { [weak self] in self?.viewport.suppressLayoutAnimation = false }
         lastPersistedFingerprint = semanticFingerprint
+
+        // Restore persisted scroll position (if any) on next layout pass.
+        let restoredOffset = CGPoint(
+            x: document.scrollOffsetX ?? 0,
+            y: document.scrollOffsetY ?? 0
+        )
+        viewport.scrollOffset = restoredOffset
+        viewport.pendingRestoreOffset = restoredOffset
     }
 
     /// Writes the current graph snapshot to the document and calls `onSave` if changed.
@@ -52,9 +60,23 @@ final class CanvasViewModel {
         guard newFingerprint != lastPersistedFingerprint else { return }
         guard let data = try? JSONEncoder().encode(captureStructureSnapshot()) else { return }
         document.snapshotData = data
+        document.scrollOffsetX = Double(viewport.scrollOffset.x)
+        document.scrollOffsetY = Double(viewport.scrollOffset.y)
         document.updatedAt = Date()
         onSave()
         lastPersistedFingerprint = newFingerprint
+    }
+
+    /// Persist only the scroll offset (no graph changes). Used for debounced scroll saves
+    /// so scroll position survives relaunch even when the user only pans without editing.
+    func persistScrollPosition(to document: GraphDocument, onSave: () -> Void) {
+        guard !suppressStoreSync else { return }
+        let newX = Double(viewport.scrollOffset.x)
+        let newY = Double(viewport.scrollOffset.y)
+        if document.scrollOffsetX == newX && document.scrollOffsetY == newY { return }
+        document.scrollOffsetX = newX
+        document.scrollOffsetY = newY
+        onSave()
     }
 
     // MARK: - Undo
@@ -584,11 +606,13 @@ final class CanvasViewModel {
             setGraph(from: snapshot, resetViewState: true)
         }
         if registerUndo, let previousSnapshot {
-            let undoTarget = UndoClosureTarget { [weak self] in
-                self?.applyStructureSnapshot(previousSnapshot, registerUndo: true)
-            }
-            undoManager?.registerUndo(withTarget: undoTarget) { target in
-                target.invoke()
+            // NSUndoManager holds an *unowned* reference to the target, so
+            // we must pass something whose lifetime outlives the undo stack.
+            // `self` (the view model) is retained by the canvas view for the
+            // session, so it's the safe target. A local helper object would
+            // be deallocated immediately and crash on undo.
+            undoManager?.registerUndo(withTarget: self) { target in
+                target.applyStructureSnapshot(previousSnapshot, registerUndo: true)
             }
             undoManager?.setActionName("Apply Structure Update")
         }

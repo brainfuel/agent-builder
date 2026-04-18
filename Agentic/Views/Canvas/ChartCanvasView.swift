@@ -17,6 +17,8 @@ struct ChartCanvasView: View {
 
     let onNodeTap: (OrgNode) -> Void
 
+    @State private var scrollPosition = ScrollPosition()
+
     var body: some View {
         let canvasSize = canvasContentSize
         let selectedNodeControlOffset: CGFloat = 19
@@ -195,11 +197,49 @@ struct ChartCanvasView: View {
                 )
             }
             .background(AppTheme.canvasBackground)
-            .onAppear { canvas.viewport.canvasScrollProxy = scrollProxy }
+            .scrollPosition($scrollPosition)
+            .onScrollGeometryChange(for: CGPoint.self) { geo in
+                geo.contentOffset
+            } action: { _, newOffset in
+                // Ignore transient offset reports while a persisted restore is
+                // still pending — the ScrollView initially reports (0,0) before
+                // we've scrolled it, which would otherwise clobber the saved
+                // value and trigger a debounced save of (0,0).
+                guard canvas.viewport.pendingRestoreOffset == nil else { return }
+                canvas.viewport.scrollOffset = newOffset
+            }
+            .onAppear {
+                canvas.viewport.canvasScrollProxy = scrollProxy
+                // Defer one runloop so the ScrollView has measured its content
+                // before we attempt to scroll into it. scrollTo silently clamps
+                // to zero if called before layout.
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 50_000_000)
+                    applyPendingScrollRestoreIfNeeded()
+                }
+            }
+            .onChange(of: canvas.viewport.pendingRestoreOffset) { _, newValue in
+                guard newValue != nil else { return }
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 50_000_000)
+                    applyPendingScrollRestoreIfNeeded()
+                }
+            }
             }
 
             ZoomControlsView(canvas: canvas)
                 .padding(20)
         }
+    }
+
+    /// If the view model has requested a scroll-offset restore (on document load),
+    /// apply it to the ScrollView and clear the request so it fires once.
+    private func applyPendingScrollRestoreIfNeeded() {
+        guard let pending = canvas.viewport.pendingRestoreOffset else { return }
+        scrollPosition.scrollTo(x: pending.x, y: pending.y)
+        // Keep viewport.scrollOffset in sync so the post-restore geometry
+        // callback doesn't register a "change" and re-persist the same value.
+        canvas.viewport.scrollOffset = pending
+        canvas.viewport.pendingRestoreOffset = nil
     }
 }
