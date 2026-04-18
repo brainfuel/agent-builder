@@ -1,14 +1,13 @@
 import SwiftUI
 
-/// Canvas top toolbar: search, undo, and redo controls.
+/// Canvas top toolbar: team-goal field and run control.
 struct SchemaControlsBar: View {
     @Bindable var canvas: CanvasViewModel
     @Bindable var viewport: CanvasViewportState
     @Bindable var execution: ExecutionViewModel
-    let canUndo: Bool
-    let canRedo: Bool
-    let onUndo: () -> Void
-    let onRedo: () -> Void
+    let canRunCoordinator: Bool
+    let onRunCoordinator: () -> Void
+    let onStopExecution: () -> Void
 
     private let headerControlHeight: CGFloat = 42
 
@@ -43,51 +42,43 @@ struct SchemaControlsBar: View {
                     .fill(AppTheme.surfaceSecondary)
             )
 
-            HStack(spacing: 8) {
-                Image(systemName: "magnifyingglass")
-                    .foregroundStyle(.secondary)
-                TextField("Search nodes", text: $viewport.searchText)
-                    .textFieldStyle(.plain)
-                    .help("Search nodes by name")
+            if execution.isExecutingCoordinator {
+                Button {
+                    onStopExecution()
+                } label: {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 4, style: .continuous)
+                            .fill(Color.red)
+                            .frame(width: 16, height: 16)
+                        ProgressView()
+                            .controlSize(.small)
+                            .tint(.white)
+                    }
+                    .frame(height: headerControlHeight)
+                    .padding(.horizontal, 16)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(Color.red.opacity(0.15))
+                    )
+                }
+                .buttonStyle(.plain)
+                .catalystTooltip("Stop Execution")
+            } else {
+                Button {
+                    onRunCoordinator()
+                } label: {
+                    HeaderControlLabel(
+                        title: "Run",
+                        systemImage: "play.fill",
+                        height: headerControlHeight,
+                        prominent: true,
+                        enabled: canRunCoordinator
+                    )
+                }
+                .buttonStyle(.plain)
+                .disabled(!canRunCoordinator)
+                .catalystTooltip("Run Task")
             }
-            .padding(.horizontal, 14)
-            .frame(width: 240, height: headerControlHeight)
-            .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(AppTheme.surfaceSecondary)
-            )
-
-            Button {
-                onUndo()
-            } label: {
-                HeaderControlLabel(
-                    title: "Undo",
-                    systemImage: "arrow.uturn.backward",
-                    height: headerControlHeight,
-                    prominent: false,
-                    enabled: canUndo
-                )
-            }
-            .buttonStyle(.plain)
-            .disabled(!canUndo)
-            .keyboardShortcut("z", modifiers: [.command])
-            .catalystTooltip("Undo")
-
-            Button {
-                onRedo()
-            } label: {
-                HeaderControlLabel(
-                    title: "Redo",
-                    systemImage: "arrow.uturn.forward",
-                    height: headerControlHeight,
-                    prominent: false,
-                    enabled: canRedo
-                )
-            }
-            .buttonStyle(.plain)
-            .disabled(!canRedo)
-            .keyboardShortcut("Z", modifiers: [.command, .shift])
-            .catalystTooltip("Redo")
         }
         .padding(.leading, 16)
         .padding(.trailing, 16)
