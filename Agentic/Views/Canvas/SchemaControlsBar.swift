@@ -18,6 +18,7 @@ struct SchemaControlsBar: View {
                     .foregroundStyle(.secondary)
                 TextField("Search node", text: $viewport.searchText)
                     .textFieldStyle(.plain)
+                    .help("Search nodes by name")
             }
             .padding(.horizontal, 14)
             .frame(width: 300, height: headerControlHeight)

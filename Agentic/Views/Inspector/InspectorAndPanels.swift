@@ -107,6 +107,7 @@ struct NodeInspector: View {
                             }
                             .buttonStyle(.bordered)
                             .accessibilityLabel("Save as Node Template")
+                            .help("Save this node as a reusable template")
                         }
                         Button(role: .destructive) {
                             onDelete()
@@ -116,6 +117,7 @@ struct NodeInspector: View {
                         }
                         .buttonStyle(.bordered)
                         .accessibilityLabel("Delete")
+                        .help("Delete this node")
                     }
 
                     GroupBox {
@@ -126,6 +128,7 @@ struct NodeInspector: View {
                                     .foregroundStyle(.secondary)
                                 TextField("Display Name", text: $node.name)
                                     .textFieldStyle(.roundedBorder)
+                                    .help("Node display name")
                             }
 
                             VStack(alignment: .leading, spacing: 4) {
@@ -134,6 +137,7 @@ struct NodeInspector: View {
                                     .foregroundStyle(.secondary)
                                 TextField("Role Title", text: $node.title)
                                     .textFieldStyle(.roundedBorder)
+                                    .help("Role title for this node")
                             }
 
                             VStack(alignment: .leading, spacing: 4) {
@@ -142,6 +146,7 @@ struct NodeInspector: View {
                                     .foregroundStyle(.secondary)
                                 TextField("Department", text: $node.department)
                                     .textFieldStyle(.roundedBorder)
+                                    .help("Department or group label")
                             }
                         }
                     } label: {
@@ -160,6 +165,7 @@ struct NodeInspector: View {
                                     }
                                 }
                                 .pickerStyle(.segmented)
+                                .help("Pick node type")
                             }
 
                             if node.type == .agent {
@@ -173,6 +179,7 @@ struct NodeInspector: View {
                                         }
                                     }
                                     .pickerStyle(.menu)
+                                    .help("Pick the model provider")
                                 }
                             }
                         }
@@ -190,6 +197,7 @@ struct NodeInspector: View {
                                 .padding(6)
                                 .background(AppTheme.surfacePrimary)
                                 .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                                .help("Describe this node's role and behavior")
                         }
                     } label: {
                         Text("Role Description")
@@ -204,6 +212,7 @@ struct NodeInspector: View {
                                 TextField("e.g. Research Brief, Interview Scorecard", text: $node.outputSchema)
                                     .textFieldStyle(.roundedBorder)
                                     .font(.callout)
+                                    .help("Name of the output schema")
                                     .onChange(of: node.outputSchema) { _, newSchema in
                                         let suggested = DefaultSchema.defaultDescription(for: newSchema)
                                         if !suggested.isEmpty {
@@ -223,6 +232,7 @@ struct NodeInspector: View {
                                     .padding(6)
                                     .background(Color.gray.opacity(0.08))
                                     .cornerRadius(6)
+                                    .help("Describe the expected output format")
                             }
                         }
                     } label: {
@@ -259,6 +269,7 @@ struct NodeInspector: View {
                                                     .foregroundStyle(.tertiary)
                                             }
                                         }
+                                        .help("Toggle \(tool.name) for this node")
                                     }
                                 }
                             }
@@ -296,6 +307,7 @@ struct NodeInspector: View {
                                                 }
                                             }
                                             .disabled(!entry.hasTools)
+                                            .help("Assign \(entry.connection.name) tools to this node")
                                         }
                                     }
                                 }
@@ -439,6 +451,7 @@ struct RunFromHereSheet: View {
                                 .stroke(Color(uiColor: .separator), lineWidth: 0.5)
                         )
                         .focused($isPromptFocused)
+                        .help("Add extra context for this run")
                 }
                 .frame(maxHeight: .infinity, alignment: .top)
 
@@ -446,6 +459,7 @@ struct RunFromHereSheet: View {
                     Spacer()
                     Button("Cancel") { onCancel() }
                         .buttonStyle(.bordered)
+                        .help("Cancel run-from-here")
                     Button {
                         onRun()
                     } label: {
@@ -453,6 +467,7 @@ struct RunFromHereSheet: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(.green)
+                    .help("Run workflow from this node")
                 }
             }
             .padding(20)
@@ -468,7 +483,8 @@ struct CoordinatorTraceRow: View {
     let step: CoordinatorTraceStep
     let resolution: CoordinatorTraceResolutionPresentation?
     let onResolve: (() -> Void)?
-    let onRetryWithFeedback: ((String) -> Void)?
+    let onRunFromHere: ((UUID) -> Void)?
+    var canRunFromNode: ((UUID) -> Bool)? = nil
     @State private var isExpanded = false
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -498,6 +514,7 @@ struct CoordinatorTraceRow: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Copy trace section")
+                .help("Copy this trace step")
 
                 if let tokenText = step.tokenText {
                     HStack(spacing: 2) {
@@ -544,6 +561,7 @@ struct CoordinatorTraceRow: View {
                         }
                         .buttonStyle(.borderedProminent)
                         .controlSize(.small)
+                        .help(resolution.buttonTitle)
                     }
                 }
                 .padding(8)
@@ -571,17 +589,21 @@ struct CoordinatorTraceRow: View {
                                 .foregroundStyle(AppTheme.brandTint)
                         }
                         .buttonStyle(.plain)
+                        .help(isExpanded ? "Collapse summary" : "Expand summary")
 
-                        if let onRetryWithFeedback, let feedback = extractFeedback(from: summary) {
+                        if let onRunFromHere,
+                           let assignedNodeID = step.assignedNodeID,
+                           canRunFromNode?(assignedNodeID) ?? true {
                             Button {
-                                onRetryWithFeedback(feedback)
+                                onRunFromHere(assignedNodeID)
                             } label: {
-                                Label("Retry with Feedback", systemImage: "arrow.counterclockwise")
+                                Label("Run from here", systemImage: "play.fill")
                                     .font(.caption2.weight(.semibold))
                             }
                             .buttonStyle(.borderedProminent)
                             .controlSize(.small)
-                            .tint(.orange)
+                            .tint(.green)
+                            .help("Re-run the pipeline starting from this node")
                         }
                     }
                 }
@@ -598,32 +620,6 @@ struct CoordinatorTraceRow: View {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .stroke(AppTheme.cardBorder, lineWidth: 1)
         )
-    }
-
-    /// Extracts actionable feedback from a BLOCKED / Recommendation response.
-    private func extractFeedback(from summary: String) -> String? {
-        // Only show for failed/blocked steps
-        guard step.status == .failed || step.status == .blocked else { return nil }
-
-        let text = summary.trimmingCharacters(in: .whitespacesAndNewlines)
-        // Look for explicit recommendation sections
-        if let range = text.range(of: "Recommendation:", options: .caseInsensitive) {
-            let recommendation = String(text[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
-            if !recommendation.isEmpty { return recommendation }
-        }
-        if let range = text.range(of: "Follow-up:", options: .caseInsensitive) {
-            let followUp = String(text[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
-            if !followUp.isEmpty { return followUp }
-        }
-        // For BLOCKED responses, the whole message is useful feedback
-        if text.hasPrefix("BLOCKED:") || text.contains("BLOCKED:") {
-            return text
-        }
-        // Generic failed result — use the full summary as feedback
-        if step.status == .failed {
-            return text
-        }
-        return nil
     }
 
     private var stepClipboardMarkdown: String {
@@ -710,6 +706,7 @@ struct RawAPITraceRow: View {
                         .foregroundStyle(.tertiary)
                 }
                 .buttonStyle(.plain)
+                .help("Copy \(title)")
             }
             SelectablePlainText(
                 text: content,
@@ -823,6 +820,7 @@ struct NodeTemplateLibrarySheet: View {
                         Image(systemName: "xmark")
                             .font(.body.weight(.semibold))
                     }
+                    .help("Close node templates")
                 }
             }
         }
@@ -930,6 +928,7 @@ struct NodeTemplateEditorForm: View {
                                         .frame(width: 36, height: 36)
                                         .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
                                 }
+                                .help("Pick template icon")
                             }
                             Spacer()
                         }
@@ -941,6 +940,7 @@ struct NodeTemplateEditorForm: View {
                             TextField("Node Template Label", text: $template.label)
                                 .textFieldStyle(.roundedBorder)
                                 .onChange(of: template.label) { _, _ in template.updatedAt = Date() }
+                                .help("Template label")
                         }
                     }
                 } label: {
@@ -1009,25 +1009,30 @@ struct HumanInboxPanel: View {
 
                                 TextField("Actor identity", text: $actorIdentity)
                                     .textFieldStyle(.roundedBorder)
+                                    .help("Your name or identifier")
 
                                 TextField("Decision note (optional)", text: $decisionNote)
                                     .textFieldStyle(.roundedBorder)
+                                    .help("Add an optional note for this decision")
 
                                 HStack(spacing: 10) {
                                     Button("Approve & Continue") {
                                         onApprove()
                                     }
                                     .buttonStyle(.borderedProminent)
+                                    .help("Approve and continue the run")
 
                                     Button("Reject") {
                                         onReject()
                                     }
                                     .buttonStyle(.bordered)
+                                    .help("Reject this human task")
 
                                     Button("Needs Info") {
                                         onNeedsInfo()
                                     }
                                     .buttonStyle(.bordered)
+                                    .help("Request more information")
                                 }
                             }
                             .padding(.top, 4)
@@ -1090,6 +1095,7 @@ struct HumanInboxPanel: View {
                     }
                     .accessibilityLabel("Close")
                     .keyboardShortcut(.escape, modifiers: [])
+                    .help("Close Human Inbox")
                 }
             }
         }
@@ -1110,7 +1116,6 @@ struct HumanInboxPanel: View {
 struct TaskResultsPanel: View {
     let document: GraphDocument?
     let onClose: () -> Void
-    let onRetryWithFeedback: ((String) -> Void)?
 
     var body: some View {
         // Access executionStateData directly in body so SwiftData observation
@@ -1147,7 +1152,7 @@ struct TaskResultsPanel: View {
                         }
 
                         ForEach(run.results) { result in
-                            TaskResultCard(result: result, onRetryWithFeedback: onRetryWithFeedback)
+                            TaskResultCard(result: result)
                         }
                     } else {
                         Text("No completed results for this task yet.")
@@ -1169,6 +1174,7 @@ struct TaskResultsPanel: View {
                     }
                     .accessibilityLabel("Close")
                     .keyboardShortcut(.escape, modifiers: [])
+                    .help("Close task results")
                 }
             }
         }
@@ -1177,7 +1183,6 @@ struct TaskResultsPanel: View {
 
 struct TaskResultCard: View {
     let result: CoordinatorTaskResult
-    let onRetryWithFeedback: ((String) -> Void)?
     @State private var isExpanded = false
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -1197,6 +1202,7 @@ struct TaskResultCard: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Copy result section")
+                .help("Copy this result")
             }
 
             SelectableText(markdown: result.summary, font: .preferredFont(forTextStyle: .caption1))
@@ -1215,18 +1221,7 @@ struct TaskResultCard: View {
                         .foregroundStyle(.blue)
                 }
                 .buttonStyle(.plain)
-
-                if let onRetryWithFeedback, !result.completed, let feedback = extractFeedback(from: result.summary) {
-                    Button {
-                        onRetryWithFeedback(feedback)
-                    } label: {
-                        Label("Retry with Feedback", systemImage: "arrow.counterclockwise")
-                            .font(.caption2.weight(.semibold))
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                    .tint(.orange)
-                }
+                .help(isExpanded ? "Collapse result" : "Expand result")
             }
         }
         .padding(10)
@@ -1234,22 +1229,6 @@ struct TaskResultCard: View {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(AppTheme.surfaceSecondary)
         )
-    }
-
-    private func extractFeedback(from summary: String) -> String? {
-        let text = summary.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let range = text.range(of: "Recommendation:", options: .caseInsensitive) {
-            let recommendation = String(text[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
-            if !recommendation.isEmpty { return recommendation }
-        }
-        if let range = text.range(of: "Follow-up:", options: .caseInsensitive) {
-            let followUp = String(text[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
-            if !followUp.isEmpty { return followUp }
-        }
-        if text.hasPrefix("BLOCKED:") || text.contains("BLOCKED:") {
-            return text
-        }
-        return text
     }
 
     private var resultClipboardMarkdown: String {
@@ -1279,6 +1258,7 @@ struct SelectableResponsePanel: View {
                     } label: {
                         Label("Copy", systemImage: "doc.on.doc")
                     }
+                    .help("Copy response")
                 }
 
                 ToolbarItem(placement: .cancellationAction) {
@@ -1286,6 +1266,7 @@ struct SelectableResponsePanel: View {
                         dismiss()
                     }
                     .keyboardShortcut(.escape, modifiers: [])
+                    .help("Close panel")
                 }
             }
         }

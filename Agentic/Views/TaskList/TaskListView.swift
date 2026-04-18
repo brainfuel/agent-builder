@@ -118,6 +118,7 @@ struct TaskListView: View {
             .pickerStyle(.segmented)
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
+            .help("Switch sidebar section")
 
             Divider()
 
@@ -172,6 +173,7 @@ struct TaskListView: View {
                                 .foregroundStyle(.secondary)
                         }
                     }
+                    .help("Choose how to create this task")
 
                     draftInfoButton(topic: .creationMode)
 
@@ -183,6 +185,7 @@ struct TaskListView: View {
                         Label("Create", systemImage: "plus.circle.fill")
                     }
                     .buttonStyle(.borderedProminent)
+                    .help("Create a new task from this draft")
                 }
             }
             .padding(.horizontal, 24)
@@ -227,6 +230,7 @@ struct TaskListView: View {
             TextField(placeholder, text: text)
                 .textFieldStyle(.plain)
                 .focused(focusedDraftField, equals: field)
+                .help(placeholder)
             draftInfoButton(topic: infoTopic)
         }
             .padding(.leading, 12)
@@ -253,6 +257,7 @@ struct TaskListView: View {
                 .foregroundStyle(.secondary)
         }
         .buttonStyle(.plain)
+        .help("Show info about \(topic.title)")
         .popover(
             isPresented: Binding(
                 get: { activeDraftInfo == topic },

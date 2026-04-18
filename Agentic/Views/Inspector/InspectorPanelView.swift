@@ -36,6 +36,7 @@ struct InspectorPanelView: View {
                     }
                 }
                 .pickerStyle(.segmented)
+                .help("Switch inspector tab")
 
                 Button {
                     withAnimation(.easeInOut(duration: 0.2)) {
@@ -180,6 +181,7 @@ struct StructureChatInspectorContent: View {
                     Label("Model: \(structure.structureChatProvider.label)", systemImage: providerIcon(structure.structureChatProvider))
                 }
                 .buttonStyle(.bordered)
+                .help("Pick the model for structure chat")
 
                 Menu {
                     Button("Simple Task") {
@@ -194,6 +196,7 @@ struct StructureChatInspectorContent: View {
                     Label("Templates", systemImage: "square.grid.2x2")
                 }
                 .buttonStyle(.bordered)
+                .help("Apply a preset team template")
 
                 Spacer()
             }
@@ -211,6 +214,7 @@ struct StructureChatInspectorContent: View {
                 .controlSize(.mini)
                 .font(.caption.weight(.semibold))
                 .disabled(structure.isStructureChatRunning || structure.structureChatMessages.isEmpty)
+                .help("Clear the structure chat history")
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
@@ -253,6 +257,7 @@ struct StructureChatInspectorContent: View {
                         .lineLimit(1...4)
                         .textFieldStyle(.roundedBorder)
                         .disabled(structure.isStructureChatRunning)
+                        .help("Describe the structure change you want")
 
                     Button {
                         onSubmitStructureChatTurn()
@@ -268,6 +273,7 @@ struct StructureChatInspectorContent: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(structure.isStructureChatRunning || structure.structureChatInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .help("Send structure chat message")
                 }
             }
             .padding(12)

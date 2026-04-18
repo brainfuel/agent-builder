@@ -544,21 +544,6 @@ final class ExecutionViewModel {
         onPersistNeeded?()
     }
 
-    // MARK: - Retry with Feedback
-
-    func retryPipelineWithFeedback(
-        _ feedback: String,
-        from step: CoordinatorTraceStep?,
-        orchestrationGraph: OrchestrationGraph,
-        nodes: [OrgNode]
-    ) {
-        guard !isExecutingCoordinator else { return }
-        let source = step?.assignedNodeName ?? "previous run"
-        let feedbackText = "FEEDBACK FROM \(source): \(feedback)"
-        print("[RetryWithFeedback] Injecting feedback from \(source), length: \(feedback.count) chars")
-        runPipelineWithFeedback(feedbackText, orchestrationGraph: orchestrationGraph, nodes: nodes)
-    }
-
     // MARK: - Human Task Resolution
 
     @MainActor

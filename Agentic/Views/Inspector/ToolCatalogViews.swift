@@ -83,6 +83,7 @@ struct ToolCatalogSheet: View {
                             Spacer()
                             Toggle("", isOn: $mcpManager.globalToolAccess)
                                 .labelsHidden()
+                                .help("Share tools with all nodes")
                         }
                         .padding(.horizontal, 20)
                         .padding(.vertical, 10)
@@ -140,6 +141,7 @@ struct ToolCatalogSheet: View {
                                                         }
                                                         .buttonStyle(.plain)
                                                         .accessibilityLabel("Refresh")
+                                                        .help("Reconnect and refresh tools")
 
                                                         Button {
                                                             disconnectServer(named: server.name)
@@ -150,6 +152,7 @@ struct ToolCatalogSheet: View {
                                                         }
                                                         .buttonStyle(.plain)
                                                         .accessibilityLabel("Remove")
+                                                        .help("Disconnect this server")
                                                     } else {
                                                         Button {
                                                             if server.requiresAPIKey {
@@ -169,6 +172,7 @@ struct ToolCatalogSheet: View {
                                                                 .background(Color.accentColor, in: Capsule())
                                                         }
                                                         .buttonStyle(.plain)
+                                                        .help("Connect \(server.name)")
                                                     }
 
                                                 }
@@ -246,6 +250,7 @@ struct ToolCatalogSheet: View {
                         }
                         .buttonStyle(.plain)
                         .padding(.horizontal, 16)
+                        .help("Add a custom MCP server")
 
                         // Show custom servers
                         let customServers = savedServers.filter { conn in
@@ -289,6 +294,7 @@ struct ToolCatalogSheet: View {
                                                 .foregroundStyle(.red)
                                         }
                                         .buttonStyle(.plain)
+                                        .help("Remove this server")
                                     }
                                     .padding(.horizontal, 20)
                                     .padding(.vertical, 10)
@@ -318,7 +324,11 @@ struct ToolCatalogSheet: View {
                     configuringServer = nil
                 }
             } message: {
-                Text("Enter your API key or bearer token for \(configuringServer?.name ?? "this service"). The credential is stored locally on your device.")
+                if let hint = configuringServer?.credentialHint, !hint.isEmpty {
+                    Text(hint)
+                } else {
+                    Text("Enter your API key or bearer token for \(configuringServer?.name ?? "this service"). The credential is stored locally on your device.")
+                }
             }
             .alert("Add Custom MCP Server", isPresented: $addingCustomServer) {
                 TextField("Server Name", text: $customName)
@@ -594,6 +604,7 @@ struct ServerToolCard: View {
                         }
                         .font(.caption.weight(.medium))
                         .foregroundStyle(Color.accentColor)
+                        .help("Collapse description")
                     }
                 } else {
                     // Truncated preview
@@ -608,6 +619,7 @@ struct ServerToolCard: View {
                     }
                     .font(.caption.weight(.medium))
                     .foregroundStyle(Color.accentColor)
+                    .help("Expand description")
                 }
             }
 

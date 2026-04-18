@@ -40,7 +40,6 @@ Agentic lets you:
 
 Notes:
 
-- The simulation execution mode requires no API keys and is useful for authoring and demoing flows.
 - Live execution requires a valid API key plus a selected model per participating agent node.
 
 ## Requirements
@@ -71,7 +70,7 @@ xcodebuild -project Agentic.xcodeproj -scheme Agentic -configuration Debug build
 2. Tap an empty canvas area and add agent or human nodes from the **+** menu; link them by dragging from a selected node's link handle.
 3. Open the Inspector panel to edit a node's provider, model, role description, tools, and I/O schemas.
 4. Paste provider API keys in **Settings** (Keychain-backed) and pick a model per agent node.
-5. Press **Run** to execute the live coordinator, or use simulation mode to rehearse the flow without API calls.
+5. Press **Run** to execute the live coordinator.
 6. Use the Results drawer to step through the trace, view per-node prompts/responses, and run from any completed node.
 7. Open the Structure chat tab to ask the assistant to add, remove, or rewire nodes in natural language.
 

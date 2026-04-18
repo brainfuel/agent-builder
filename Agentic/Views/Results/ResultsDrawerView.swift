@@ -24,7 +24,8 @@ struct ResultsDrawerView: View {
 
     let traceResolution: (CoordinatorTraceStep) -> TraceResolutionRecommendation?
     let onApplyTraceResolution: (CoordinatorTraceStep) -> Void
-    let onRetryWithFeedback: (String, CoordinatorTraceStep?) -> Void
+    let onRunFromHere: (UUID) -> Void
+    let canRunFromNode: (UUID) -> Bool
     let onResolveHumanTask: (HumanTaskDecision) -> Void
     let onContinueExecution: () async -> Void
     let onPersistCoordinatorExecutionState: () -> Void
@@ -70,6 +71,7 @@ struct ResultsDrawerView: View {
                     }
                     .pickerStyle(.segmented)
                     .frame(width: 160)
+                    .help("Switch between trace and raw API view")
                 }
 
                 Spacer()
@@ -209,6 +211,7 @@ struct ResultsDrawerView: View {
                     .fill(isViewingHistoricalRun ? AppTheme.brandTint.opacity(0.12) : Color(uiColor: .tertiarySystemFill))
             )
         }
+        .help("Pick a run from history")
     }
 
     private static func runHistoryLabel(for entry: CoordinatorRunHistoryEntry) -> String {
@@ -323,6 +326,7 @@ struct ResultsDrawerView: View {
                             }
                             .buttonStyle(.borderedProminent)
                             .controlSize(.small)
+                            .help("Continue the paused run")
                         }
 
                         if let pendingHumanPacket {
@@ -339,10 +343,13 @@ struct ResultsDrawerView: View {
                                 HStack(spacing: 8) {
                                     Button("Approve") { onResolveHumanTask(.approve) }
                                         .buttonStyle(.borderedProminent)
+                                        .help("Approve this human task")
                                     Button("Reject") { onResolveHumanTask(.reject) }
                                         .buttonStyle(.bordered)
+                                        .help("Reject this human task")
                                     Button("Inbox") { execution.isShowingHumanInbox = true }
                                         .buttonStyle(.bordered)
+                                        .help("Open the human inbox")
                                 }
                                 .controlSize(.small)
                             }
@@ -404,9 +411,10 @@ struct ResultsDrawerView: View {
                                     onResolve: resolution == nil
                                         ? nil
                                         : { onApplyTraceResolution(step) },
-                                    onRetryWithFeedback: isViewingHistoricalRun || execution.isExecutingCoordinator
+                                    onRunFromHere: isViewingHistoricalRun || execution.isExecutingCoordinator
                                         ? nil
-                                        : { feedback in onRetryWithFeedback(feedback, step) }
+                                        : { nodeID in onRunFromHere(nodeID) },
+                                    canRunFromNode: canRunFromNode
                                 )
                                 .id(step.id)
                                 .overlay(

@@ -32,6 +32,7 @@ struct APIKeysSheet: View {
                                 Image(systemName: "xmark")
                             }
                             .accessibilityLabel("Close")
+                            .help("Close API Keys")
                         }
                     }
             }
@@ -95,8 +96,10 @@ struct APIKeysSheet: View {
                         storedMaskField(provider)
                     } else if revealedProviders.contains(provider) {
                         TextField(provider.placeholder, text: binding(for: provider))
+                            .help("Paste \(provider.label) API key")
                     } else {
                         SecureField(provider.placeholder, text: binding(for: provider))
+                            .help("Paste \(provider.label) API key")
                     }
                 }
                 .modifier(APIKeyFieldStylingModifier())
@@ -111,6 +114,7 @@ struct APIKeysSheet: View {
                     Image(systemName: revealedProviders.contains(provider) ? "eye.slash" : "eye")
                 }
                 .buttonStyle(.bordered)
+                .help(revealedProviders.contains(provider) ? "Hide API key" : "Show API key")
             }
 
             VStack(alignment: .leading, spacing: 8) {
@@ -133,6 +137,7 @@ struct APIKeysSheet: View {
                     loadingProviders.contains(provider)
                     || (!savedProviders.contains(provider) && trimmedValue(for: provider).isEmpty)
                 )
+                .help("Fetch available models for \(provider.label)")
 
                 Menu {
                     let models = availableModels(for: provider)
@@ -162,6 +167,7 @@ struct APIKeysSheet: View {
                 }
                 .buttonStyle(.bordered)
                 .disabled(availableModels(for: provider).isEmpty)
+                .help("Pick default model for \(provider.label)")
             }
 
             if savedProviders.contains(provider), trimmedValue(for: provider).isEmpty {

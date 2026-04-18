@@ -292,6 +292,29 @@ struct CuratedMCPServer: Identifiable {
     let category: String
     let description: String
     let requiresAPIKey: Bool
+    /// Optional server-specific guidance shown in the credential entry alert
+    /// (e.g. the type of token required and where to create it).
+    let credentialHint: String?
+
+    init(
+        id: String,
+        name: String,
+        url: String,
+        icon: String,
+        category: String,
+        description: String,
+        requiresAPIKey: Bool,
+        credentialHint: String? = nil
+    ) {
+        self.id = id
+        self.name = name
+        self.url = url
+        self.icon = icon
+        self.category = category
+        self.description = description
+        self.requiresAPIKey = requiresAPIKey
+        self.credentialHint = credentialHint
+    }
 }
 
 enum CuratedMCPCatalog {
@@ -303,7 +326,8 @@ enum CuratedMCPCatalog {
             icon: "chevron.left.forwardslash.chevron.right",
             category: "Development",
             description: "Access repositories, issues, pull requests, and code search.",
-            requiresAPIKey: false
+            requiresAPIKey: true,
+            credentialHint: "Paste a GitHub Personal Access Token. Create one at github.com/settings/tokens with the scopes you need (e.g. repo, read:user). The token is stored locally on your device."
         ),
         CuratedMCPServer(
             id: "notion",

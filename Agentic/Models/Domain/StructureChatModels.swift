@@ -22,19 +22,6 @@ enum StructureChatTurnResult {
     case update(message: String, snapshot: HierarchySnapshot)
 }
 
-final class UndoClosureTarget: NSObject {
-    private let action: () -> Void
-
-    init(action: @escaping () -> Void) {
-        self.action = action
-    }
-
-    @objc
-    func invoke() {
-        action()
-    }
-}
-
 enum StructureChatMessageRole: String, Codable {
     case user
     case assistant

@@ -19,6 +19,7 @@ struct ContentView: View {
     @Environment(\.apiKeyStore) private var apiKeyStore
     @Environment(\.providerModelStore) private var providerModelStore
     @Environment(\.liveProviderExecutor) private var liveProviderExecutor
+    @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject private var mcpManager: MCPServerManager
     @Query private var graphDocuments: [GraphDocument]
     @Query private var mcpServerConnections: [MCPServerConnection]
@@ -29,6 +30,7 @@ struct ContentView: View {
     @State private var execution = ExecutionViewModel()
     @State private var structure = StructureViewModel()
     @State private var graphPersistence: (any GraphPersistenceServicing)?
+    @State private var scrollPersistTask: Task<Void, Never>?
 
     // MARK: - UI Chrome State
     @State private var navigation = NavigationCoordinator()
@@ -190,6 +192,14 @@ struct ContentView: View {
             .onChange(of: canvas.semanticFingerprint) { _, newValue in
                 persistGraphIfNeeded(for: newValue)
             }
+            .onChange(of: canvas.viewport.scrollOffset) { _, _ in
+                scheduleScrollOffsetPersist()
+            }
+            .onChange(of: scenePhase) { _, newPhase in
+                if newPhase != .active {
+                    flushScrollOffsetPersist()
+                }
+            }
             .onChange(of: execution.orchestrationGoal) { _, _ in
                 persistActiveTaskMetadata()
             }
@@ -245,13 +255,7 @@ struct ContentView: View {
                     document: taskDocuments.first(where: { $0.key == target.id }),
                     onClose: {
                         navigation.closeTaskResults()
-                    },
-                    onRetryWithFeedback: execution.isExecutingCoordinator
-                        ? nil
-                        : { feedback in
-                            navigation.closeTaskResults()
-                            retryPipelineWithFeedback(feedback, from: nil)
-                        }
+                    }
                 )
                 .presentationDetents([.medium, .large])
             }
@@ -296,6 +300,7 @@ struct ContentView: View {
                                 Image(systemName: "xmark")
                             }
                             .accessibilityLabel("Close Settings")
+                            .help("Close Settings")
                         }
                     }
                 }
@@ -420,7 +425,11 @@ struct ContentView: View {
             appDisplayName: Self.appDisplayName,
             traceResolution: { traceResolution(for: $0) },
             onApplyTraceResolution: { applyTraceResolution(for: $0) },
-            onRetryWithFeedback: { feedback, step in retryPipelineWithFeedback(feedback, from: step) },
+            onRunFromHere: { nodeID in
+                execution.runFromHerePrompt = ""
+                execution.runFromHereNodeID = nodeID
+            },
+            canRunFromNode: { nodeID in canRunFromNode(nodeID) },
             onResolveHumanTask: { resolveHumanTask($0) },
             onContinueExecution: { await continueCoordinatorExecution() },
             onPersistCoordinatorExecutionState: { persistCoordinatorExecutionState() }
@@ -675,6 +684,22 @@ struct ContentView: View {
         execution.stopExecution()
     }
 
+    /// A node can be "run from here" only if data is available to feed it:
+    /// every executing parent (agent/human) must have succeeded. Non-executing parents
+    /// (Input / Output / system) are treated as always-ready since they don't produce runtime output.
+    /// Nodes with no executing parents are always runnable (they're effectively roots).
+    private func canRunFromNode(_ nodeID: UUID) -> Bool {
+        let parentIDs = canvas.links.filter { $0.toID == nodeID }.map(\.fromID)
+        let executingParentIDs = parentIDs.filter { parentID in
+            guard let parent = canvas.nodes.first(where: { $0.id == parentID }) else { return false }
+            return parent.type == .agent || parent.type == .human
+        }
+        if executingParentIDs.isEmpty {
+            return true
+        }
+        return executingParentIDs.allSatisfy { execution.executionState(for: $0) == .succeeded }
+    }
+
     private func runCoordinatorFromNode(_ nodeID: UUID, additionalContext: String? = nil) {
         withAnimation(.snappy(duration: 0.3)) { resultsDrawerOpen = true }
         execution.runFromNode(nodeID, additionalContext: additionalContext, nodes: canvas.nodes)
@@ -682,11 +707,6 @@ struct ContentView: View {
 
     private func continueCoordinatorExecution() async {
         await execution.continueExecution(nodes: canvas.nodes)
-    }
-
-    private func retryPipelineWithFeedback(_ feedback: String, from step: CoordinatorTraceStep?) {
-        withAnimation(.snappy(duration: 0.3)) { resultsDrawerOpen = true }
-        execution.retryPipelineWithFeedback(feedback, from: step, orchestrationGraph: orchestrationGraph, nodes: canvas.nodes)
     }
 
     private func runCoordinatorPipelineWithFeedback(_ feedback: String?) {
@@ -1324,6 +1344,35 @@ struct ContentView: View {
         canvas.persistIfNeeded(for: newFingerprint, to: document) {
             _ = saveModelContext(operation: "persist graph snapshot")
         }
+    }
+
+    /// Write scroll offset to the document immediately (SwiftData in-memory update is cheap)
+    /// and debounce the explicit save() call. Ensures we never lose the last position even
+    /// if the app is backgrounded before a debounce completes.
+    private func scheduleScrollOffsetPersist() {
+        guard let document = activeGraphDocument else { return }
+        // Update the SwiftData object in-memory right now — this survives background
+        // autosave even if our debounced save task is cancelled by app termination.
+        document.scrollOffsetX = Double(canvas.viewport.scrollOffset.x)
+        document.scrollOffsetY = Double(canvas.viewport.scrollOffset.y)
+
+        scrollPersistTask?.cancel()
+        scrollPersistTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 200_000_000) // 0.2s idle
+            guard !Task.isCancelled else { return }
+            _ = saveModelContext(operation: "persist canvas scroll position")
+        }
+    }
+
+    /// Synchronously flush any pending scroll-offset save. Called on scenePhase changes
+    /// so the position survives backgrounding / termination even mid-debounce.
+    private func flushScrollOffsetPersist() {
+        scrollPersistTask?.cancel()
+        scrollPersistTask = nil
+        guard let document = activeGraphDocument else { return }
+        document.scrollOffsetX = Double(canvas.viewport.scrollOffset.x)
+        document.scrollOffsetY = Double(canvas.viewport.scrollOffset.y)
+        _ = saveModelContext(operation: "flush canvas scroll position")
     }
 
     private func persistCoordinatorExecutionState() {

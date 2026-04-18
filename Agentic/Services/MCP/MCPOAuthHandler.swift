@@ -171,21 +171,76 @@ final class MCPOAuthHandler: NSObject, ASWebAuthenticationPresentationContextPro
         return (fallbackURL, nil)
     }
 
-    /// Step 2: Fetch OAuth authorization server metadata (RFC 8414).
+    /// Step 2: Fetch OAuth authorization server metadata.
+    ///
+    /// Per the MCP spec, clients must try RFC 8414 (`oauth-authorization-server`) and
+    /// should also try OpenID Connect Discovery (`openid-configuration`). Each must be
+    /// attempted both at the root of the authorization server and, if the auth server
+    /// URL has a non-root path, with the well-known segment inserted before that path.
     private func fetchAuthServerMetadata(authServerURL: URL) async throws -> OAuthServerMetadata {
-        var components = URLComponents(url: authServerURL, resolvingAgainstBaseURL: false)!
-        components.path = "/.well-known/oauth-authorization-server"
-
-        guard let metadataURL = components.url else {
+        let candidates = metadataCandidateURLs(for: authServerURL)
+        guard !candidates.isEmpty else {
             throw MCPClientError.oauthFailed("Invalid authorization server URL.")
         }
 
-        let (data, response) = try await URLSession.shared.data(from: metadataURL)
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-            throw MCPClientError.oauthFailed("Failed to fetch authorization server metadata.")
+        var lastStatus: Int?
+        for url in candidates {
+            var request = URLRequest(url: url)
+            request.setValue("application/json", forHTTPHeaderField: "Accept")
+            guard let (data, response) = try? await URLSession.shared.data(for: request),
+                  let http = response as? HTTPURLResponse else {
+                continue
+            }
+            lastStatus = http.statusCode
+            guard http.statusCode == 200 else { continue }
+            if let metadata = try? JSONDecoder().decode(OAuthServerMetadata.self, from: data) {
+                return metadata
+            }
         }
 
-        return try JSONDecoder().decode(OAuthServerMetadata.self, from: data)
+        let hostDescription = authServerURL.host.map { "\($0)" } ?? authServerURL.absoluteString
+        if lastStatus == 404 || lastStatus == nil {
+            throw MCPClientError.oauthFailed(
+                "\(hostDescription) does not expose OAuth discovery metadata. This provider likely requires a pre-configured client ID and manual OAuth setup, which this app does not yet support."
+            )
+        }
+        throw MCPClientError.oauthFailed(
+            "Failed to fetch authorization server metadata from \(hostDescription) (status \(lastStatus.map(String.init) ?? "n/a"))."
+        )
+    }
+
+    /// Build the ordered list of discovery URLs to probe, per MCP / RFC 8414 / OIDC Discovery.
+    private func metadataCandidateURLs(for authServerURL: URL) -> [URL] {
+        guard var components = URLComponents(url: authServerURL, resolvingAgainstBaseURL: false) else {
+            return []
+        }
+        // Normalise a trailing slash-only path to empty so path logic is consistent.
+        let originalPath = components.path == "/" ? "" : components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let wellKnownSuffixes = [
+            "oauth-authorization-server",
+            "openid-configuration"
+        ]
+
+        var urls: [URL] = []
+        for suffix in wellKnownSuffixes {
+            // 1. Root-level: https://host/.well-known/<suffix>
+            components.path = "/.well-known/\(suffix)"
+            components.query = nil
+            if let url = components.url { urls.append(url) }
+
+            // 2. Path-preserving: https://host/.well-known/<suffix>/<path>  (RFC 8414 §3)
+            if !originalPath.isEmpty {
+                components.path = "/.well-known/\(suffix)/\(originalPath)"
+                if let url = components.url { urls.append(url) }
+
+                // 3. Under-path variant: https://host/<path>/.well-known/<suffix>  (OIDC-style)
+                components.path = "/\(originalPath)/.well-known/\(suffix)"
+                if let url = components.url { urls.append(url) }
+            }
+        }
+        // De-duplicate while preserving order.
+        var seen = Set<String>()
+        return urls.filter { seen.insert($0.absoluteString).inserted }
     }
 
     /// Step 3: Dynamic client registration (RFC 7591).

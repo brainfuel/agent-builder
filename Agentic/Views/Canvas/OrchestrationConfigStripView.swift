@@ -22,6 +22,7 @@ struct OrchestrationConfigStripView: View {
                     .textFieldStyle(.roundedBorder)
                     .font(.caption)
                     .lineLimit(1)
+                    .help("Task title")
 
                 Image(systemName: "text.bubble")
                     .font(.caption)
@@ -31,6 +32,7 @@ struct OrchestrationConfigStripView: View {
                     .textFieldStyle(.roundedBorder)
                     .font(.caption)
                     .lineLimit(1)
+                    .help("Describe the team's goal")
 
                 Image(systemName: "doc.text")
                     .font(.caption)
@@ -40,6 +42,7 @@ struct OrchestrationConfigStripView: View {
                     .textFieldStyle(.roundedBorder)
                     .font(.caption)
                     .lineLimit(1)
+                    .help("Add extra context for the team")
             }
 
             if orphanCount > 0 {
@@ -64,6 +67,7 @@ struct OrchestrationConfigStripView: View {
                             TextField("Answer", text: $question.answer)
                                 .textFieldStyle(.roundedBorder)
                                 .font(.caption2)
+                                .help("Answer this discovery question")
                         }
                     }
                 }
@@ -84,12 +88,14 @@ struct OrchestrationConfigStripView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.mini)
+                    .help("Apply suggested structure")
 
                     Button("Discard", role: .destructive) {
                         onDiscardSynthesizedStructure()
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.mini)
+                    .help("Discard suggested structure")
                 }
             }
 

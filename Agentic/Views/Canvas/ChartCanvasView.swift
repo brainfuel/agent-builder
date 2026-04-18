@@ -134,6 +134,7 @@ struct ChartCanvasView: View {
                                 AddChildHandle()
                             }
                             .menuStyle(.borderlessButton)
+                            .help("Add a child node")
                         }
                         .position(
                             x: selectedNode.position.x,
@@ -148,8 +149,14 @@ struct ChartCanvasView: View {
                        !execution.isExecutingCoordinator,
                        execution.pendingCoordinatorExecution != nil || execution.lastCompletedExecution != nil
                     {
-                        let nodeExecState = execution.executionState(for: selID)
-                        if nodeExecState == .succeeded || nodeExecState == .failed {
+                        let parentIDs = canvas.links.filter { $0.toID == selID }.map(\.fromID)
+                        let executingParentIDs = parentIDs.filter { pid in
+                            guard let p = canvas.nodes.first(where: { $0.id == pid }) else { return false }
+                            return p.type == .agent || p.type == .human
+                        }
+                        let parentsReady = executingParentIDs.isEmpty
+                            || executingParentIDs.allSatisfy { execution.executionState(for: $0) == .succeeded }
+                        if parentsReady {
                             Button {
                                 execution.runFromHerePrompt = ""
                                 execution.runFromHereNodeID = selID
@@ -170,6 +177,7 @@ struct ChartCanvasView: View {
                                 .shadow(color: .black.opacity(0.15), radius: 4, y: 2)
                             }
                             .buttonStyle(.plain)
+                            .help("Run workflow from this node")
                             .position(
                                 x: selNode.position.x,
                                 y: selNode.position.y - (cardSize.height / 2) - selectedNodeControlOffset
