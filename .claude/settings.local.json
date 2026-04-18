@@ -34,7 +34,15 @@
       "Bash(grep -E '^.*error:.*$|^.*warning:.*$|Build succeeded|BUILD FAILED')",
       "Bash(xcodebuild -scheme Agentic -destination 'platform=macOS,variant=Mac Catalyst' -quiet)",
       "Bash(xcodebuild -scheme Agentic -destination 'platform=macOS,variant=Mac Catalyst')",
-      "Bash(head -5 /Users/benmilford/Documents/Projects/Agentic/Agentic/ViewModels/*.swift)"
+      "Bash(head -5 /Users/benmilford/Documents/Projects/Agentic/Agentic/ViewModels/*.swift)",
+      "Bash(pkill -x xcodebuild)",
+      "Bash(killall xcodebuild:*)",
+      "Bash(killall Xcode)",
+      "Bash(rm -f \"/Users/benmilford/Library/Developer/Xcode/DerivedData/Agentic-degvgedhjzdnawcrexgqdzdgagco/Build/Intermediates.noindex/XCBuildData/build.db\")",
+      "Bash(grep -E \"^.*error:.*$\")",
+      "Bash(tee /tmp/agentic_build.txt)",
+      "Bash(xcodebuild -scheme Agentic -destination 'platform=iOS Simulator,name=iPhone 16' -configuration Debug build)",
+      "Bash(xcodebuild -scheme Agentic -destination 'generic/platform=iOS' -configuration Debug build)"
     ]
   }
 }
