@@ -2,7 +2,7 @@
 //  AgenticApp.swift
 //  Agentic
 //
-//  Created by Ben Milford on 15/03/2026.
+//  Created by Moosia LLC on 15/03/2026.
 //
 
 import SwiftUI
