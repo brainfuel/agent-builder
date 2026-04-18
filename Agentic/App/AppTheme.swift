@@ -4,8 +4,16 @@ enum AppTheme {
     // Primary brand — slate blue #4C75A1
     static let brandTint = Color(red: 76.0 / 255.0, green: 117.0 / 255.0, blue: 161.0 / 255.0)
 
-    // Canvas
-    static let canvasBackground = Color(red: 0.96, green: 0.965, blue: 0.97)
+    // Canvas — adapts to light/dark appearance.
+    static let canvasBackground = Color(uiColor: UIColor { traits in
+        if traits.userInterfaceStyle == .dark {
+            // Slightly lifted from pure black to keep node cards (which use
+            // systemBackground) visually distinct from the canvas surface.
+            return UIColor(red: 0.07, green: 0.075, blue: 0.085, alpha: 1)
+        } else {
+            return UIColor(red: 0.96, green: 0.965, blue: 0.97, alpha: 1)
+        }
+    })
 
     // Surfaces
     static let surfacePrimary = Color(uiColor: .systemBackground)
