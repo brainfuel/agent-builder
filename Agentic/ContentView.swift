@@ -580,13 +580,15 @@ struct ContentView: View {
     private var header: some View {
         HeaderBarView(
             execution: execution,
+            viewport: canvas.viewport,
             activeTaskTitle: activeTaskTitle,
             usesTaskSplitView: usesTaskSplitView,
             splitViewVisibility: navigation.splitViewVisibility,
             pendingHumanPacket: pendingHumanPacket,
             canDeleteTask: activeGraphDocument != nil,
-            canRunCoordinator: !execution.isExecutingCoordinator && !orchestrationGraph.nodes.isEmpty && execution.pendingCoordinatorExecution == nil,
             canCopyDebugPayload: !canvas.nodes.isEmpty,
+            canUndo: undoManager?.canUndo ?? false,
+            canRedo: undoManager?.canRedo ?? false,
             debugClipboardText: { debugClipboardText },
             onShowTaskList: {
                 withAnimation(.snappy(duration: 0.28, extraBounce: 0.02)) {

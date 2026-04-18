@@ -595,6 +595,9 @@ final class StructureViewModel {
 
     /// Restores structure chat state from a persisted document.
     func load(from document: GraphDocument?, defaultProvider: APIKeyProvider) {
+        let storedContext = document?.context ?? ""
+        if synthesisContext != storedContext { synthesisContext = storedContext }
+
         guard
             let data = document?.structureChatData,
             let decoded = try? JSONDecoder().decode(StructureChatStateBundle.self, from: data)
