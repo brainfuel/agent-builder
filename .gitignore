@@ -98,8 +98,8 @@ Secrets.swift
 GoogleService-Info.plist
 *.local.xcconfig
 
-# Claude Code local settings (machine-specific, may contain paths/keys)
-.claude/settings.local.json
+# Claude Code local settings and session state (machine-specific)
+.claude/
 
 # Previews (optional)
 **/PreviewAssets.xcassets/
@@ -128,9 +128,6 @@ yarn-error.log
 .idea/
 .vscode/
 *.reveal
-
-# Local AI tool worktrees
-.claude/worktrees/
 
 # Release artifacts
 dist/
