@@ -171,9 +171,19 @@ struct StructureChatInspectorContent: View {
     @Query(sort: \UserStructureTemplate.updatedAt, order: .reverse)
     private var userStructureTemplates: [UserStructureTemplate]
 
+    @AppStorage("hiddenPresetStructureTemplateIDs") private var hiddenPresetIDsRaw: String = ""
+
     @State private var isShowingSaveTemplateAlert = false
     @State private var newTemplateName = ""
     @State private var isShowingEditTemplatesSheet = false
+
+    private var hiddenPresetIDs: Set<String> {
+        Set(hiddenPresetIDsRaw.split(separator: ",").map(String.init))
+    }
+
+    private var visiblePresetTemplates: [PresetHierarchyTemplate] {
+        PresetHierarchyTemplate.allCases.filter { !hiddenPresetIDs.contains($0.id) }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -204,20 +214,15 @@ struct StructureChatInspectorContent: View {
                     Button("Simple Task") {
                         onApplyTemplateFromStructureChat(nil, "Simple Task")
                     }
-                    ForEach(PresetHierarchyTemplate.allCases) { template in
+                    ForEach(visiblePresetTemplates) { template in
                         Button(template.title) {
                             onApplyTemplateFromStructureChat(template, template.title)
                         }
                     }
 
-                    if !userStructureTemplates.isEmpty {
-                        Divider()
-                        Section("Saved") {
-                            ForEach(userStructureTemplates) { template in
-                                Button(template.name) {
-                                    onApplyUserStructureTemplate(template)
-                                }
-                            }
+                    ForEach(userStructureTemplates) { template in
+                        Button(template.name) {
+                            onApplyUserStructureTemplate(template)
                         }
                     }
 
@@ -233,7 +238,7 @@ struct StructureChatInspectorContent: View {
                     } label: {
                         Label("Edit templates…", systemImage: "pencil")
                     }
-                    .disabled(userStructureTemplates.isEmpty)
+                    .disabled(userStructureTemplates.isEmpty && visiblePresetTemplates.isEmpty)
                 } label: {
                     Label("Templates", systemImage: "square.grid.2x2")
                         .font(.caption)
@@ -260,6 +265,12 @@ struct StructureChatInspectorContent: View {
                 .sheet(isPresented: $isShowingEditTemplatesSheet) {
                     EditStructureTemplatesSheet(
                         templates: userStructureTemplates,
+                        visiblePresets: visiblePresetTemplates,
+                        onHidePreset: { preset in
+                            var current = hiddenPresetIDs
+                            current.insert(preset.id)
+                            hiddenPresetIDsRaw = current.sorted().joined(separator: ",")
+                        },
                         onDismiss: { isShowingEditTemplatesSheet = false }
                     )
                     .frame(minWidth: 420, minHeight: 360)
