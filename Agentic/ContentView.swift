@@ -39,25 +39,18 @@ struct ContentView: View {
     @State private var canvas = CanvasViewModel()
     @State private var execution = ExecutionViewModel()
     @State private var structure = StructureViewModel()
+    @State private var graphPersistence: (any GraphPersistenceServicing)?
 
     // MARK: - UI Chrome State
-    @State private var isShowingTaskList = true
-    @State private var currentGraphKey: String?
+    @State private var navigation = NavigationCoordinator()
     @State private var newTaskTitle = ""
     @State private var newTaskGoal = ""
     @State private var newTaskContext = ""
     @State private var newTaskStructureStrategy = ""
     @State private var newTaskCreationOption: DraftCreationOption = .simpleTask
-    private struct TaskResultsTarget: Identifiable, Equatable {
-        let id: String
-    }
-    @State private var taskResultsTarget: TaskResultsTarget?
-    @State private var sidebarTab: SidebarTab = .tasks
     @State private var inspectorPanelTab: InspectorPanelTab = .nodeDetails
     @State private var isInspectorPanelVisible = true
-    @State private var isShowingSettingsPlaceholderSheet = false
     @State private var activeDraftInfo: DraftInfoTopic?
-    @State private var isShowingNodeTemplateLibrary = false
     @State private var templateSavedName: String?
     @State private var isShowingWipeDataConfirmation = false
     @State private var isShowingDeleteTaskConfirmation = false
@@ -68,7 +61,6 @@ struct ContentView: View {
     @State private var traceDisplayMode: TraceDisplayMode = .trace
     @State private var resultsDrawerOpen = false
     @State private var scrollToTraceID: String?
-    @State private var splitViewVisibility: NavigationSplitViewVisibility = .all
     @FocusState private var focusedDraftField: DraftField?
 
     init() {}
@@ -202,22 +194,6 @@ struct ContentView: View {
         }
     }
 
-    private enum SidebarTab: String, CaseIterable, Identifiable {
-        case tasks = "Tasks"
-        case tools = "Tools"
-        case settings = "Keys"
-
-        var id: String { rawValue }
-
-        var icon: String {
-            switch self {
-            case .tasks: return "list.bullet.rectangle"
-            case .tools: return "wrench.and.screwdriver"
-            case .settings: return "key.horizontal"
-            }
-        }
-    }
-
     private enum InspectorPanelTab: String, CaseIterable, Identifiable {
         case nodeDetails = "Node Details"
         case structureChat = "Structure Chat"
@@ -225,194 +201,221 @@ struct ContentView: View {
         var id: String { rawValue }
     }
 
-    var body: some View {
-        Group {
-            if usesTaskSplitView {
-                NavigationSplitView(columnVisibility: $splitViewVisibility) {
-                    taskListView
-                        .frame(minWidth: 360, idealWidth: 420, maxWidth: 480)
-                } detail: {
-                    editorWorkspace
-                        .navigationBarTitleDisplayMode(.inline)
-                        .toolbar(.hidden, for: .navigationBar)
-                        .toolbarBackground(.hidden, for: .navigationBar)
-                }
-                .navigationSplitViewStyle(.balanced)
-            } else {
-                ZStack {
-                    if isShowingTaskList {
-                        taskListView
-                            .transition(
-                                .asymmetric(
-                                    insertion: .move(edge: .leading).combined(with: .opacity),
-                                    removal: .move(edge: .leading).combined(with: .opacity)
-                                )
-                            )
-                    } else {
-                        editorWorkspace
-                            .transition(
-                                .asymmetric(
-                                    insertion: .move(edge: .trailing).combined(with: .opacity),
-                                    removal: .move(edge: .trailing).combined(with: .opacity)
-                                )
-                            )
-                    }
-                }
-            }
-        }
-        .background(AppTheme.surfaceGrouped)
-        .overlay(alignment: .bottom) {
-            if let templateSavedName {
-                Text("Saved \"\(templateSavedName)\" as node template")
-                    .font(.footnote.weight(.semibold))
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 10)
-                    .background(.ultraThinMaterial, in: Capsule())
-                    .shadow(color: .black.opacity(0.1), radius: 8, y: 4)
-                    .padding(.bottom, 24)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
-        }
-        .animation(.easeInOut(duration: 0.25), value: templateSavedName)
-        .animation(.easeInOut(duration: 0.18), value: canvas.selectedNodeID)
-        .animation(.snappy(duration: 0.28, extraBounce: 0.02), value: isShowingTaskList)
-        .onAppear {
-            modelContext.undoManager = undoManager
-            canvas.undoManager = undoManager
-            configureWindowTitleIfNeeded()
-            configureViewModelCallbacks()
-            ensureAnyGraphDocument()
-            if currentGraphKey == nil {
-                currentGraphKey = taskDocuments.first?.key
-            }
-            syncGraphFromStore()
-        }
-        .onChange(of: currentGraphKey) { _, _ in
-            syncGraphFromStore()
-        }
-        .onChange(of: graphDocuments.count) { _, _ in
-            if currentGraphKey == nil {
-                currentGraphKey = taskDocuments.first?.key
-                syncGraphFromStore()
-            } else if let currentGraphKey, !graphDocuments.contains(where: { $0.key == currentGraphKey }) {
-                self.currentGraphKey = taskDocuments.first?.key
-            }
-        }
-        .onChange(of: canvas.semanticFingerprint) { _, newValue in
-            persistGraphIfNeeded(for: newValue)
-        }
-        .onChange(of: execution.orchestrationGoal) { _, _ in
-            persistActiveTaskMetadata()
-        }
-        .onChange(of: execution.orchestrationStrategy) { _, _ in
-            persistActiveTaskMetadata()
-        }
-        .onChange(of: execution.humanActorIdentity) { _, _ in
-            persistCoordinatorExecutionState()
-        }
-        .onChange(of: mcpServerConnections) { _, new in
-            execution.mcpServerConnections = Array(new)
-            structure.mcpServerConnections = Array(new)
-        }
-        .confirmationDialog("Wipe All Data?", isPresented: $isShowingWipeDataConfirmation) {
-            Button("Wipe All Data", role: .destructive) {
-                wipeAllDataForTesting()
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("This temporary testing action will delete all tasks and execution history. API keys and provider model preferences are preserved.")
-        }
-        .confirmationDialog("Delete Task?", isPresented: $isShowingDeleteTaskConfirmation) {
-            Button("Delete Task", role: .destructive) {
-                deleteCurrentTask()
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("This will permanently delete the selected task and its run history.")
-        }
-        .sheet(isPresented: $execution.isShowingHumanInbox) {
-            HumanInboxPanel(
-                pendingPacket: pendingHumanPacket,
-                actorIdentity: $execution.humanActorIdentity,
-                decisionNote: $execution.humanDecisionNote,
-                auditTrail: execution.humanDecisionAudit,
-                onApprove: { resolveHumanTask(.approve) },
-                onReject: { resolveHumanTask(.reject) },
-                onNeedsInfo: { resolveHumanTask(.needsInfo) }
-            )
-            .presentationDetents([.medium, .large])
-        }
-        .sheet(item: $taskResultsTarget) { target in
-            TaskResultsPanel(
-                document: taskDocuments.first(where: { $0.key == target.id }),
-                onClose: {
-                    taskResultsTarget = nil
-                },
-                onRetryWithFeedback: execution.isExecutingCoordinator
-                    ? nil
-                    : { feedback in
-                        taskResultsTarget = nil
-                        retryPipelineWithFeedback(feedback, from: nil)
-                    }
-            )
-            .presentationDetents([.medium, .large])
-        }
-        .sheet(isPresented: $isShowingNodeTemplateLibrary) {
-            NodeTemplateLibrarySheet(onInsert: { userTemplate in
-                isShowingNodeTemplateLibrary = false
-                canvas.addNodeFromUserTemplate(userTemplate)
-            })
-            .presentationDetents([.medium, .large])
-        }
-        .sheet(isPresented: $isShowingSettingsPlaceholderSheet) {
-            NavigationStack {
-                VStack(spacing: 12) {
-                    Image(systemName: "gearshape.2")
-                        .font(.system(size: 30))
-                        .foregroundStyle(.secondary)
-                    Text("Settings Placeholder")
-                        .font(.headline)
-                    Text("Settings controls will be added here.")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-                .multilineTextAlignment(.center)
-                .padding(24)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .navigationTitle("Settings")
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button {
-                            isShowingSettingsPlaceholderSheet = false
-                        } label: {
-                            Image(systemName: "xmark")
-                        }
-                        .accessibilityLabel("Close Settings")
-                    }
-                }
-            }
-            .presentationDetents([.medium])
-        }
-        .sheet(isPresented: Binding(
-            get: { execution.runFromHereNodeID != nil },
-            set: { if !$0 { execution.runFromHereNodeID = nil } }
-        )) {
-            if let nodeID = execution.runFromHereNodeID {
-                RunFromHereSheet(
-                    nodeName: canvas.nodes.first(where: { $0.id == nodeID })?.name ?? "Node",
-                    prompt: $execution.runFromHerePrompt,
-                    onRun: {
-                        let context = execution.runFromHerePrompt.trimmingCharacters(in: .whitespacesAndNewlines)
-                        execution.runFromHereNodeID = nil
-                        runCoordinatorFromNode(nodeID, additionalContext: context.isEmpty ? nil : context)
-                    },
-                    onCancel: {
-                        execution.runFromHereNodeID = nil
-                    }
+    @ViewBuilder
+    private var rootLayout: some View {
+        if usesTaskSplitView {
+            NavigationSplitView(
+                columnVisibility: Binding(
+                    get: { navigation.splitViewVisibility },
+                    set: { navigation.splitViewVisibility = $0 }
                 )
+            ) {
+                taskListView
+                    .frame(minWidth: 360, idealWidth: 420, maxWidth: 480)
+            } detail: {
+                editorWorkspace
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar(.hidden, for: .navigationBar)
+                    .toolbarBackground(.hidden, for: .navigationBar)
+            }
+            .navigationSplitViewStyle(.balanced)
+        } else {
+            ZStack {
+                if navigation.isShowingTaskList {
+                    taskListView
+                        .transition(
+                            .asymmetric(
+                                insertion: .move(edge: .leading).combined(with: .opacity),
+                                removal: .move(edge: .leading).combined(with: .opacity)
+                            )
+                        )
+                } else {
+                    editorWorkspace
+                        .transition(
+                            .asymmetric(
+                                insertion: .move(edge: .trailing).combined(with: .opacity),
+                                removal: .move(edge: .trailing).combined(with: .opacity)
+                            )
+                        )
+                }
+            }
+        }
+    }
+
+    private var lifecycleModifiedLayout: some View {
+        rootLayout
+            .background(AppTheme.surfaceGrouped)
+            .overlay(alignment: .bottom) {
+                if let templateSavedName {
+                    Text("Saved \"\(templateSavedName)\" as node template")
+                        .font(.footnote.weight(.semibold))
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .background(.ultraThinMaterial, in: Capsule())
+                        .shadow(color: .black.opacity(0.1), radius: 8, y: 4)
+                        .padding(.bottom, 24)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+            }
+            .animation(.easeInOut(duration: 0.25), value: templateSavedName)
+            .animation(.easeInOut(duration: 0.18), value: canvas.selectedNodeID)
+            .animation(.snappy(duration: 0.28, extraBounce: 0.02), value: navigation.isShowingTaskList)
+            .onAppear {
+                if graphPersistence == nil {
+                    graphPersistence = SwiftDataGraphPersistenceService(modelContext: modelContext)
+                }
+                graphPersistence?.configure(undoManager: undoManager)
+                canvas.undoManager = undoManager
+                configureWindowTitleIfNeeded()
+                configureViewModelCallbacks()
+                ensureAnyGraphDocument()
+                navigation.selectFirstTaskIfNeeded(taskKeys: taskDocuments.map(\.key))
+                syncGraphFromStore()
+            }
+            .onChange(of: navigation.currentGraphKey) { _, _ in
+                syncGraphFromStore()
+            }
+            .onChange(of: graphDocuments.count) { _, _ in
+                let previousKey = navigation.currentGraphKey
+                navigation.reconcileCurrentTaskSelection(taskKeys: taskDocuments.map(\.key))
+                if navigation.currentGraphKey != previousKey {
+                    syncGraphFromStore()
+                }
+            }
+            .onChange(of: canvas.semanticFingerprint) { _, newValue in
+                persistGraphIfNeeded(for: newValue)
+            }
+            .onChange(of: execution.orchestrationGoal) { _, _ in
+                persistActiveTaskMetadata()
+            }
+            .onChange(of: execution.orchestrationStrategy) { _, _ in
+                persistActiveTaskMetadata()
+            }
+            .onChange(of: execution.humanActorIdentity) { _, _ in
+                persistCoordinatorExecutionState()
+            }
+            .onChange(of: mcpServerConnections) { _, new in
+                execution.mcpServerConnections = Array(new)
+                structure.mcpServerConnections = Array(new)
+            }
+            .confirmationDialog("Wipe All Data?", isPresented: $isShowingWipeDataConfirmation) {
+                Button("Wipe All Data", role: .destructive) {
+                    wipeAllDataForTesting()
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This temporary testing action will delete all tasks and execution history. API keys and provider model preferences are preserved.")
+            }
+            .confirmationDialog("Delete Task?", isPresented: $isShowingDeleteTaskConfirmation) {
+                Button("Delete Task", role: .destructive) {
+                    deleteCurrentTask()
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This will permanently delete the selected task and its run history.")
+            }
+    }
+
+    var body: some View {
+        lifecycleModifiedLayout
+            .sheet(isPresented: $execution.isShowingHumanInbox) {
+                HumanInboxPanel(
+                    pendingPacket: pendingHumanPacket,
+                    actorIdentity: $execution.humanActorIdentity,
+                    decisionNote: $execution.humanDecisionNote,
+                    auditTrail: execution.humanDecisionAudit,
+                    onApprove: { resolveHumanTask(.approve) },
+                    onReject: { resolveHumanTask(.reject) },
+                    onNeedsInfo: { resolveHumanTask(.needsInfo) }
+                )
+                .presentationDetents([.medium, .large])
+            }
+            .sheet(
+                item: Binding(
+                    get: { navigation.taskResultsTarget },
+                    set: { navigation.taskResultsTarget = $0 }
+                )
+            ) { target in
+                TaskResultsPanel(
+                    document: taskDocuments.first(where: { $0.key == target.id }),
+                    onClose: {
+                        navigation.closeTaskResults()
+                    },
+                    onRetryWithFeedback: execution.isExecutingCoordinator
+                        ? nil
+                        : { feedback in
+                            navigation.closeTaskResults()
+                            retryPipelineWithFeedback(feedback, from: nil)
+                        }
+                )
+                .presentationDetents([.medium, .large])
+            }
+            .sheet(
+                isPresented: Binding(
+                    get: { navigation.isShowingNodeTemplateLibrary },
+                    set: { navigation.isShowingNodeTemplateLibrary = $0 }
+                )
+            ) {
+                NodeTemplateLibrarySheet(onInsert: { userTemplate in
+                    navigation.isShowingNodeTemplateLibrary = false
+                    canvas.addNodeFromUserTemplate(userTemplate)
+                })
+                .presentationDetents([.medium, .large])
+            }
+            .sheet(
+                isPresented: Binding(
+                    get: { navigation.isShowingSettingsPlaceholderSheet },
+                    set: { navigation.isShowingSettingsPlaceholderSheet = $0 }
+                )
+            ) {
+                NavigationStack {
+                    VStack(spacing: 12) {
+                        Image(systemName: "gearshape.2")
+                            .font(.system(size: 30))
+                            .foregroundStyle(.secondary)
+                        Text("Settings Placeholder")
+                            .font(.headline)
+                        Text("Settings controls will be added here.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                    .multilineTextAlignment(.center)
+                    .padding(24)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .navigationTitle("Settings")
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button {
+                                navigation.isShowingSettingsPlaceholderSheet = false
+                            } label: {
+                                Image(systemName: "xmark")
+                            }
+                            .accessibilityLabel("Close Settings")
+                        }
+                    }
+                }
                 .presentationDetents([.medium])
             }
-        }
+            .sheet(isPresented: Binding(
+                get: { execution.runFromHereNodeID != nil },
+                set: { if !$0 { execution.runFromHereNodeID = nil } }
+            )) {
+                if let nodeID = execution.runFromHereNodeID {
+                    RunFromHereSheet(
+                        nodeName: canvas.nodes.first(where: { $0.id == nodeID })?.name ?? "Node",
+                        prompt: $execution.runFromHerePrompt,
+                        onRun: {
+                            let context = execution.runFromHerePrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+                            execution.runFromHereNodeID = nil
+                            runCoordinatorFromNode(nodeID, additionalContext: context.isEmpty ? nil : context)
+                        },
+                        onCancel: {
+                            execution.runFromHereNodeID = nil
+                        }
+                    )
+                    .presentationDetents([.medium])
+                }
+            }
     }
 
     private func configureViewModelCallbacks() {
@@ -975,7 +978,13 @@ struct ContentView: View {
     private var taskListView: some View {
         VStack(spacing: 0) {
             // Tab picker
-            Picker("Sidebar", selection: $sidebarTab) {
+            Picker(
+                "Sidebar",
+                selection: Binding(
+                    get: { navigation.sidebarTab },
+                    set: { navigation.sidebarTab = $0 }
+                )
+            ) {
                 ForEach(SidebarTab.allCases) { tab in
                     Label(tab.rawValue, systemImage: tab.icon).tag(tab)
                 }
@@ -986,7 +995,7 @@ struct ContentView: View {
 
             Divider()
 
-            switch sidebarTab {
+            switch navigation.sidebarTab {
             case .tasks:
                 sidebarTasksContent
             case .tools:
@@ -1075,7 +1084,7 @@ struct ContentView: View {
     private func taskRow(_ document: GraphDocument) -> some View {
         let status = runStatus(for: document)
         let viewModel = TaskCardViewModel(document: document, status: status)
-        let selectedKey = currentGraphKey ?? taskDocuments.first?.key
+        let selectedKey = navigation.currentGraphKey ?? taskDocuments.first?.key
         let isSelectedTask = document.key == selectedKey
         let isRunning = isTaskRunningFromList(document)
         let canRun = canRunTaskFromList(document)
@@ -1419,11 +1428,11 @@ struct ContentView: View {
     }
 
     private func isTaskRunningFromList(_ document: GraphDocument) -> Bool {
-        execution.isExecutingCoordinator && currentGraphKey == document.key
+        execution.isExecutingCoordinator && navigation.currentGraphKey == document.key
     }
 
     private func canRunTaskFromList(_ document: GraphDocument) -> Bool {
-        if execution.isExecutingCoordinator && currentGraphKey != document.key {
+        if execution.isExecutingCoordinator && navigation.currentGraphKey != document.key {
             return false
         }
         guard let bundle = executionBundle(for: document) else { return true }
@@ -1468,7 +1477,7 @@ struct ContentView: View {
                 if !usesTaskSplitView {
                     Button {
                         withAnimation(.snappy(duration: 0.28, extraBounce: 0.02)) {
-                            isShowingTaskList = true
+                            navigation.showTaskList()
                         }
                     } label: {
                         headerControlLabel(
@@ -1481,10 +1490,10 @@ struct ContentView: View {
                     }
                     .buttonStyle(.plain)
                     .catalystTooltip("Show Tasks")
-                } else if splitViewVisibility == .detailOnly {
+                } else if navigation.splitViewVisibility == .detailOnly {
                     Button {
                         withAnimation(.easeInOut(duration: 0.2)) {
-                            splitViewVisibility = .all
+                            navigation.showAllColumns()
                         }
                     } label: {
                         Image(systemName: "sidebar.leading")
@@ -2122,7 +2131,7 @@ struct ContentView: View {
                                 }
                                 Section {
                                     Button {
-                                        isShowingNodeTemplateLibrary = true
+                                        navigation.isShowingNodeTemplateLibrary = true
                                     } label: {
                                         Label("Edit Node Templates…", systemImage: "rectangle.stack.badge.person.crop")
                                     }
@@ -2476,7 +2485,7 @@ struct ContentView: View {
             securityAccessRaw: node.securityAccess.map(\.rawValue),
             assignedToolsRaw: node.assignedTools.sorted()
         )
-        modelContext.insert(template)
+        graphPersistence?.insertTemplate(template)
         templateSavedName = node.name
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
             if templateSavedName == node.name {
@@ -2487,7 +2496,8 @@ struct ContentView: View {
 
 
     private var activeGraphDocument: GraphDocument? {
-        if let currentGraphKey, let exact = graphDocuments.first(where: { $0.key == currentGraphKey }) {
+        if let currentGraphKey = navigation.currentGraphKey,
+           let exact = graphDocuments.first(where: { $0.key == currentGraphKey }) {
             return exact
         }
         return taskDocuments.first
@@ -2499,13 +2509,25 @@ struct ContentView: View {
 
     @discardableResult
     private func saveModelContext(operation: String) -> Bool {
-        do {
-            try modelContext.save()
-            return true
-        } catch {
+        guard let graphPersistence else {
             reportNonFatalWorkflowError(
-                .persistenceFailed(operation: operation, underlying: error)
+                .persistenceFailed(
+                    operation: operation,
+                    underlying: NSError(
+                        domain: "GraphPersistenceService",
+                        code: 1,
+                        userInfo: [NSLocalizedDescriptionKey: "Persistence service is unavailable."]
+                    )
+                )
             )
+            return false
+        }
+
+        switch graphPersistence.save(operation: operation) {
+        case .success:
+            return true
+        case .failure(let error):
+            reportNonFatalWorkflowError(error)
             return false
         }
     }
@@ -2536,9 +2558,9 @@ struct ContentView: View {
             createdAt: Date(),
             updatedAt: Date()
         )
-        modelContext.insert(document)
+        graphPersistence?.insertGraphDocument(document)
         _ = saveModelContext(operation: "create default task")
-        currentGraphKey = document.key
+        navigation.currentGraphKey = document.key
     }
 
     private func createTaskFromDraftSelection() {
@@ -2562,18 +2584,18 @@ struct ContentView: View {
     }
 
     private func openTaskEditor(key: String) {
-        currentGraphKey = key
+        navigation.currentGraphKey = key
         execution.isShowingHumanInbox = false
         if !usesTaskSplitView {
             withAnimation(.snappy(duration: 0.28, extraBounce: 0.02)) {
-                isShowingTaskList = false
+                navigation.showEditor()
             }
         }
         syncGraphFromStore()
     }
 
     private func openHumanInbox(for key: String) {
-        currentGraphKey = key
+        navigation.currentGraphKey = key
         syncGraphFromStore()
         execution.isShowingHumanInbox = true
     }
@@ -2640,7 +2662,7 @@ struct ContentView: View {
     }
 
     private func openTaskResults(for key: String) {
-        taskResultsTarget = TaskResultsTarget(id: key)
+        navigation.openTaskResults(for: key)
     }
 
     private func runOrContinueTask(for key: String) {
@@ -2648,7 +2670,7 @@ struct ContentView: View {
             return
         }
 
-        currentGraphKey = key
+        navigation.currentGraphKey = key
         syncGraphFromStore()
         withAnimation(.snappy(duration: 0.2)) {
             resultsDrawerOpen = true
@@ -2710,13 +2732,13 @@ struct ContentView: View {
             createdAt: Date(),
             updatedAt: Date()
         )
-        modelContext.insert(document)
+        graphPersistence?.insertGraphDocument(document)
         _ = saveModelContext(operation: "create task document")
 
-        currentGraphKey = document.key
+        navigation.currentGraphKey = document.key
         if !usesTaskSplitView {
             withAnimation(.snappy(duration: 0.28, extraBounce: 0.02)) {
-                isShowingTaskList = false
+                navigation.showEditor()
             }
         }
         syncGraphFromStore()
@@ -2726,18 +2748,18 @@ struct ContentView: View {
         guard let document = activeGraphDocument else { return }
         let fallbackKey = taskDocuments.first(where: { $0.key != document.key })?.key
 
-        modelContext.delete(document)
+        graphPersistence?.deleteGraphDocument(document)
         _ = saveModelContext(operation: "delete task")
 
-        currentGraphKey = fallbackKey
+        navigation.currentGraphKey = fallbackKey
         canvas.selectedNodeID = nil
         canvas.selectedLinkID = nil
         canvas.clearLinkDragState()
 
-        if currentGraphKey == nil {
+        if navigation.currentGraphKey == nil {
             ensureAnyGraphDocument()
-            if currentGraphKey == nil {
-                currentGraphKey = taskDocuments.first?.key
+            if navigation.currentGraphKey == nil {
+                navigation.currentGraphKey = taskDocuments.first?.key
             }
         }
         syncGraphFromStore()
@@ -2745,13 +2767,11 @@ struct ContentView: View {
 
     private func wipeAllDataForTesting() {
         // Clear persisted graph documents.
-        for document in graphDocuments {
-            modelContext.delete(document)
-        }
+        graphPersistence?.deleteGraphDocuments(graphDocuments)
         _ = saveModelContext(operation: "wipe all graph documents")
 
         // Reset editor/list state so UI reflects an empty project immediately.
-        currentGraphKey = nil
+        navigation.currentGraphKey = nil
         canvas.nodes = []
         canvas.links = []
         canvas.selectedNodeID = nil
@@ -2771,7 +2791,7 @@ struct ContentView: View {
         execution.humanDecisionAudit = []
         execution.humanDecisionNote = ""
         execution.isShowingHumanInbox = false
-        taskResultsTarget = nil
+        navigation.closeTaskResults()
         execution.isExecutingCoordinator = false
         execution.orchestrationStrategy = ExecutionViewModel.defaultOrchestrationStrategy
         structure.synthesisContext = ""
@@ -2780,7 +2800,7 @@ struct ContentView: View {
         structure.synthesisStatusMessage = nil
         resetTaskDraft()
         if !usesTaskSplitView {
-            isShowingTaskList = true
+            navigation.showTaskList()
         }
     }
 
