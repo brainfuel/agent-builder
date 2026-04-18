@@ -138,6 +138,7 @@ struct ToolCatalogSheet: View {
                                                             Image(systemName: "arrow.clockwise")
                                                                 .font(.callout.weight(.semibold))
                                                                 .foregroundStyle(Color.accentColor)
+                                                                .frame(width: 20, height: 20)
                                                         }
                                                         .buttonStyle(.plain)
                                                         .accessibilityLabel("Refresh")
@@ -149,6 +150,7 @@ struct ToolCatalogSheet: View {
                                                             Image(systemName: "xmark.circle")
                                                                 .font(.callout.weight(.semibold))
                                                                 .foregroundStyle(.red)
+                                                                .frame(width: 20, height: 20)
                                                         }
                                                         .buttonStyle(.plain)
                                                         .accessibilityLabel("Remove")
@@ -486,7 +488,7 @@ struct ToolCatalogSheet: View {
         if case .connected(let count) = status {
             Text("\(count) tools")
                 .font(.caption2.weight(.semibold))
-                .foregroundStyle(.white)
+                .foregroundStyle(.black)
                 .padding(.horizontal, 6)
                 .padding(.vertical, 2)
                 .background(Color.green, in: Capsule())
@@ -514,7 +516,7 @@ struct ToolCatalogSheet: View {
         } else if isConnected && cachedToolCount > 0 {
             Text("\(cachedToolCount) tools")
                 .font(.caption2.weight(.semibold))
-                .foregroundStyle(.white)
+                .foregroundStyle(.black)
                 .padding(.horizontal, 6)
                 .padding(.vertical, 2)
                 .background(Color.green, in: Capsule())
