@@ -33,12 +33,14 @@ struct AgenticApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .frame(minWidth: 1688)
                 .tint(AppTheme.brandTint)
                 .environment(\.apiKeyStore, apiKeyStore)
                 .environment(\.providerModelStore, providerModelStore)
                 .environment(\.liveProviderExecutor, liveProviderExecutor)
                 .environmentObject(mcpManager)
         }
+        .windowResizability(.contentMinSize)
         .modelContainer(sharedModelContainer)
     }
 }

@@ -206,6 +206,9 @@ struct ContentView: View {
             .onChange(of: execution.orchestrationStrategy) { _, _ in
                 persistActiveTaskMetadata()
             }
+            .onChange(of: structure.synthesisContext) { _, _ in
+                persistActiveTaskMetadata()
+            }
             .onChange(of: execution.humanActorIdentity) { _, _ in
                 persistCoordinatorExecutionState()
             }
@@ -361,6 +364,14 @@ struct ContentView: View {
             .forEach { scene in
                 scene.title = Self.appDisplayName
                 scene.titlebar?.titleVisibility = .hidden
+                if let restrictions = scene.sizeRestrictions {
+                    let currentMinimum = restrictions.minimumSize
+                    let enforcedMinimum = CGSize(
+                        width: max(currentMinimum.width, 888),
+                        height: max(currentMinimum.height, 620)
+                    )
+                    restrictions.minimumSize = enforcedMinimum
+                }
             }
 #endif
     }

@@ -51,14 +51,15 @@ struct ZoomControlsView: View {
             } label: {
                 Image(systemName: "location.north.line.fill")
                     .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(.primary)
                     .frame(width: controlHeight, height: controlHeight)
                     .background(
                         RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill(AppTheme.brandTint)
+                            .fill(.ultraThinMaterial)
                     )
             }
             .buttonStyle(.plain)
+            .shadow(color: .black.opacity(0.10), radius: 7, y: 2)
             .accessibilityLabel("Center View")
             .catalystTooltip("Center View")
         }

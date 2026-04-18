@@ -66,6 +66,52 @@ struct HeaderBarView: View {
                 }
                 Spacer()
 
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(.secondary)
+                    TextField("Search nodes", text: $viewport.searchText)
+                        .textFieldStyle(.plain)
+                        .help("Search nodes by name")
+                }
+                .padding(.horizontal, 14)
+                .frame(width: 220, height: headerControlHeight)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(AppTheme.surfaceSecondary)
+                )
+
+                Button {
+                    onUndo()
+                } label: {
+                    HeaderControlLabel(
+                        title: "Undo",
+                        systemImage: "arrow.uturn.backward",
+                        height: headerControlHeight,
+                        prominent: false,
+                        enabled: canUndo
+                    )
+                }
+                .buttonStyle(.plain)
+                .disabled(!canUndo)
+                .keyboardShortcut("z", modifiers: [.command])
+                .catalystTooltip("Undo")
+
+                Button {
+                    onRedo()
+                } label: {
+                    HeaderControlLabel(
+                        title: "Redo",
+                        systemImage: "arrow.uturn.forward",
+                        height: headerControlHeight,
+                        prominent: false,
+                        enabled: canRedo
+                    )
+                }
+                .buttonStyle(.plain)
+                .disabled(!canRedo)
+                .keyboardShortcut("Z", modifiers: [.command, .shift])
+                .catalystTooltip("Redo")
+
                 Button {
                     onOpenHumanInbox()
                 } label: {
@@ -131,43 +177,6 @@ struct HeaderBarView: View {
                 .catalystTooltip("Delete Task")
 
 
-                if execution.isExecutingCoordinator {
-                    Button {
-                        onStopExecution()
-                    } label: {
-                        ZStack {
-                            RoundedRectangle(cornerRadius: 4, style: .continuous)
-                                .fill(Color.red)
-                                .frame(width: 16, height: 16)
-                            ProgressView()
-                                .controlSize(.small)
-                                .tint(.white)
-                        }
-                        .frame(height: headerControlHeight)
-                        .padding(.horizontal, 16)
-                        .background(
-                            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .fill(Color.red.opacity(0.15))
-                        )
-                    }
-                    .buttonStyle(.plain)
-                    .catalystTooltip("Stop Execution")
-                } else {
-                    Button {
-                        onRunCoordinator()
-                    } label: {
-                        HeaderControlLabel(
-                            title: "Run",
-                            systemImage: "play.fill",
-                            height: headerControlHeight,
-                            prominent: true,
-                            enabled: canRunCoordinator
-                        )
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(!canRunCoordinator)
-                    .catalystTooltip("Run Task")
-                }
             }
             .padding(.horizontal, 24)
 

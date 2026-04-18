@@ -6,6 +6,7 @@ final class GraphDocument {
     @Attribute(.unique) var key: String
     var title: String?
     var goal: String?
+    var context: String?
     var structureStrategy: String?
     var snapshotData: Data
     var executionStateData: Data?
@@ -19,6 +20,7 @@ final class GraphDocument {
         key: String = UUID().uuidString,
         title: String? = "Untitled Task",
         goal: String? = "",
+        context: String? = "",
         structureStrategy: String? = "",
         snapshotData: Data,
         executionStateData: Data? = nil,
@@ -31,6 +33,7 @@ final class GraphDocument {
         self.key = key
         self.title = title
         self.goal = goal
+        self.context = context
         self.structureStrategy = structureStrategy
         self.snapshotData = snapshotData
         self.executionStateData = executionStateData

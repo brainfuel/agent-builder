@@ -134,14 +134,14 @@ struct OrchestrationConfigStripView: View {
             }
         }
         .padding(.horizontal, 6)
-        .padding(.vertical, 4)
+        .frame(height: 24)
         .background(
             RoundedRectangle(cornerRadius: 6, style: .continuous)
                 .fill(Color(UIColor.systemBackground))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .stroke(Color(UIColor.separator).opacity(0.5), lineWidth: 0.5)
+                .stroke(Color(UIColor.separator), lineWidth: 1)
         )
     }
 }
