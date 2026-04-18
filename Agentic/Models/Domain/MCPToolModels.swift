@@ -1,4 +1,4 @@
-import SwiftUI
+import Foundation
 
 struct MCPToolDefinition: Identifiable, Hashable {
     let id: String

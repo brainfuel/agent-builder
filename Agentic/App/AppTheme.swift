@@ -21,4 +21,11 @@ enum AppTheme {
     // Subtle border for cards
     static let cardBorder = Color.black.opacity(0.06)
     static let cardShadow = Color.black.opacity(0.06)
+
+    // Link tones — semantic flow categorization on canvas edges.
+    static let linkBlue   = Color(red: 76.0  / 255.0, green: 117.0 / 255.0, blue: 161.0 / 255.0)
+    static let linkOrange = Color(red: 214.0 / 255.0, green: 142.0 / 255.0, blue: 78.0  / 255.0)
+    static let linkTeal   = Color(red: 64.0  / 255.0, green: 166.0 / 255.0, blue: 153.0 / 255.0)
+    static let linkGreen  = Color(red: 82.0  / 255.0, green: 172.0 / 255.0, blue: 120.0 / 255.0)
+    static let linkIndigo = Color(red: 97.0  / 255.0, green: 104.0 / 255.0, blue: 180.0 / 255.0)
 }

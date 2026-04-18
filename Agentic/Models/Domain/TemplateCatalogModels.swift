@@ -1,4 +1,4 @@
-import SwiftUI
+import Foundation
 
 enum DefaultSchema {
     static let goalBrief = "Goal Brief"

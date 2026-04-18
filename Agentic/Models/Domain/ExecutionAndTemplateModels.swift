@@ -1,4 +1,5 @@
-import SwiftUI
+import Foundation
+import CoreGraphics
 
 func makeHierarchySnapshot(nodes: [OrgNode], links: [NodeLink]) -> HierarchySnapshot {
     let snapshotNodes = nodes.map { node in
@@ -150,18 +151,6 @@ enum TaskRunStatus {
         }
     }
 
-    var color: Color {
-        switch self {
-        case .draft:
-            return .gray
-        case .inProgress:
-            return .blue
-        case .needsAttention:
-            return .orange
-        case .completed:
-            return .green
-        }
-    }
 }
 
 struct SynthesisQuestionState: Identifiable {
@@ -472,28 +461,6 @@ enum CoordinatorTraceStatus: String, Codable {
         }
     }
 
-    var color: Color {
-        switch self {
-        case .queued:
-            return .gray
-        case .running:
-            return .blue
-        case .waitingHuman:
-            return .indigo
-        case .succeeded:
-            return .green
-        case .approved:
-            return .green
-        case .rejected:
-            return .red
-        case .needsInfo:
-            return .orange
-        case .blocked:
-            return .orange
-        case .failed:
-            return .red
-        }
-    }
 }
 
 struct CoordinatorTraceStep: Identifiable, Codable {

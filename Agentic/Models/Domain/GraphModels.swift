@@ -1,4 +1,5 @@
-import SwiftUI
+import Foundation
+import CoreGraphics
 
 struct OrgNode: Identifiable {
     let id: UUID
@@ -203,8 +204,6 @@ struct NodeLink: Identifiable {
     let tone: LinkTone
     let edgeType: EdgeType
 
-    var color: Color { tone.color }
-
     init(
         id: UUID = UUID(),
         fromID: UUID,
@@ -274,10 +273,6 @@ enum LinkTone: String, CaseIterable, Codable {
     case teal
     case green
     case indigo
-
-    var color: Color {
-        AppTheme.brandTint
-    }
 }
 
 enum EdgeType: String, Codable {
