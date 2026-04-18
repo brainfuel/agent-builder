@@ -452,10 +452,9 @@ struct ContentView: View {
             canvas: canvas,
             viewport: canvas.viewport,
             execution: execution,
-            canUndo: undoManager?.canUndo ?? false,
-            canRedo: undoManager?.canRedo ?? false,
-            onUndo: { canvas.undo(syncGraphFromStore: syncGraphFromStore) },
-            onRedo: { canvas.redo(syncGraphFromStore: syncGraphFromStore) }
+            canRunCoordinator: !execution.isExecutingCoordinator && !orchestrationGraph.nodes.isEmpty && execution.pendingCoordinatorExecution == nil,
+            onRunCoordinator: { runCoordinatorPipeline() },
+            onStopExecution: { stopCoordinatorExecution() }
         )
     }
 
@@ -603,8 +602,8 @@ struct ContentView: View {
             onOpenHumanInbox: { execution.isShowingHumanInbox = true },
             onCopyDebug: { copyTextToClipboard(debugClipboardText) },
             onRequestDeleteTask: { isShowingDeleteTaskConfirmation = true },
-            onStopExecution: { stopCoordinatorExecution() },
-            onRunCoordinator: { runCoordinatorPipeline() }
+            onUndo: { canvas.undo(syncGraphFromStore: syncGraphFromStore) },
+            onRedo: { canvas.redo(syncGraphFromStore: syncGraphFromStore) }
         )
     }
 
@@ -1215,6 +1214,7 @@ struct ContentView: View {
         guard let document = activeGraphDocument else { return }
         let normalizedQuestion = execution.orchestrationGoal.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalizedStrategy = execution.orchestrationStrategy.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedContext = structure.synthesisContext
         var changed = false
 
         if (document.goal ?? "") != normalizedQuestion {
@@ -1223,6 +1223,10 @@ struct ContentView: View {
         }
         if (document.structureStrategy ?? "") != normalizedStrategy {
             document.structureStrategy = normalizedStrategy
+            changed = true
+        }
+        if (document.context ?? "") != normalizedContext {
+            document.context = normalizedContext
             changed = true
         }
 

@@ -4,14 +4,16 @@ import SwiftUI
 /// plus the live status banner that appears during execution.
 struct HeaderBarView: View {
     @Bindable var execution: ExecutionViewModel
+    @Bindable var viewport: CanvasViewportState
 
     let activeTaskTitle: String
     let usesTaskSplitView: Bool
     let splitViewVisibility: NavigationSplitViewVisibility
     let pendingHumanPacket: CoordinatorTaskPacket?
     let canDeleteTask: Bool
-    let canRunCoordinator: Bool
     let canCopyDebugPayload: Bool
+    let canUndo: Bool
+    let canRedo: Bool
     let debugClipboardText: () -> String
 
     let onShowTaskList: () -> Void
@@ -19,8 +21,8 @@ struct HeaderBarView: View {
     let onOpenHumanInbox: () -> Void
     let onCopyDebug: () -> Void
     let onRequestDeleteTask: () -> Void
-    let onStopExecution: () -> Void
-    let onRunCoordinator: () -> Void
+    let onUndo: () -> Void
+    let onRedo: () -> Void
 
     private let headerControlHeight: CGFloat = 42
 

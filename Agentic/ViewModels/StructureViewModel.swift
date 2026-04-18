@@ -629,6 +629,7 @@ final class StructureViewModel {
         )
         guard let data = try? JSONEncoder().encode(payload) else { return }
         document.structureChatData = data
+        document.context = synthesisContext
         document.updatedAt = Date()
         onSave()
     }
