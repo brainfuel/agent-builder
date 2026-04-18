@@ -19,6 +19,7 @@ struct AgenticApp: App {
         let schema = Schema([
             GraphDocument.self,
             UserNodeTemplate.self,
+            UserStructureTemplate.self,
             MCPServerConnection.self,
         ])
         let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
@@ -33,7 +34,7 @@ struct AgenticApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
-                .frame(minWidth: 1688)
+                .frame(minWidth: 1600)
                 .tint(AppTheme.brandTint)
                 .environment(\.apiKeyStore, apiKeyStore)
                 .environment(\.providerModelStore, providerModelStore)

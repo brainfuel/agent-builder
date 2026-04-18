@@ -421,6 +421,19 @@ final class StructureViewModel {
         onPersistChatState?()
     }
 
+    func applyUserStructureTemplate(snapshot: HierarchySnapshot, label: String) {
+        onApplySnapshot?(snapshot, true)
+        structureChatMessages.append(
+            StructureChatMessageEntry(
+                role: .assistant,
+                text: "Applied saved template: \(label).",
+                appliedStructureUpdate: true
+            )
+        )
+        structureChatStatusMessage = "Applied \(label)."
+        onPersistChatState?()
+    }
+
     // MARK: - Synthesis Preview
 
     func summarizeSynthesisPreview(for snapshot: HierarchySnapshot, currentNodes: [OrgNode]) -> SynthesisPreviewSummary {
