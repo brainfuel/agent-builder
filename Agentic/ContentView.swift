@@ -503,6 +503,19 @@ struct ContentView: View {
         )
     }
 
+    private func applyUserStructureTemplate(_ template: UserStructureTemplate) {
+        guard let snapshot = try? JSONDecoder().decode(HierarchySnapshot.self, from: template.snapshotData) else { return }
+        structure.applyUserStructureTemplate(snapshot: snapshot, label: template.name)
+    }
+
+    private func saveCurrentStructureAsTemplate(named name: String) {
+        let snapshot = makeHierarchySnapshot(nodes: canvas.nodes, links: canvas.links)
+        guard let data = try? JSONEncoder().encode(snapshot) else { return }
+        let template = UserStructureTemplate(name: name, snapshotData: data)
+        modelContext.insert(template)
+        _ = saveModelContext(operation: "save structure template")
+    }
+
     private func submitStructureChatTurn() {
         structure.submitStructureChatTurn(currentSnapshotJSON: currentGraphSnapshotJSONString())
     }
@@ -633,6 +646,12 @@ struct ContentView: View {
             onDeleteSelectedNode: { canvas.deleteSelectedNode() },
             onApplyTemplateFromStructureChat: { template, label in
                 applyTemplateFromStructureChat(template, label: label)
+            },
+            onApplyUserStructureTemplate: { template in
+                applyUserStructureTemplate(template)
+            },
+            onSaveCurrentAsStructureTemplate: { name in
+                saveCurrentStructureAsTemplate(named: name)
             },
             onStartFreshStructureChat: { startFreshStructureChat() },
             onSubmitStructureChatTurn: { submitStructureChatTurn() },
