@@ -89,7 +89,8 @@ struct SchemaControlsBar: View {
             .keyboardShortcut("Z", modifiers: [.command, .shift])
             .catalystTooltip("Redo")
         }
-        .padding(.horizontal, 24)
+        .padding(.leading, 16)
+        .padding(.trailing, 16)
         .padding(.vertical, 10)
         .background(AppTheme.surfacePrimary)
     }
