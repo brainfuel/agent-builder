@@ -15,20 +15,47 @@ struct SchemaControlsBar: View {
     var body: some View {
         HStack(spacing: 10) {
             HStack(spacing: 8) {
-                Image(systemName: "magnifyingglass")
+                Image(systemName: "text.bubble")
                     .foregroundStyle(.secondary)
-                TextField("Search node", text: $viewport.searchText)
+                TextField("What should the team answer?", text: $execution.orchestrationGoal)
                     .textFieldStyle(.plain)
-                    .help("Search nodes by name")
+                    .truncationMode(.tail)
+                    .lineLimit(1)
+                    .help("Describe the team's goal")
+
+                if !execution.orchestrationGoal.isEmpty {
+                    Button {
+                        execution.orchestrationGoal = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Clear team goal")
+                    .help("Clear")
+                }
             }
             .padding(.horizontal, 14)
-            .frame(width: 300, height: headerControlHeight)
+            .frame(maxWidth: .infinity)
+            .frame(height: headerControlHeight)
             .background(
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .fill(AppTheme.surfaceSecondary)
             )
 
-            Spacer(minLength: 0)
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+                TextField("Search nodes", text: $viewport.searchText)
+                    .textFieldStyle(.plain)
+                    .help("Search nodes by name")
+            }
+            .padding(.horizontal, 14)
+            .frame(width: 240, height: headerControlHeight)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(AppTheme.surfaceSecondary)
+            )
 
             Button {
                 onUndo()
