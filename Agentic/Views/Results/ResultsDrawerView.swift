@@ -1,3 +1,4 @@
+import CoreText
 import SwiftUI
 #if canImport(UIKit)
 import UIKit
@@ -255,6 +256,269 @@ struct ResultsDrawerView: View {
         presentExportText(md)
     }
 
+    private func exportCurrentResultsAsPDF() {
+        let md: String
+        let titleSuffix: String
+        switch traceDisplayMode {
+        case .trace:
+            md = execution.exportTraceMarkdown(appDisplayName: appDisplayName)
+            titleSuffix = "Trace"
+        case .rawAPI:
+            md = execution.exportRawAPIMarkdown(appDisplayName: appDisplayName)
+            titleSuffix = "Raw API"
+        }
+        guard !md.isEmpty else { return }
+
+        let attributed = Self.renderMarkdownToAttributed(md)
+        let filename = Self.pdfFilename(appDisplayName: appDisplayName, suffix: titleSuffix)
+        guard let pdfURL = Self.renderPDF(from: attributed, filename: filename) else { return }
+        presentExportFile(pdfURL)
+    }
+
+    private static func pdfFilename(appDisplayName: String, suffix: String) -> String {
+        let df = DateFormatter()
+        df.dateFormat = "yyyy-MM-dd-HHmm"
+        let stamp = df.string(from: Date())
+        let base = "\(appDisplayName)-\(suffix)-\(stamp)"
+            .replacingOccurrences(of: " ", with: "-")
+        return base + ".pdf"
+    }
+
+    private static func renderMarkdownToAttributed(_ markdown: String) -> NSAttributedString {
+        // Per-line parsing so we can honour headings, bullets and code fences without
+        // relying on the limited Foundation AttributedString(markdown:) block support.
+        let result = NSMutableAttributedString()
+        let body = UIFont.systemFont(ofSize: 11, weight: .regular)
+        let bodyBold = UIFont.systemFont(ofSize: 11, weight: .semibold)
+        let h1 = UIFont.systemFont(ofSize: 20, weight: .bold)
+        let h2 = UIFont.systemFont(ofSize: 16, weight: .semibold)
+        let h3 = UIFont.systemFont(ofSize: 13, weight: .semibold)
+        let mono = UIFont.monospacedSystemFont(ofSize: 10, weight: .regular)
+
+        var inCode = false
+        let lines = markdown.components(separatedBy: "\n")
+
+        for raw in lines {
+            var line = raw
+            if line.hasPrefix("```") {
+                inCode.toggle()
+                result.append(NSAttributedString(string: "\n"))
+                continue
+            }
+            if inCode {
+                let para = NSMutableParagraphStyle()
+                para.paragraphSpacing = 0
+                para.firstLineHeadIndent = 8
+                para.headIndent = 8
+                let attrs: [NSAttributedString.Key: Any] = [
+                    .font: mono,
+                    .foregroundColor: UIColor.label,
+                    .backgroundColor: UIColor.secondarySystemFill,
+                    .paragraphStyle: para
+                ]
+                result.append(NSAttributedString(string: line + "\n", attributes: attrs))
+                continue
+            }
+
+            // Headings
+            if line.hasPrefix("### ") {
+                line.removeFirst(4)
+                result.append(styledLine(line, font: h3, spacingAbove: 6, spacingBelow: 2))
+                continue
+            }
+            if line.hasPrefix("## ") {
+                line.removeFirst(3)
+                result.append(styledLine(line, font: h2, spacingAbove: 8, spacingBelow: 3))
+                continue
+            }
+            if line.hasPrefix("# ") {
+                line.removeFirst(2)
+                result.append(styledLine(line, font: h1, spacingAbove: 10, spacingBelow: 4))
+                continue
+            }
+            // Horizontal rule
+            if line.trimmingCharacters(in: .whitespaces) == "---" {
+                let para = NSMutableParagraphStyle()
+                para.paragraphSpacing = 4
+                let line = NSAttributedString(
+                    string: String(repeating: "─", count: 40) + "\n",
+                    attributes: [.font: body, .foregroundColor: UIColor.tertiaryLabel, .paragraphStyle: para]
+                )
+                result.append(line)
+                continue
+            }
+            // Bullets
+            if let bulletText = bulletPayload(line) {
+                let para = NSMutableParagraphStyle()
+                para.firstLineHeadIndent = 12
+                para.headIndent = 24
+                para.paragraphSpacing = 2
+                let attrs: [NSAttributedString.Key: Any] = [
+                    .font: body,
+                    .foregroundColor: UIColor.label,
+                    .paragraphStyle: para
+                ]
+                let inline = renderInline(bulletText, baseFont: body, boldFont: bodyBold)
+                let prefix = NSMutableAttributedString(string: "•  ", attributes: attrs)
+                prefix.append(inline)
+                prefix.append(NSAttributedString(string: "\n", attributes: attrs))
+                prefix.addAttributes(attrs, range: NSRange(location: 0, length: prefix.length))
+                // Re-apply bold runs from inline
+                inline.enumerateAttribute(.font, in: NSRange(location: 0, length: inline.length)) { value, range, _ in
+                    if let f = value as? UIFont, f == bodyBold {
+                        prefix.addAttribute(.font, value: bodyBold, range: NSRange(location: range.location + 3, length: range.length))
+                    }
+                }
+                result.append(prefix)
+                continue
+            }
+
+            // Plain paragraph (supports **bold** inline)
+            let para = NSMutableParagraphStyle()
+            para.paragraphSpacing = 4
+            let inline = NSMutableAttributedString(attributedString: renderInline(line, baseFont: body, boldFont: bodyBold))
+            inline.addAttribute(.paragraphStyle, value: para, range: NSRange(location: 0, length: inline.length))
+            inline.append(NSAttributedString(string: "\n", attributes: [.font: body, .paragraphStyle: para]))
+            result.append(inline)
+        }
+
+        return result
+    }
+
+    private static func bulletPayload(_ line: String) -> String? {
+        let trimmed = line.drop(while: { $0 == " " || $0 == "\t" })
+        for prefix in ["- ", "* ", "• "] {
+            if trimmed.hasPrefix(prefix) {
+                return String(trimmed.dropFirst(prefix.count))
+            }
+        }
+        return nil
+    }
+
+    private static func styledLine(_ text: String, font: UIFont, spacingAbove: CGFloat, spacingBelow: CGFloat) -> NSAttributedString {
+        let para = NSMutableParagraphStyle()
+        para.paragraphSpacingBefore = spacingAbove
+        para.paragraphSpacing = spacingBelow
+        return NSAttributedString(
+            string: text + "\n",
+            attributes: [
+                .font: font,
+                .foregroundColor: UIColor.label,
+                .paragraphStyle: para
+            ]
+        )
+    }
+
+    private static func renderInline(_ text: String, baseFont: UIFont, boldFont: UIFont) -> NSMutableAttributedString {
+        let out = NSMutableAttributedString()
+        var remaining = text[...]
+        while let range = remaining.range(of: "**") {
+            let before = remaining[remaining.startIndex..<range.lowerBound]
+            out.append(NSAttributedString(string: String(before), attributes: [.font: baseFont, .foregroundColor: UIColor.label]))
+            let rest = remaining[range.upperBound...]
+            if let end = rest.range(of: "**") {
+                let bold = rest[rest.startIndex..<end.lowerBound]
+                out.append(NSAttributedString(string: String(bold), attributes: [.font: boldFont, .foregroundColor: UIColor.label]))
+                remaining = rest[end.upperBound...]
+            } else {
+                out.append(NSAttributedString(string: String(rest), attributes: [.font: baseFont, .foregroundColor: UIColor.label]))
+                remaining = "".prefix(0)
+                break
+            }
+        }
+        if !remaining.isEmpty {
+            out.append(NSAttributedString(string: String(remaining), attributes: [.font: baseFont, .foregroundColor: UIColor.label]))
+        }
+        return out
+    }
+
+    private static func renderPDF(from attributed: NSAttributedString, filename: String) -> URL? {
+        // US Letter at 72dpi.
+        let pageSize = CGSize(width: 612, height: 792)
+        let margin: CGFloat = 48
+        let textRect = CGRect(
+            x: margin, y: margin,
+            width: pageSize.width - margin * 2,
+            height: pageSize.height - margin * 2
+        )
+
+        let tmpURL = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
+        let format = UIGraphicsPDFRendererFormat()
+        format.documentInfo = [
+            kCGPDFContextCreator as String: "Agentic",
+            kCGPDFContextTitle as String: filename
+        ]
+        let renderer = UIGraphicsPDFRenderer(
+            bounds: CGRect(origin: .zero, size: pageSize),
+            format: format
+        )
+
+        do {
+            try renderer.writePDF(to: tmpURL) { ctx in
+                let framesetter = CTFramesetterCreateWithAttributedString(attributed as CFAttributedString)
+                var currentRange = CFRange(location: 0, length: 0)
+                var done = false
+                while !done {
+                    ctx.beginPage()
+                    let cgCtx = ctx.cgContext
+                    // Flip coordinate system for CoreText.
+                    cgCtx.saveGState()
+                    cgCtx.translateBy(x: 0, y: pageSize.height)
+                    cgCtx.scaleBy(x: 1, y: -1)
+
+                    let flippedRect = CGRect(
+                        x: textRect.origin.x,
+                        y: pageSize.height - textRect.origin.y - textRect.height,
+                        width: textRect.width,
+                        height: textRect.height
+                    )
+                    let path = CGPath(rect: flippedRect, transform: nil)
+                    let frame = CTFramesetterCreateFrame(framesetter, currentRange, path, nil)
+                    CTFrameDraw(frame, cgCtx)
+
+                    let visible = CTFrameGetVisibleStringRange(frame)
+                    currentRange = CFRange(
+                        location: visible.location + visible.length,
+                        length: 0
+                    )
+                    cgCtx.restoreGState()
+
+                    if currentRange.location >= attributed.length {
+                        done = true
+                    }
+                }
+            }
+            return tmpURL
+        } catch {
+            return nil
+        }
+    }
+
+    private func presentExportFile(_ url: URL) {
+        #if targetEnvironment(macCatalyst)
+        let activityVC = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+        if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+           let rootVC = windowScene.windows.first?.rootViewController {
+            var topVC = rootVC
+            while let presented = topVC.presentedViewController { topVC = presented }
+            activityVC.popoverPresentationController?.sourceView = topVC.view
+            activityVC.popoverPresentationController?.sourceRect = CGRect(
+                x: topVC.view.bounds.midX, y: topVC.view.bounds.midY, width: 0, height: 0
+            )
+            activityVC.popoverPresentationController?.permittedArrowDirections = []
+            topVC.present(activityVC, animated: true)
+        }
+        #else
+        let activityVC = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+        if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+           let rootVC = windowScene.windows.first?.rootViewController {
+            var topVC = rootVC
+            while let presented = topVC.presentedViewController { topVC = presented }
+            topVC.present(activityVC, animated: true)
+        }
+        #endif
+    }
+
     private func presentExportText(_ text: String) {
         #if targetEnvironment(macCatalyst)
         let activityVC = UIActivityViewController(activityItems: [text], applicationActivities: nil)
@@ -372,8 +636,20 @@ struct ResultsDrawerView: View {
                                     .font(.caption)
                             }
                             .buttonStyle(.borderless)
-                            .accessibilityLabel(traceDisplayMode == .trace ? "Export Trace" : "Export Raw API")
-                            .catalystTooltip(traceDisplayMode == .trace ? "Export Trace" : "Export Raw API")
+                            .accessibilityLabel(traceDisplayMode == .trace ? "Export Trace as Text" : "Export Raw API as Text")
+                            .catalystTooltip(traceDisplayMode == .trace ? "Export Trace as Text" : "Export Raw API as Text")
+                            .help("Export as plain text / markdown")
+
+                            Button {
+                                exportCurrentResultsAsPDF()
+                            } label: {
+                                Image(systemName: "doc.richtext")
+                                    .font(.caption)
+                            }
+                            .buttonStyle(.borderless)
+                            .accessibilityLabel(traceDisplayMode == .trace ? "Export Trace as PDF" : "Export Raw API as PDF")
+                            .catalystTooltip(traceDisplayMode == .trace ? "Export Trace as PDF" : "Export Raw API as PDF")
+                            .help("Export as formatted PDF report")
                         }
                         if !isViewingHistoricalRun, !execution.coordinatorTrace.isEmpty {
                             Button("Clear") {
