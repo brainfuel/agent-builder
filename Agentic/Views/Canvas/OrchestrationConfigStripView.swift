@@ -23,16 +23,7 @@ struct OrchestrationConfigStripView: View {
                     text: activeTaskTitleText,
                     helpText: "Task title"
                 )
-
-                Image(systemName: "text.bubble")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(width: 16)
-                clearableTopStripField(
-                    "What should the team answer?",
-                    text: $execution.orchestrationGoal,
-                    helpText: "Describe the team's goal"
-                )
+                .frame(maxWidth: 260)
 
                 Image(systemName: "doc.text")
                     .font(.caption)
