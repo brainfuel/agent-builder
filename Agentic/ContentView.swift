@@ -994,6 +994,11 @@ struct ContentView: View {
     }
 
     private func createTaskFromDraftSelection() {
+        if let customID = newTaskCustomTemplateID,
+           let template = userStructureTemplates.first(where: { $0.id == customID }) {
+            createTaskFromUserStructureTemplate(template)
+            return
+        }
         switch newTaskCreationOption {
         case .generateStructure:
             createGeneratedTaskFromDraft()
@@ -1005,12 +1010,26 @@ struct ContentView: View {
         }
     }
 
+    private func createTaskFromUserStructureTemplate(_ template: UserStructureTemplate) {
+        guard let snapshot = try? JSONDecoder().decode(HierarchySnapshot.self, from: template.snapshotData) else { return }
+        let title = newTaskTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        let goal = newTaskGoal.trimmingCharacters(in: .whitespacesAndNewlines)
+        createTaskDocument(
+            title: title.isEmpty ? template.name : title,
+            goal: goal.isEmpty ? execution.orchestrationGoal : goal,
+            structureStrategy: execution.orchestrationStrategy,
+            snapshot: snapshot
+        )
+        resetTaskDraft()
+    }
+
     private func resetTaskDraft() {
         newTaskTitle = ""
         newTaskGoal = ""
         newTaskContext = ""
         newTaskStructureStrategy = ""
         newTaskCreationOption = .simpleTask
+        newTaskCustomTemplateID = nil
     }
 
     private func openTaskEditor(key: String) {
