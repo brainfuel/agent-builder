@@ -46,6 +46,16 @@ struct ContentView: View {
     /// structure snapshot (instead of the live document graph). Used to decide
     /// whether the onChange handler should reload the live graph on exit.
     @State private var isDisplayingHistoricalStructure = false
+    /// Per-task undo managers, keyed by GraphDocument.key, so each task has an
+    /// independent undo/redo timeline. Without this, tapping Undo while Task A
+    /// is active could pop a snapshot registered while Task B was loaded and
+    /// clobber A's canvas with B's old structure.
+    @State private var undoManagersByTaskKey: [String: UndoManager] = [:]
+    /// Mirrors the active task's undoManager.canUndo / canRedo. UndoManager
+    /// isn't observable, so we cache these flags and refresh via
+    /// `canvas.onUndoStackChanged` after every register/undo/redo/swap.
+    @State private var canUndoState = false
+    @State private var canRedoState = false
     @State private var inspectorPanelTab: InspectorPanelTab = .nodeDetails
     @State private var isInspectorPanelVisible = true
     @State private var activeDraftInfo: DraftInfoTopic?
@@ -178,8 +188,14 @@ struct ContentView: View {
                 if graphPersistence == nil {
                     graphPersistence = SwiftDataGraphPersistenceService(modelContext: modelContext)
                 }
-                graphPersistence?.configure(undoManager: undoManager)
-                canvas.undoManager = undoManager
+                // Don't wire the environment UndoManager here — we use
+                // per-task managers instead (see `undoManagersByTaskKey` and
+                // `syncGraphFromStore`). Passing nil to the persistence service
+                // also unhooks the modelContext undo stack so property changes
+                // on one task's GraphDocument can't be undone while a
+                // different task is active.
+                graphPersistence?.configure(undoManager: nil)
+                canvas.onUndoStackChanged = { refreshUndoStackState() }
                 configureWindowTitleIfNeeded()
                 configureViewModelCallbacks()
                 ensureAnyGraphDocument()
@@ -198,9 +214,11 @@ struct ContentView: View {
             }
             .onChange(of: canvas.semanticFingerprint) { _, newValue in
                 persistGraphIfNeeded(for: newValue)
+                registerUndoStepForFingerprintChange()
             }
             .onChange(of: execution.selectedHistoryRunID) { _, newValue in
                 applyHistoricalRunStructureIfNeeded(selectedRunID: newValue)
+                refreshUndoStackState()
             }
             .onChange(of: canvas.viewport.scrollOffset) { _, _ in
                 scheduleScrollOffsetPersist()
@@ -615,8 +633,8 @@ struct ContentView: View {
             pendingHumanPacket: pendingHumanPacket,
             canDeleteTask: activeGraphDocument != nil,
             canCopyDebugPayload: !canvas.nodes.isEmpty,
-            canUndo: undoManager?.canUndo ?? false,
-            canRedo: undoManager?.canRedo ?? false,
+            canUndo: canUndoState,
+            canRedo: canRedoState,
             debugClipboardText: { debugClipboardText },
             onShowTaskList: {
                 withAnimation(.snappy(duration: 0.28, extraBounce: 0.02)) {
@@ -1257,6 +1275,7 @@ struct ContentView: View {
     private func deleteCurrentTask() {
         guard let document = activeGraphDocument else { return }
         let fallbackKey = taskDocuments.first(where: { $0.key != document.key })?.key
+        undoManagersByTaskKey.removeValue(forKey: document.key)
 
         graphPersistence?.deleteGraphDocument(document)
         _ = saveModelContext(operation: "delete task")
