@@ -42,7 +42,6 @@ struct ZoomControlsView: View {
             .frame(height: controlHeight)
 
             Button {
-                canvas.viewport.zoom = 1.0
                 if let inputNode = canvas.nodes.first(where: { $0.type == .input }) {
                     withAnimation(.easeInOut(duration: 0.3)) {
                         canvas.viewport.canvasScrollProxy?.scrollTo(inputNode.id, anchor: .top)
