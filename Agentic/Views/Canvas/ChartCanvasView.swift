@@ -18,14 +18,10 @@ private struct ScrollViewIntrospector: UIViewRepresentable {
         v.backgroundColor = .clear
         DispatchQueue.main.async { [weak v] in
             guard let v else { return }
-            var candidate: UIView? = v.superview
-            while let c = candidate {
-                if let scroll = c as? UIScrollView {
-                    onFound(scroll)
-                    return
-                }
-                candidate = c.superview
-            }
+            let scrollView = sequence(first: v, next: { $0.superview })
+                .compactMap { $0 as? UIScrollView }
+                .first
+            if let scrollView { onFound(scrollView) }
         }
         return v
     }
