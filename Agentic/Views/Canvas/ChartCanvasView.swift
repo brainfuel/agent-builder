@@ -254,15 +254,13 @@ struct ChartCanvasView: View {
             .onScrollGeometryChange(for: CGPoint.self) { geo in
                 geo.contentOffset
             } action: { _, newOffset in
-                // Save user-driven scroll positions only once any pending
-                // restore has been applied. This avoids clobbering a saved
-                // offset with the ScrollView's "natural" resting offset
-                // before restoration runs.
+                // Ignore geometry changes while a restore is pending — otherwise
+                // the ScrollView's "natural" resting offset clobbers the saved
+                // value before restoration runs. Prefer the underlying
+                // UIScrollView's contentOffset as authoritative (its coordinate
+                // space matches what we saved via setContentOffset).
                 guard canvas.viewport.pendingRestoreOffset == nil else { return }
-                // UIScrollView truth is authoritative; if it's available, use
-                // its contentOffset rather than the SwiftUI-reported value.
-                let auth = underlyingScrollView?.contentOffset ?? newOffset
-                canvas.viewport.scrollOffset = auth
+                canvas.viewport.scrollOffset = underlyingScrollView?.contentOffset ?? newOffset
             }
             .onAppear {
                 canvas.viewport.canvasScrollProxy = scrollProxy
