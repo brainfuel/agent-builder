@@ -367,14 +367,16 @@ struct TaskRow: View {
                     .catalystTooltip("View Results")
                 }
 
-                Button {
-                    onOpenHumanInbox()
-                } label: {
-                    HumanInboxButtonLabel(pendingCount: inboxBadgeCount, showsTitle: false)
+                if inboxBadgeCount > 0 {
+                    Button {
+                        onOpenHumanInbox()
+                    } label: {
+                        HumanInboxButtonLabel(pendingCount: inboxBadgeCount, showsTitle: false)
+                    }
+                    .buttonStyle(.bordered)
+                    .accessibilityLabel("Human Inbox")
+                    .catalystTooltip("Open Human Inbox")
                 }
-                .buttonStyle(.bordered)
-                .accessibilityLabel("Human Inbox")
-                .catalystTooltip("Open Human Inbox")
 
                 Button {
                     onOpenEditor()
