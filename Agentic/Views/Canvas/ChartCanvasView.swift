@@ -277,37 +277,33 @@ struct ChartCanvasView: View {
         }
     }
 
-    /// Schedules a restore of the persisted scroll offset onto the underlying
-    /// UIScrollView. We retry a few times because contentSize may not be fully
-    /// measured on the first layout pass — setContentOffset silently clamps
-    /// values outside `[0, contentSize-bounds]`, so we re-issue until the
-    /// ScrollView's own reading matches the target.
+    /// Restores the persisted scroll offset onto the underlying UIScrollView.
+    ///
+    /// We re-issue `setContentOffset` at a handful of delays because
+    /// `contentSize` isn't fully measured on the first layout pass — UIScrollView
+    /// clamps offsets to its current valid range, so a target that's briefly out
+    /// of range gets silently reduced. Re-issuing after layout has settled pins
+    /// the intended offset. We intentionally do NOT clamp the target ourselves:
+    /// the 2D ScrollView's bounds origin can be negative on Catalyst, so valid
+    /// offsets can have X < 0 and UIScrollView handles its own range correctly.
     private func applyPendingRestoreIfPossible() {
-        guard let pending = canvas.viewport.pendingRestoreOffset else { return }
+        guard canvas.viewport.pendingRestoreOffset != nil else { return }
         guard let scrollView = underlyingScrollView else {
-            // Safety net: if we still haven't discovered the scroll view
-            // after a reasonable time, release the restore guard so user
-            // scrolls don't get silently dropped forever.
+            // Safety net: if the UIScrollView never shows up, release the
+            // restore guard so user-driven scrolls aren't dropped forever.
             DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(750)) {
-                if self.underlyingScrollView == nil,
-                   canvas.viewport.pendingRestoreOffset != nil {
+                if self.underlyingScrollView == nil {
                     canvas.viewport.pendingRestoreOffset = nil
                 }
             }
             return
         }
-        canvas.viewport.scrollOffset = pending
 
         let delaysMs: [Int] = [0, 40, 100, 200, 350, 600]
         for (i, ms) in delaysMs.enumerated() {
             DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(ms)) {
                 guard let pending = canvas.viewport.pendingRestoreOffset else { return }
-                // Don't clamp — this ScrollView has a negative origin (bounds
-                // can start at x < 0), so the valid scroll range extends into
-                // negative X values. UIScrollView will internally snap to its
-                // own valid range if we overshoot, which is fine.
                 scrollView.setContentOffset(pending, animated: false)
-
                 if i == delaysMs.count - 1 {
                     canvas.viewport.scrollOffset = scrollView.contentOffset
                     canvas.viewport.pendingRestoreOffset = nil
