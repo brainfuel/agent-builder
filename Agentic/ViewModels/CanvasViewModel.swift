@@ -45,17 +45,17 @@ final class CanvasViewModel {
         DispatchQueue.main.async { [weak self] in self?.viewport.suppressLayoutAnimation = false }
         lastPersistedFingerprint = semanticFingerprint
 
-        // Restore persisted zoom (if any) before scroll so the restored offset
-        // maps to the right content space.
+        // Restore zoom first — scroll offsets were saved in the content space
+        // this zoom produces, so restoring zoom afterwards would invalidate them.
         if let savedZoom = document.zoom {
-            let clamped = min(
+            viewport.zoom = min(
                 max(CGFloat(savedZoom), AppConfiguration.Canvas.minZoom),
                 AppConfiguration.Canvas.maxZoom
             )
-            viewport.zoom = clamped
         }
 
-        // Restore persisted scroll position (if any) on next layout pass.
+        // Arm a one-shot restore — the view picks this up on its next layout
+        // pass and drives the underlying UIScrollView to match.
         let restoredOffset = CGPoint(
             x: document.scrollOffsetX ?? 0,
             y: document.scrollOffsetY ?? 0

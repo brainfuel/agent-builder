@@ -2,10 +2,13 @@ import SwiftUI
 import UIKit
 
 /// Walks up the UIKit view hierarchy at `onFound` time to find the enclosing
-/// UIScrollView. Placed as a sibling inside the SwiftUI ScrollView so we can
-/// bypass `ScrollPosition` APIs (whose coordinate system doesn't always match
-/// the underlying contentOffset) and set `contentOffset` directly for robust
-/// 2D scroll restoration.
+/// `UIScrollView`. Must be placed *inside* the SwiftUI ScrollView's content so
+/// its superview chain includes the scroll view. We use this to bypass SwiftUI's
+/// `ScrollPosition` APIs, which in a 2D `ScrollView([.horizontal, .vertical])`
+/// on Mac Catalyst silently clamp negative X values — the underlying
+/// UIScrollView's bounds origin can be negative, so a "valid" saved scroll
+/// position can have X < 0 and SwiftUI will throw it away. Setting
+/// `contentOffset` on the UIScrollView directly avoids this.
 private struct ScrollViewIntrospector: UIViewRepresentable {
     var onFound: (UIScrollView) -> Void
 
