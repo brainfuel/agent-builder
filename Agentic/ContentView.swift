@@ -384,7 +384,6 @@ struct ContentView: View {
             header
             Divider()
             orchestrationConfigStrip
-            Divider()
             schemaControlsBar
             Divider()
             HStack(spacing: 0) {

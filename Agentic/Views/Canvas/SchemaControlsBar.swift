@@ -16,7 +16,7 @@ struct SchemaControlsBar: View {
             HStack(spacing: 8) {
                 Image(systemName: "text.bubble")
                     .foregroundStyle(.secondary)
-                TextField("What should the team answer?", text: $execution.orchestrationGoal)
+                TextField("What is your question?", text: $execution.orchestrationGoal)
                     .textFieldStyle(.plain)
                     .truncationMode(.tail)
                     .lineLimit(1)
@@ -39,7 +39,11 @@ struct SchemaControlsBar: View {
             .frame(height: headerControlHeight)
             .background(
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(AppTheme.surfaceSecondary)
+                    .fill(AppTheme.surfacePrimary)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(Color(UIColor.separator), lineWidth: 1)
             )
 
             if execution.isExecutingCoordinator {
@@ -82,7 +86,7 @@ struct SchemaControlsBar: View {
         }
         .padding(.leading, 16)
         .padding(.trailing, 16)
-        .padding(.vertical, 10)
-        .background(AppTheme.surfacePrimary)
+        .padding(.bottom, 10)
+        .background(AppTheme.surfaceSecondary)
     }
 }
