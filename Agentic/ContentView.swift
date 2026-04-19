@@ -25,6 +25,8 @@ struct ContentView: View {
     @Query private var mcpServerConnections: [MCPServerConnection]
     @Query(sort: \UserNodeTemplate.updatedAt, order: .reverse)
     private var userNodeTemplates: [UserNodeTemplate]
+    @Query(sort: \UserStructureTemplate.updatedAt, order: .reverse)
+    private var userStructureTemplates: [UserStructureTemplate]
     // MARK: - ViewModels
     @State private var canvas = CanvasViewModel()
     @State private var execution = ExecutionViewModel()
@@ -39,6 +41,7 @@ struct ContentView: View {
     @State private var newTaskContext = ""
     @State private var newTaskStructureStrategy = ""
     @State private var newTaskCreationOption: DraftCreationOption = .simpleTask
+    @State private var newTaskCustomTemplateID: UUID?
     @State private var inspectorPanelTab: InspectorPanelTab = .nodeDetails
     @State private var isInspectorPanelVisible = true
     @State private var activeDraftInfo: DraftInfoTopic?
@@ -471,6 +474,7 @@ struct ContentView: View {
             newTaskContext: $newTaskContext,
             newTaskStructureStrategy: $newTaskStructureStrategy,
             newTaskCreationOption: $newTaskCreationOption,
+            newTaskCustomTemplateID: $newTaskCustomTemplateID,
             activeDraftInfo: $activeDraftInfo,
             focusedDraftField: $focusedDraftField,
             onCreateTask: { createTaskFromDraftSelection() },
