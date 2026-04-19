@@ -1,4 +1,34 @@
 import SwiftUI
+import UIKit
+
+/// Walks up the UIKit view hierarchy at `onFound` time to find the enclosing
+/// UIScrollView. Placed as a sibling inside the SwiftUI ScrollView so we can
+/// bypass `ScrollPosition` APIs (whose coordinate system doesn't always match
+/// the underlying contentOffset) and set `contentOffset` directly for robust
+/// 2D scroll restoration.
+private struct ScrollViewIntrospector: UIViewRepresentable {
+    var onFound: (UIScrollView) -> Void
+
+    func makeUIView(context: Context) -> UIView {
+        let v = UIView(frame: .zero)
+        v.isUserInteractionEnabled = false
+        v.backgroundColor = .clear
+        DispatchQueue.main.async { [weak v] in
+            guard let v else { return }
+            var candidate: UIView? = v.superview
+            while let c = candidate {
+                if let scroll = c as? UIScrollView {
+                    onFound(scroll)
+                    return
+                }
+                candidate = c.superview
+            }
+        }
+        return v
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {}
+}
 
 /// The main scrollable, zoomable node canvas — draws nodes, link connection layer, link handles,
 /// add-child menu, and the "Run from here" control. Reads canvas/execution state and forwards
@@ -17,7 +47,12 @@ struct ChartCanvasView: View {
 
     let onNodeTap: (OrgNode) -> Void
 
-    @State private var scrollPosition = ScrollPosition()
+    // Direct reference to the underlying UIScrollView (captured via a
+    // UIViewRepresentable introspector). Using this instead of SwiftUI's
+    // `ScrollPosition` is necessary because the 2D `ScrollPosition` coord
+    // system doesn't match `contentOffset`, which caused horizontal restore
+    // to clamp or miss entirely.
+    @State private var underlyingScrollView: UIScrollView?
 
     var body: some View {
         let canvasSize = canvasContentSize
