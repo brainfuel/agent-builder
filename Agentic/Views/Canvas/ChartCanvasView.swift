@@ -67,6 +67,17 @@ struct ChartCanvasView: View {
             ScrollViewReader { scrollProxy in
             ScrollView([.horizontal, .vertical]) {
                 ZStack(alignment: .topLeading) {
+                    // Introspector placed INSIDE the scroll content so its
+                    // UIView's superview chain includes the UIScrollView.
+                    ScrollViewIntrospector { scrollView in
+                        if self.underlyingScrollView !== scrollView {
+                            self.underlyingScrollView = scrollView
+                            applyPendingRestoreIfPossible()
+                        }
+                    }
+                    .frame(width: 0, height: 0)
+                    .allowsHitTesting(false)
+
                     DotGridBackground()
                         .frame(width: canvasSize.width, height: canvasSize.height)
 
@@ -240,33 +251,27 @@ struct ChartCanvasView: View {
                 )
             }
             .background(AppTheme.canvasBackground)
-            .scrollPosition($scrollPosition)
+            .defaultScrollAnchor(.topLeading)
             .onScrollGeometryChange(for: CGPoint.self) { geo in
                 geo.contentOffset
             } action: { _, newOffset in
-                // Ignore transient offset reports while a persisted restore is
-                // still pending — the ScrollView initially reports (0,0) before
-                // we've scrolled it, which would otherwise clobber the saved
-                // value and trigger a debounced save of (0,0).
+                // Save user-driven scroll positions only once any pending
+                // restore has been applied. This avoids clobbering a saved
+                // offset with the ScrollView's "natural" resting offset
+                // before restoration runs.
                 guard canvas.viewport.pendingRestoreOffset == nil else { return }
-                canvas.viewport.scrollOffset = newOffset
+                // UIScrollView truth is authoritative; if it's available, use
+                // its contentOffset rather than the SwiftUI-reported value.
+                let auth = underlyingScrollView?.contentOffset ?? newOffset
+                canvas.viewport.scrollOffset = auth
             }
             .onAppear {
                 canvas.viewport.canvasScrollProxy = scrollProxy
-                // Defer one runloop so the ScrollView has measured its content
-                // before we attempt to scroll into it. scrollTo silently clamps
-                // to zero if called before layout.
-                Task { @MainActor in
-                    try? await Task.sleep(nanoseconds: 50_000_000)
-                    applyPendingScrollRestoreIfNeeded()
-                }
+                applyPendingRestoreIfPossible()
             }
             .onChange(of: canvas.viewport.pendingRestoreOffset) { _, newValue in
                 guard newValue != nil else { return }
-                Task { @MainActor in
-                    try? await Task.sleep(nanoseconds: 50_000_000)
-                    applyPendingScrollRestoreIfNeeded()
-                }
+                applyPendingRestoreIfPossible()
             }
             }
 
@@ -275,14 +280,42 @@ struct ChartCanvasView: View {
         }
     }
 
-    /// If the view model has requested a scroll-offset restore (on document load),
-    /// apply it to the ScrollView and clear the request so it fires once.
-    private func applyPendingScrollRestoreIfNeeded() {
+    /// Schedules a restore of the persisted scroll offset onto the underlying
+    /// UIScrollView. We retry a few times because contentSize may not be fully
+    /// measured on the first layout pass — setContentOffset silently clamps
+    /// values outside `[0, contentSize-bounds]`, so we re-issue until the
+    /// ScrollView's own reading matches the target.
+    private func applyPendingRestoreIfPossible() {
         guard let pending = canvas.viewport.pendingRestoreOffset else { return }
-        scrollPosition.scrollTo(x: pending.x, y: pending.y)
-        // Keep viewport.scrollOffset in sync so the post-restore geometry
-        // callback doesn't register a "change" and re-persist the same value.
+        guard let scrollView = underlyingScrollView else {
+            // Safety net: if we still haven't discovered the scroll view
+            // after a reasonable time, release the restore guard so user
+            // scrolls don't get silently dropped forever.
+            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(750)) {
+                if self.underlyingScrollView == nil,
+                   canvas.viewport.pendingRestoreOffset != nil {
+                    canvas.viewport.pendingRestoreOffset = nil
+                }
+            }
+            return
+        }
         canvas.viewport.scrollOffset = pending
-        canvas.viewport.pendingRestoreOffset = nil
+
+        let delaysMs: [Int] = [0, 40, 100, 200, 350, 600]
+        for (i, ms) in delaysMs.enumerated() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(ms)) {
+                guard let pending = canvas.viewport.pendingRestoreOffset else { return }
+                // Don't clamp — this ScrollView has a negative origin (bounds
+                // can start at x < 0), so the valid scroll range extends into
+                // negative X values. UIScrollView will internally snap to its
+                // own valid range if we overshoot, which is fine.
+                scrollView.setContentOffset(pending, animated: false)
+
+                if i == delaysMs.count - 1 {
+                    canvas.viewport.scrollOffset = scrollView.contentOffset
+                    canvas.viewport.pendingRestoreOffset = nil
+                }
+            }
+        }
     }
 }
