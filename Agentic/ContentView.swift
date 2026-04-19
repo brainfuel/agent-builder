@@ -1296,6 +1296,7 @@ struct ContentView: View {
 
     private func wipeAllDataForTesting() {
         // Clear persisted graph documents.
+        undoManagersByTaskKey.removeAll()
         graphPersistence?.deleteGraphDocuments(graphDocuments)
         _ = saveModelContext(operation: "wipe all graph documents")
 
@@ -1476,9 +1477,56 @@ struct ContentView: View {
 
     private func syncGraphFromStore() {
         let doc = activeGraphDocument
+        // Swap in the per-task undo manager so this task's undo/redo timeline
+        // is independent from any other task's. Lazily create on first use.
+        if let key = doc?.key {
+            let manager = undoManagersByTaskKey[key] ?? {
+                let m = UndoManager()
+                // Leave groupsByEvent at its default (true): NSUndoManager
+                // auto-opens a group for each run-loop iteration so callers
+                // can just call registerUndo without begin/endUndoGrouping.
+                // Setting it to false requires manual grouping and triggers
+                // `_registerUndoObject: … must begin a group before registering
+                // undo` if callers (like applyStructureSnapshot) don't wrap
+                // their registrations.
+                m.levelsOfUndo = 50
+                undoManagersByTaskKey[key] = m
+                return m
+            }()
+            canvas.undoManager = manager
+        } else {
+            canvas.undoManager = nil
+        }
         canvas.load(from: doc)
         execution.load(from: doc)
         structure.load(from: doc, defaultProvider: availableGenerateProviders().first ?? .chatGPT)
+        // Re-baseline so the next edit registers an undo step whose "previous
+        // state" matches what the user now sees.
+        canvas.rebaselineUndoSnapshot()
+        refreshUndoStackState()
+    }
+
+    /// Called on every `semanticFingerprint` change. While viewing a
+    /// historical run we still advance the baseline (so exit + first edit
+    /// works cleanly) but skip registering an undo step.
+    private func registerUndoStepForFingerprintChange() {
+        if isDisplayingHistoricalStructure {
+            canvas.rebaselineUndoSnapshot()
+            return
+        }
+        canvas.recordSemanticCheckpoint()
+        refreshUndoStackState()
+    }
+
+    /// Pulls fresh canUndo/canRedo values off the active task's undo manager
+    /// into @State so the header buttons re-evaluate. Also force-disables undo
+    /// while viewing a historical run — undoing a graph you can't see would be
+    /// confusing and would silently edit the live structure.
+    private func refreshUndoStackState() {
+        let manager = canvas.undoManager
+        let historicalLock = execution.isViewingHistoricalRun
+        canUndoState = !historicalLock && (manager?.canUndo ?? false)
+        canRedoState = !historicalLock && (manager?.canRedo ?? false)
     }
 
     /// Swaps the canvas graph to match the selected historical run. When the

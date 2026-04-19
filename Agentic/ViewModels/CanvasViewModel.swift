@@ -100,10 +100,21 @@ final class CanvasViewModel {
 
     weak var undoManager: UndoManager?
 
+    /// Baseline snapshot and fingerprint used by `recordSemanticCheckpoint` to
+    /// compute each undo step's "previous state". Refreshed on task swap via
+    /// `rebaselineUndoSnapshot()` and after every registered checkpoint.
+    private var undoBaselineSnapshot: HierarchySnapshot?
+    private var undoBaselineFingerprint: String?
+
     // MARK: - Callbacks
 
     /// Called after a semantic mutation to persist the graph. Receives the new fingerprint.
     var onPersistNeeded: ((String) -> Void)?
+    /// Fired whenever the active undo stack may have changed (register / undo /
+    /// redo / manager swap). ContentView uses this to refresh its cached
+    /// canUndo/canRedo flags for the header buttons, since UndoManager itself
+    /// doesn't publish observable change events.
+    var onUndoStackChanged: (() -> Void)?
 
     // MARK: - Computed Properties
 
@@ -617,21 +628,14 @@ final class CanvasViewModel {
 
     // MARK: - Snapshot Application
 
+    /// Applies a full structure snapshot. The `registerUndo` parameter is now a
+    /// no-op — undo registration happens centrally in ContentView via the
+    /// `semanticFingerprint` observer, which catches *every* semantic edit
+    /// (inspector field changes, node/link add/delete, template apply, etc.),
+    /// not just the subset that flows through this method.
     func applyStructureSnapshot(_ snapshot: HierarchySnapshot, registerUndo: Bool = false) {
-        let previousSnapshot = registerUndo ? captureStructureSnapshot() : nil
         performSemanticMutation {
             setGraph(from: snapshot, resetViewState: true)
-        }
-        if registerUndo, let previousSnapshot {
-            // NSUndoManager holds an *unowned* reference to the target, so
-            // we must pass something whose lifetime outlives the undo stack.
-            // `self` (the view model) is retained by the canvas view for the
-            // session, so it's the safe target. A local helper object would
-            // be deallocated immediately and crash on undo.
-            undoManager?.registerUndo(withTarget: self) { target in
-                target.applyStructureSnapshot(previousSnapshot, registerUndo: true)
-            }
-            undoManager?.setActionName("Apply Structure Update")
         }
     }
 
@@ -680,17 +684,68 @@ final class CanvasViewModel {
         }
     }
 
+    // MARK: - Undo checkpointing
+
+    /// Resets the baseline to whatever the canvas currently shows. Call after
+    /// loading a task so the next edit's undo step reverts to *this* state.
+    func rebaselineUndoSnapshot() {
+        undoBaselineSnapshot = captureStructureSnapshot()
+        undoBaselineFingerprint = semanticFingerprint
+    }
+
+    /// Records an undo step if the canvas has changed since the last baseline.
+    /// Called from ContentView's `semanticFingerprint` observer on every
+    /// semantic edit. Dedups against the baseline fingerprint so redundant
+    /// observer re-fires (e.g. after our own undo-triggered apply) are no-ops.
+    func recordSemanticCheckpoint() {
+        guard let manager = undoManager else {
+            rebaselineUndoSnapshot()
+            return
+        }
+        let currentFingerprint = semanticFingerprint
+        guard currentFingerprint != undoBaselineFingerprint else { return }
+        let previousSnapshot = undoBaselineSnapshot
+        undoBaselineSnapshot = captureStructureSnapshot()
+        undoBaselineFingerprint = currentFingerprint
+        guard let previousSnapshot else { return }
+        registerUndoStep(restoringTo: previousSnapshot, manager: manager)
+    }
+
+    /// Registers an undo closure that, when invoked, restores the given
+    /// snapshot AND synchronously registers its own inverse. Because the
+    /// inverse registration happens while `NSUndoManager` is still inside
+    /// `undo()` / `redo()`, the manager routes it to the opposite stack —
+    /// giving us correct redo-after-undo behavior from a single code path.
+    private func registerUndoStep(restoringTo snapshot: HierarchySnapshot, manager: UndoManager) {
+        manager.registerUndo(withTarget: self) { [weak self] target in
+            guard self != nil else { return }
+            let beforeRestore = target.captureStructureSnapshot()
+            // Pre-advance the baseline so the SwiftUI `.onChange` observer,
+            // which fires *after* the mutation, sees no diff and skips
+            // registering a duplicate step. The synchronous call below is
+            // the single source of truth for the inverse.
+            target.undoBaselineSnapshot = snapshot
+            target.applyStructureSnapshot(snapshot)
+            target.undoBaselineFingerprint = target.semanticFingerprint
+            target.registerUndoStep(restoringTo: beforeRestore, manager: manager)
+        }
+        manager.setActionName("Edit Structure")
+        onUndoStackChanged?()
+    }
+
     // MARK: - Undo / Redo
 
     func undo(syncGraphFromStore: @escaping () -> Void) {
         guard let undoManager else { return }
         undoManager.undo()
+        onUndoStackChanged?()
         DispatchQueue.main.async { syncGraphFromStore() }
     }
 
     func redo(syncGraphFromStore: @escaping () -> Void) {
         guard let undoManager else { return }
         undoManager.redo()
+        onUndoStackChanged?()
         DispatchQueue.main.async { syncGraphFromStore() }
     }
 
