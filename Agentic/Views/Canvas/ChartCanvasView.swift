@@ -43,8 +43,20 @@ struct ChartCanvasView: View {
     let orphanNodeIDs: Set<UUID>
     let linkDraft: LinkDraft?
     let userNodeTemplates: [UserNodeTemplate]
+    /// When true, the canvas renders nodes/links but disables mutation
+    /// interactions (drags, link chrome, add/delete). Node selection still
+    /// works so the inspector can show read-only details. Used while the user
+    /// is viewing a historical run so the displayed structure cannot be edited.
+    let isReadOnly: Bool
 
     let onNodeTap: (OrgNode) -> Void
+    /// Fired when the user picks "Duplicate as new task" from the historical-run
+    /// banner — spins up a new GraphDocument seeded with the current snapshot.
+    let onDuplicateHistoricalRun: () -> Void
+    /// Fired when the user picks "Restore as current" — replaces the live
+    /// editable structure of the active task with this historical snapshot so
+    /// they can iterate forward from a past (better-performing) shape.
+    let onRestoreHistoricalRunAsCurrent: () -> Void
 
     // Direct reference to the underlying UIScrollView (captured via a
     // UIViewRepresentable introspector). Using this instead of SwiftUI's
@@ -63,6 +75,10 @@ struct ChartCanvasView: View {
         }
 
         return ZStack(alignment: .bottomTrailing) {
+            if isReadOnly {
+                readOnlyBanner
+                    .zIndex(2)
+            }
             ScrollViewReader { scrollProxy in
             ScrollView([.horizontal, .vertical]) {
                 ZStack(alignment: .topLeading) {
@@ -119,11 +135,15 @@ struct ChartCanvasView: View {
                                 value: node.position.y
                             )
                             .onTapGesture {
+                                // Selection is allowed in read-only mode so the
+                                // inspector can show historical node details;
+                                // only mutations are gated downstream.
                                 onNodeTap(node)
                             }
                     }
 
-                    if let selectedNodeID = canvas.selectedNodeID,
+                    if !isReadOnly,
+                        let selectedNodeID = canvas.selectedNodeID,
                         let selectedNode = visibleNodes.first(where: { $0.id == selectedNodeID }),
                         selectedNode.type != .input,
                         selectedNode.type != .output
@@ -188,7 +208,8 @@ struct ChartCanvasView: View {
                     }
 
                     // "Run from here" button on completed/failed nodes that are selected.
-                    if let selID = canvas.selectedNodeID,
+                    if !isReadOnly,
+                       let selID = canvas.selectedNodeID,
                        let selNode = visibleNodes.first(where: { $0.id == selID }),
                        selNode.type == .agent || selNode.type == .human,
                        !execution.isExecutingCoordinator,
@@ -278,6 +299,47 @@ struct ChartCanvasView: View {
             ZoomControlsView(canvas: canvas)
                 .padding(20)
         }
+    }
+
+    private var readOnlyBanner: some View {
+        Menu {
+            Button {
+                onRestoreHistoricalRunAsCurrent()
+            } label: {
+                Label("Restore as current structure", systemImage: "arrow.uturn.backward.circle")
+            }
+            Button {
+                onDuplicateHistoricalRun()
+            } label: {
+                Label("Duplicate as new task", systemImage: "plus.square.on.square")
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "clock.arrow.circlepath")
+                    .font(.caption.weight(.semibold))
+                Text("Viewing historical run — ")
+                    .font(.caption.weight(.medium))
+                + Text("Actions")
+                    .font(.caption.weight(.semibold))
+                    .underline()
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .semibold))
+            }
+            .foregroundStyle(Color.red)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(
+                Capsule().fill(Color.red.opacity(0.12))
+            )
+            .overlay(
+                Capsule().stroke(Color.red.opacity(0.35), lineWidth: 1)
+            )
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .help("Actions for this historical run")
+        .padding(.top, 12)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
     /// Restores the persisted scroll offset onto the underlying UIScrollView.

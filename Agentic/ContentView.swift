@@ -42,6 +42,10 @@ struct ContentView: View {
     @State private var newTaskStructureStrategy = ""
     @State private var newTaskCreationOption: DraftCreationOption = .simpleTask
     @State private var newTaskCustomTemplateID: UUID?
+    /// Tracks whether the canvas is currently displaying a historical-run
+    /// structure snapshot (instead of the live document graph). Used to decide
+    /// whether the onChange handler should reload the live graph on exit.
+    @State private var isDisplayingHistoricalStructure = false
     @State private var inspectorPanelTab: InspectorPanelTab = .nodeDetails
     @State private var isInspectorPanelVisible = true
     @State private var activeDraftInfo: DraftInfoTopic?
@@ -195,6 +199,9 @@ struct ContentView: View {
             .onChange(of: canvas.semanticFingerprint) { _, newValue in
                 persistGraphIfNeeded(for: newValue)
             }
+            .onChange(of: execution.selectedHistoryRunID) { _, newValue in
+                applyHistoricalRunStructureIfNeeded(selectedRunID: newValue)
+            }
             .onChange(of: canvas.viewport.scrollOffset) { _, _ in
                 scheduleScrollOffsetPersist()
             }
@@ -343,6 +350,9 @@ struct ContentView: View {
         }
         execution.onPersistNeeded = { [self] in
             persistCoordinatorExecutionState()
+        }
+        execution.captureCurrentStructureSnapshot = { [self] in
+            canvas.captureStructureSnapshot()
         }
         structure.onPersistChatState = { [self] in
             persistStructureChatState()
@@ -647,6 +657,7 @@ struct ContentView: View {
             inspectorNodeBinding: inspectorNodeBinding,
             availableProviders: { availableGenerateProviders() },
             providerIcon: { providerIcon(for: $0) },
+            isReadOnly: execution.isViewingHistoricalRun,
             onPersistStructureChatState: { persistStructureChatState() },
             onSaveNodeAsTemplate: { node in saveNodeAsTemplate(node) },
             onDeleteSelectedNode: { canvas.deleteSelectedNode() },
@@ -682,8 +693,58 @@ struct ContentView: View {
             orphanNodeIDs: orphanNodeIDsInCurrentGraph,
             linkDraft: linkDraft,
             userNodeTemplates: Array(userNodeTemplates),
-            onNodeTap: { node in handleNodeTap(node) }
+            isReadOnly: execution.isViewingHistoricalRun,
+            onNodeTap: { node in handleNodeTap(node) },
+            onDuplicateHistoricalRun: { duplicateHistoricalRunAsNewTask() },
+            onRestoreHistoricalRunAsCurrent: { restoreHistoricalRunAsCurrentStructure() }
         )
+    }
+
+    /// Replaces the live editable structure of the active task with the
+    /// currently-viewed historical snapshot. Useful when the user iterated the
+    /// structure, got worse results, and wants to revert to a prior shape
+    /// in-place (no new task, no context switch).
+    private func restoreHistoricalRunAsCurrentStructure() {
+        guard let snapshot = execution.historicalRunStructureSnapshot,
+              let doc = activeGraphDocument else { return }
+        // Leave historical mode cleanly: flipping this flag first ensures the
+        // onChange(selectedHistoryRunID) handler below doesn't try to reload
+        // the pre-restore live structure over our new one.
+        isDisplayingHistoricalStructure = false
+        canvas.suppressStoreSync = false
+        canvas.clearLinkDragState()
+        canvas.selectedNodeID = nil
+        canvas.selectedLinkID = nil
+        canvas.setGraph(from: snapshot, resetViewState: false)
+        // Persist the restored structure into the document so it sticks.
+        canvas.persistIfNeeded(for: canvas.semanticFingerprint, to: doc) {
+            _ = saveModelContext(operation: "restore historical structure as current")
+        }
+        execution.selectedHistoryRunID = nil
+    }
+
+    /// Takes the currently-selected historical run's structure snapshot, spins
+    /// up a new GraphDocument from it, and navigates to the new task. Resets
+    /// historical view first so the source task returns to its live structure.
+    private func duplicateHistoricalRunAsNewTask() {
+        guard let snapshot = execution.historicalRunStructureSnapshot else { return }
+        let sourceTitle = activeGraphDocument?.title ?? "Task"
+        let sourceGoal = execution.orchestrationGoal
+
+        // Exit historical view on the source task first — this triggers the
+        // `.onChange(of: selectedHistoryRunID)` handler to reload the live
+        // structure into canvas before we navigate away.
+        execution.selectedHistoryRunID = nil
+
+        createTaskDocument(
+            title: "\(sourceTitle) (copy)",
+            goal: sourceGoal,
+            structureStrategy: execution.orchestrationStrategy,
+            snapshot: snapshot
+        )
+        // `createTaskDocument` sets `navigation.currentGraphKey` to the new
+        // doc, which triggers `syncGraphFromStore` and loads the new task's
+        // (identical) structure into the now-live canvas.
     }
 
     private var inspectorNodeBinding: Binding<OrgNode>? {
@@ -1399,6 +1460,38 @@ struct ContentView: View {
         canvas.load(from: doc)
         execution.load(from: doc)
         structure.load(from: doc, defaultProvider: availableGenerateProviders().first ?? .chatGPT)
+    }
+
+    /// Swaps the canvas graph to match the selected historical run. When the
+    /// user selects a past run that has a snapshotted structure, we render that
+    /// structure read-only and block writes to the document so the live graph
+    /// is preserved until the user returns to "Current Structure". Entries that pre-date
+    /// structure snapshotting fall back to leaving the current structure in place.
+    private func applyHistoricalRunStructureIfNeeded(selectedRunID: String?) {
+        if let selectedRunID,
+           let snapshot = execution.coordinatorRunHistory
+               .first(where: { $0.run.runID == selectedRunID })?
+               .structureSnapshot
+        {
+            // Flush anything pending first so the live graph persists before we
+            // swap — otherwise the swapped-in historical structure could ride
+            // along with an unrelated save.
+            flushScrollOffsetPersist()
+            canvas.clearLinkDragState()
+            canvas.selectedNodeID = nil
+            canvas.selectedLinkID = nil
+            canvas.suppressStoreSync = true
+            canvas.setGraph(from: snapshot, resetViewState: false)
+            isDisplayingHistoricalStructure = true
+        } else if isDisplayingHistoricalStructure {
+            // We were previously displaying a historical structure — restore
+            // the live one from the document.
+            canvas.suppressStoreSync = false
+            isDisplayingHistoricalStructure = false
+            if let doc = activeGraphDocument {
+                canvas.load(from: doc)
+            }
+        }
     }
 
     private func persistGraphIfNeeded(for newFingerprint: String) {

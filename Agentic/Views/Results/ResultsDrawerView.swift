@@ -166,12 +166,12 @@ struct ResultsDrawerView: View {
 
     private var runHistoryPicker: some View {
         Menu {
-            // Current / latest run option
+            // Current / live-editable structure option
             Button {
                 withAnimation(.snappy(duration: 0.2)) { execution.selectedHistoryRunID = nil }
             } label: {
                 HStack {
-                    Text("Latest Run")
+                    Text("Current Structure")
                     if execution.selectedHistoryRunID == nil {
                         Image(systemName: "checkmark")
                     }
@@ -199,7 +199,7 @@ struct ResultsDrawerView: View {
             HStack(spacing: 4) {
                 Image(systemName: "clock.arrow.circlepath")
                     .font(.system(size: 10, weight: .semibold))
-                Text(execution.selectedHistoryRunID == nil ? "Latest" : runHistoryPickerTitle)
+                Text(execution.selectedHistoryRunID == nil ? "Current" : runHistoryPickerTitle)
                     .font(.caption.weight(.medium))
                 Image(systemName: "chevron.up.chevron.down")
                     .font(.system(size: 8, weight: .semibold))
@@ -227,7 +227,7 @@ struct ResultsDrawerView: View {
     private var runHistoryPickerTitle: String {
         guard let selectedHistoryRunID = execution.selectedHistoryRunID,
               let entry = execution.coordinatorRunHistory.first(where: { $0.run.runID == selectedHistoryRunID }) else {
-            return "Latest Run"
+            return "Current Structure"
         }
         let formatter = DateFormatter()
         formatter.dateStyle = .none
