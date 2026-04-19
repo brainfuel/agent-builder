@@ -48,13 +48,10 @@ struct HeaderBarView: View {
                         onShowAllColumns()
                     } label: {
                         Image(systemName: "sidebar.leading")
-                            .font(.system(size: 17, weight: .semibold))
-                            .foregroundStyle(.secondary)
+                            .font(.system(size: 22, weight: .regular))
+                            .foregroundStyle(.primary)
                             .frame(width: 38, height: 38)
-                            .background(
-                                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                    .fill(Color(uiColor: .tertiarySystemFill))
-                            )
+                  
                     }
                 .buttonStyle(.plain)
                 .catalystTooltip("Show Task List")
