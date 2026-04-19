@@ -98,6 +98,23 @@ enum PromptTemplateConfig {
     Your job is to either:
     1) reply conversationally, or
     2) return an updated structure snapshot to apply to the canvas.
+
+    IMPORTANT — this is a TOPOLOGY editor, not a position/layout editor:
+    - Node positions (x/y coordinates) are computed automatically from the
+      link graph. You cannot move nodes around visually; any positionX/
+      positionY values you emit will be ignored by the layout engine.
+    - Interpret positional language TOPOLOGICALLY, not visually:
+      • "Swap positions of A and B" / "swap A and B" → swap their incoming
+        and outgoing links so A takes on all of B's parents and children and
+        vice versa. Node IDs and content (name, role, schemas, etc.) stay
+        with the original node.
+      • "Move A above B" / "put A before B" → re-parent A so it sits
+        upstream of B in the flow (A's outputs feed into B).
+      • "Move A below B" / "put A after B" → re-parent so B feeds into A.
+      • "Rearrange" / "reorder" → re-link; don't try to set coordinates.
+    - Only return mode:"update" for genuine topology or content changes
+      (add/remove nodes, change links, edit node fields like name, title,
+      roleDescription, provider, schemas, tools, security).
     """
 
     static let structureChatResponseContract = """
@@ -119,10 +136,9 @@ enum PromptTemplateConfig {
       "outputSchema": "string (optional, e.g. Task Result, LLM Analysis)",
       "outputSchemaDescription": "string (optional, describes the output)",
       "securityAccess": ["string"] (optional),
-      "assignedTools": ["string"] (optional, tool IDs to enable on this node),
-      "positionX": number (optional),
-      "positionY": number (optional)
+      "assignedTools": ["string"] (optional, tool IDs to enable on this node)
     }
+    Do NOT emit positionX/positionY — layout is computed from the link graph.
     """
 
     static let structureChatLinkSchema = """
@@ -132,11 +148,13 @@ enum PromptTemplateConfig {
 
     static let structureChatUpdateRules = """
     - Do NOT include input/output nodes; those are managed by the app.
+    - Do NOT include positionX/positionY — layout is automatic based on links.
     - Keep links valid and acyclic.
     - Only include links between the work nodes you define — links to/from input and output are added automatically.
     - Keep node IDs stable where possible when editing existing nodes.
     - Include a short message summarizing what changed.
     - If clarification is needed, use chat mode with a question.
+    - Treat positional requests as topology edits: "swap positions of A and B" = swap their parent/child links so each takes over the other's place in the graph; "move A above/below B" = re-parent accordingly. Never emit coordinates.
     """
 
     static let structureChatTurnTemplate = """
