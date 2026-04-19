@@ -45,6 +45,16 @@ final class CanvasViewModel {
         DispatchQueue.main.async { [weak self] in self?.viewport.suppressLayoutAnimation = false }
         lastPersistedFingerprint = semanticFingerprint
 
+        // Restore persisted zoom (if any) before scroll so the restored offset
+        // maps to the right content space.
+        if let savedZoom = document.zoom {
+            let clamped = min(
+                max(CGFloat(savedZoom), AppConfiguration.Canvas.minZoom),
+                AppConfiguration.Canvas.maxZoom
+            )
+            viewport.zoom = clamped
+        }
+
         // Restore persisted scroll position (if any) on next layout pass.
         let restoredOffset = CGPoint(
             x: document.scrollOffsetX ?? 0,
@@ -62,20 +72,27 @@ final class CanvasViewModel {
         document.snapshotData = data
         document.scrollOffsetX = Double(viewport.scrollOffset.x)
         document.scrollOffsetY = Double(viewport.scrollOffset.y)
+        document.zoom = Double(viewport.zoom)
         document.updatedAt = Date()
         onSave()
         lastPersistedFingerprint = newFingerprint
     }
 
-    /// Persist only the scroll offset (no graph changes). Used for debounced scroll saves
-    /// so scroll position survives relaunch even when the user only pans without editing.
+    /// Persist only the viewport (scroll offset + zoom). Used for debounced saves
+    /// so viewport state survives relaunch even when the user only pans/zooms without editing.
     func persistScrollPosition(to document: GraphDocument, onSave: () -> Void) {
         guard !suppressStoreSync else { return }
         let newX = Double(viewport.scrollOffset.x)
         let newY = Double(viewport.scrollOffset.y)
-        if document.scrollOffsetX == newX && document.scrollOffsetY == newY { return }
+        let newZoom = Double(viewport.zoom)
+        if document.scrollOffsetX == newX
+            && document.scrollOffsetY == newY
+            && document.zoom == newZoom {
+            return
+        }
         document.scrollOffsetX = newX
         document.scrollOffsetY = newY
+        document.zoom = newZoom
         onSave()
     }
 
