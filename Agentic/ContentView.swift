@@ -195,6 +195,9 @@ struct ContentView: View {
             .onChange(of: canvas.viewport.scrollOffset) { _, _ in
                 scheduleScrollOffsetPersist()
             }
+            .onChange(of: canvas.viewport.zoom) { _, _ in
+                scheduleScrollOffsetPersist()
+            }
             .onChange(of: scenePhase) { _, newPhase in
                 if newPhase != .active {
                     flushScrollOffsetPersist()
@@ -1392,24 +1395,26 @@ struct ContentView: View {
         // autosave even if our debounced save task is cancelled by app termination.
         document.scrollOffsetX = Double(canvas.viewport.scrollOffset.x)
         document.scrollOffsetY = Double(canvas.viewport.scrollOffset.y)
+        document.zoom = Double(canvas.viewport.zoom)
 
         scrollPersistTask?.cancel()
         scrollPersistTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: 200_000_000) // 0.2s idle
             guard !Task.isCancelled else { return }
-            _ = saveModelContext(operation: "persist canvas scroll position")
+            _ = saveModelContext(operation: "persist canvas viewport")
         }
     }
 
-    /// Synchronously flush any pending scroll-offset save. Called on scenePhase changes
-    /// so the position survives backgrounding / termination even mid-debounce.
+    /// Synchronously flush any pending viewport save. Called on scenePhase changes
+    /// so position/zoom survive backgrounding / termination even mid-debounce.
     private func flushScrollOffsetPersist() {
         scrollPersistTask?.cancel()
         scrollPersistTask = nil
         guard let document = activeGraphDocument else { return }
         document.scrollOffsetX = Double(canvas.viewport.scrollOffset.x)
         document.scrollOffsetY = Double(canvas.viewport.scrollOffset.y)
-        _ = saveModelContext(operation: "flush canvas scroll position")
+        document.zoom = Double(canvas.viewport.zoom)
+        _ = saveModelContext(operation: "flush canvas viewport")
     }
 
     private func persistCoordinatorExecutionState() {

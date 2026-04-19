@@ -15,6 +15,7 @@ final class GraphDocument {
     var updatedAt: Date
     var scrollOffsetX: Double?
     var scrollOffsetY: Double?
+    var zoom: Double?
 
     init(
         key: String = UUID().uuidString,
@@ -28,7 +29,8 @@ final class GraphDocument {
         createdAt: Date? = Date(),
         updatedAt: Date = Date(),
         scrollOffsetX: Double? = nil,
-        scrollOffsetY: Double? = nil
+        scrollOffsetY: Double? = nil,
+        zoom: Double? = nil
     ) {
         self.key = key
         self.title = title
@@ -42,5 +44,6 @@ final class GraphDocument {
         self.updatedAt = updatedAt
         self.scrollOffsetX = scrollOffsetX
         self.scrollOffsetY = scrollOffsetY
+        self.zoom = zoom
     }
 }
