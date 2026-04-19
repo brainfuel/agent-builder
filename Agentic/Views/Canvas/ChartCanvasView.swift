@@ -234,6 +234,9 @@ struct ChartCanvasView: View {
                 .simultaneousGesture(
                     SpatialTapGesture(coordinateSpace: .named("chart-canvas"))
                         .onEnded { value in
+                            // `handleCanvasTap` only mutates transient selection
+                            // state (selectedNodeID / selectedLinkID), not graph
+                            // structure, so it's safe in read-only mode.
                             canvas.handleCanvasTap(
                                 at: value.location,
                                 visibleNodes: visibleNodes,

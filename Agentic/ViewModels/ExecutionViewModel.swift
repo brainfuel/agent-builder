@@ -56,6 +56,11 @@ final class ExecutionViewModel {
     /// Called after execution state changes that should be persisted.
     var onPersistNeeded: (() -> Void)?
 
+    /// Provided by ContentView — captures the current canvas graph as a
+    /// `HierarchySnapshot` at the moment a run is finalized, so historical runs
+    /// render against the structure that actually ran them.
+    var captureCurrentStructureSnapshot: (() -> HierarchySnapshot)?
+
     // MARK: - Computed Properties
 
     var displayedTrace: [CoordinatorTraceStep] {
@@ -76,6 +81,16 @@ final class ExecutionViewModel {
 
     var isViewingHistoricalRun: Bool {
         selectedHistoryRunID != nil
+    }
+
+    /// Snapshot of the graph structure belonging to the currently selected
+    /// historical run, if any. Nil when on the latest run OR when the selected
+    /// entry pre-dates structure snapshotting.
+    var historicalRunStructureSnapshot: HierarchySnapshot? {
+        guard let selectedHistoryRunID,
+              let entry = coordinatorRunHistory.first(where: { $0.run.runID == selectedHistoryRunID })
+        else { return nil }
+        return entry.structureSnapshot
     }
 
     var pendingHumanPacket: CoordinatorTaskPacket? {
