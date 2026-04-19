@@ -1,4 +1,5 @@
 import SwiftUI
+import SwiftData
 
 enum DraftField: Hashable {
     case title
@@ -86,8 +87,21 @@ struct TaskListView: View {
     @Binding var newTaskContext: String
     @Binding var newTaskStructureStrategy: String
     @Binding var newTaskCreationOption: DraftCreationOption
+    @Binding var newTaskCustomTemplateID: UUID?
     @Binding var activeDraftInfo: DraftInfoTopic?
     var focusedDraftField: FocusState<DraftField?>.Binding
+
+    @Query(sort: \UserStructureTemplate.updatedAt, order: .reverse)
+    private var userStructureTemplates: [UserStructureTemplate]
+
+    private var selectedCustomTemplate: UserStructureTemplate? {
+        guard let id = newTaskCustomTemplateID else { return nil }
+        return userStructureTemplates.first { $0.id == id }
+    }
+
+    private var creationOptionLabel: String {
+        selectedCustomTemplate?.name ?? newTaskCreationOption.title
+    }
 
     let onCreateTask: () -> Void
     let runStatus: (GraphDocument) -> TaskRunStatus
@@ -147,7 +161,7 @@ struct TaskListView: View {
                 draftTextField("Task title", text: $newTaskTitle, field: .title, infoTopic: .title)
                 draftTextField("Question", text: $newTaskGoal, field: .goal, infoTopic: .question)
                 draftTextField("Context", text: $newTaskContext, field: .context, infoTopic: .context)
-                if newTaskCreationOption.usesStructureStrategyField {
+                if newTaskCreationOption.usesStructureStrategyField && newTaskCustomTemplateID == nil {
                     draftTextField(
                         "Structure strategy",
                         text: $newTaskStructureStrategy,
@@ -165,9 +179,12 @@ struct TaskListView: View {
                         draftCreationOptionMenuItem(.baselineTeam)
                         draftCreationOptionMenuItem(.researchDelivery)
                         draftCreationOptionMenuItem(.incidentResponse)
+                        ForEach(userStructureTemplates) { template in
+                            customTemplateMenuItem(template)
+                        }
                     } label: {
                         HStack(spacing: 6) {
-                            Text(newTaskCreationOption.title)
+                            Text(creationOptionLabel)
                             Image(systemName: "chevron.up.chevron.down")
                                 .font(.caption2.weight(.semibold))
                                 .foregroundStyle(.secondary)
@@ -191,7 +208,10 @@ struct TaskListView: View {
             .padding(.horizontal, 24)
             .padding(.vertical, 14)
             .background(AppTheme.surfacePrimary)
-            .animation(.easeInOut(duration: 0.2), value: newTaskCreationOption.usesStructureStrategyField)
+            .animation(
+                .easeInOut(duration: 0.2),
+                value: newTaskCreationOption.usesStructureStrategyField && newTaskCustomTemplateID == nil
+            )
 
             Divider()
 
@@ -289,12 +309,27 @@ struct TaskListView: View {
         Button {
             withAnimation(.easeInOut(duration: 0.2)) {
                 newTaskCreationOption = option
+                newTaskCustomTemplateID = nil
             }
         } label: {
-            if newTaskCreationOption == option {
+            if newTaskCreationOption == option && newTaskCustomTemplateID == nil {
                 Label(option.title, systemImage: "checkmark")
             } else {
                 Text(option.title)
+            }
+        }
+    }
+
+    private func customTemplateMenuItem(_ template: UserStructureTemplate) -> some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                newTaskCustomTemplateID = template.id
+            }
+        } label: {
+            if newTaskCustomTemplateID == template.id {
+                Label(template.name, systemImage: "checkmark")
+            } else {
+                Text(template.name)
             }
         }
     }
