@@ -535,7 +535,13 @@ final class ExecutionViewModel {
             startedAt: pending.startedAt, finishedAt: Date()
         )
         latestCoordinatorRun = completedRun
-        coordinatorRunHistory.append(CoordinatorRunHistoryEntry(run: completedRun, trace: coordinatorTrace))
+        coordinatorRunHistory.append(
+            CoordinatorRunHistoryEntry(
+                run: completedRun,
+                trace: coordinatorTrace,
+                structureSnapshot: captureCurrentStructureSnapshot?()
+            )
+        )
         selectedHistoryRunID = nil
         lastCompletedExecution = pending
         pendingCoordinatorExecution = nil
@@ -623,7 +629,13 @@ final class ExecutionViewModel {
                 startedAt: pending.startedAt, finishedAt: Date()
             )
             latestCoordinatorRun = completedRun
-            coordinatorRunHistory.append(CoordinatorRunHistoryEntry(run: completedRun, trace: coordinatorTrace))
+            coordinatorRunHistory.append(
+                CoordinatorRunHistoryEntry(
+                    run: completedRun,
+                    trace: coordinatorTrace,
+                    structureSnapshot: captureCurrentStructureSnapshot?()
+                )
+            )
             selectedHistoryRunID = nil
             lastCompletedExecution = pending
             pendingCoordinatorExecution = nil

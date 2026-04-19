@@ -681,5 +681,9 @@ struct CoordinatorRunHistoryEntry: Codable, Identifiable {
     var id: String { run.runID }
     let run: CoordinatorRun
     let trace: [CoordinatorTraceStep]
+    /// Snapshot of the graph structure as it existed at run time. Used to render
+    /// the correct canvas when the user selects this run in history. Optional so
+    /// run-history entries written before this field existed still decode.
+    var structureSnapshot: HierarchySnapshot?
 }
 
