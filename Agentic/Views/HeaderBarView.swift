@@ -132,6 +132,7 @@ struct HeaderBarView: View {
                 .buttonStyle(.plain)
                 .catalystTooltip("Open Human Inbox")
 
+                #if DEBUG
                 Button {
                     onCopyDebug()
                 } label: {
@@ -146,6 +147,7 @@ struct HeaderBarView: View {
                 .buttonStyle(.plain)
                 .disabled(!canCopyDebugPayload)
                 .catalystTooltip("Copy Debug Context")
+                #endif
 
                 Button(role: .destructive) {
                     onRequestDeleteTask()

@@ -19,6 +19,10 @@ struct InspectorPanelView: View {
     let inspectorNodeBinding: Binding<OrgNode>?
     let availableProviders: () -> [APIKeyProvider]
     let providerIcon: (APIKeyProvider) -> String
+    /// When true, shows both node details and structure chat as read-only
+    /// (historical run context) so the graph can't be mutated out from under
+    /// the historical snapshot.
+    let isReadOnly: Bool
 
     let onPersistStructureChatState: () -> Void
     let onSaveNodeAsTemplate: (OrgNode) -> Void
@@ -68,25 +72,51 @@ struct InspectorPanelView: View {
             case .nodeDetails:
                 NodeDetailsInspectorContent(
                     inspectorNodeBinding: inspectorNodeBinding,
+                    isReadOnly: isReadOnly,
                     onDelete: onDeleteSelectedNode,
                     onSaveAsTemplate: onSaveNodeAsTemplate
                 )
             case .structureChat:
-                StructureChatInspectorContent(
-                    structure: structure,
-                    availableProviders: availableProviders,
-                    providerIcon: providerIcon,
-                    onPersistStructureChatState: onPersistStructureChatState,
-                    onApplyTemplateFromStructureChat: onApplyTemplateFromStructureChat,
-                    onApplyUserStructureTemplate: onApplyUserStructureTemplate,
-                    onSaveCurrentAsStructureTemplate: onSaveCurrentAsStructureTemplate,
-                    onStartFreshStructureChat: onStartFreshStructureChat,
-                    onSubmitStructureChatTurn: onSubmitStructureChatTurn,
-                    onRunStructureChatDebugBroadcast: onRunStructureChatDebugBroadcast
-                )
+                VStack(spacing: 0) {
+                    if isReadOnly {
+                        readOnlyStructureChatBanner
+                    }
+                    StructureChatInspectorContent(
+                        structure: structure,
+                        availableProviders: availableProviders,
+                        providerIcon: providerIcon,
+                        onPersistStructureChatState: onPersistStructureChatState,
+                        onApplyTemplateFromStructureChat: onApplyTemplateFromStructureChat,
+                        onApplyUserStructureTemplate: onApplyUserStructureTemplate,
+                        onSaveCurrentAsStructureTemplate: onSaveCurrentAsStructureTemplate,
+                        onStartFreshStructureChat: onStartFreshStructureChat,
+                        onSubmitStructureChatTurn: onSubmitStructureChatTurn,
+                        onRunStructureChatDebugBroadcast: onRunStructureChatDebugBroadcast
+                    )
+                    .disabled(isReadOnly)
+                }
             }
         }
         .background(AppTheme.surfaceSecondary)
+    }
+
+    private var readOnlyStructureChatBanner: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "clock.arrow.circlepath")
+                .font(.caption.weight(.semibold))
+            Text("Historical — read-only")
+                .font(.caption.weight(.medium))
+        }
+        .foregroundStyle(Color.red)
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8)
+        .background(Color.red.opacity(0.10))
+        .overlay(
+            Rectangle()
+                .fill(Color.red.opacity(0.30))
+                .frame(height: 1),
+            alignment: .bottom
+        )
     }
 }
 
@@ -125,33 +155,64 @@ struct InspectorToggleRail: View {
 
 struct NodeDetailsInspectorContent: View {
     let inspectorNodeBinding: Binding<OrgNode>?
+    let isReadOnly: Bool
     let onDelete: () -> Void
     let onSaveAsTemplate: (OrgNode) -> Void
 
     var body: some View {
-        ScrollView {
-            if let inspectorNodeBinding {
-                if inspectorNodeBinding.wrappedValue.type == .input || inspectorNodeBinding.wrappedValue.type == .output {
-                    FixedNodeInspector(node: inspectorNodeBinding)
-                        .padding(20)
-                } else {
-                    NodeInspector(
-                        node: inspectorNodeBinding,
-                        onDelete: onDelete,
-                        onSaveAsTemplate: { onSaveAsTemplate(inspectorNodeBinding.wrappedValue) },
-                        headerTitle: "Node Details"
-                    )
-                        .padding(20)
+        VStack(spacing: 0) {
+            if isReadOnly {
+                readOnlyBanner
+            }
+            ScrollView {
+                Group {
+                    if let inspectorNodeBinding {
+                        if inspectorNodeBinding.wrappedValue.type == .input || inspectorNodeBinding.wrappedValue.type == .output {
+                            FixedNodeInspector(node: inspectorNodeBinding)
+                                .padding(20)
+                        } else {
+                            NodeInspector(
+                                node: inspectorNodeBinding,
+                                onDelete: onDelete,
+                                onSaveAsTemplate: { onSaveAsTemplate(inspectorNodeBinding.wrappedValue) },
+                                headerTitle: "Node Details"
+                            )
+                                .padding(20)
+                        }
+                    } else {
+                        ContentUnavailableView(
+                            "No Node Selected",
+                            systemImage: "cursorarrow.click",
+                            description: Text(isReadOnly
+                                ? "Select a node to view its historical details."
+                                : "Select a node to edit schema and details."
+                            )
+                        )
+                            .padding(20)
+                    }
                 }
-            } else {
-                ContentUnavailableView(
-                    "No Node Selected",
-                    systemImage: "cursorarrow.click",
-                    description: Text("Select a node to edit schema and details.")
-                )
-                    .padding(20)
+                .disabled(isReadOnly)
             }
         }
+    }
+
+    private var readOnlyBanner: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "clock.arrow.circlepath")
+                .font(.caption.weight(.semibold))
+            Text("Historical — read-only")
+                .font(.caption.weight(.medium))
+        }
+        .foregroundStyle(Color.red)
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8)
+        .background(Color.red.opacity(0.10))
+        .overlay(
+            Rectangle()
+                .fill(Color.red.opacity(0.30))
+                .frame(height: 1),
+            alignment: .bottom
+        )
     }
 }
 
@@ -377,6 +438,7 @@ struct StructureChatMessageRow: View {
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.secondary)
                     Spacer(minLength: 0)
+                    #if DEBUG
                     if isUser {
                         Button {
                             onRunDebugBroadcast()
@@ -401,6 +463,7 @@ struct StructureChatMessageRow: View {
                         .disabled(structure.isStructureChatRunning || isDebugRunning)
                         .help("Debug all providers and copy prompts/responses")
                     }
+                    #endif
                     if let debugJSON {
                         Button {
                             copyTextToClipboard(debugJSON)
