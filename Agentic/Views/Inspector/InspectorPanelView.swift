@@ -26,6 +26,7 @@ struct InspectorPanelView: View {
 
     let onPersistStructureChatState: () -> Void
     let onSaveNodeAsTemplate: (OrgNode) -> Void
+    let onEditNodeTemplates: () -> Void
     let onDeleteSelectedNode: () -> Void
     let onApplyTemplateFromStructureChat: (PresetHierarchyTemplate?, String) -> Void
     let onApplyUserStructureTemplate: (UserStructureTemplate) -> Void
@@ -74,7 +75,8 @@ struct InspectorPanelView: View {
                     inspectorNodeBinding: inspectorNodeBinding,
                     isReadOnly: isReadOnly,
                     onDelete: onDeleteSelectedNode,
-                    onSaveAsTemplate: onSaveNodeAsTemplate
+                    onSaveAsTemplate: onSaveNodeAsTemplate,
+                    onEditNodeTemplates: onEditNodeTemplates
                 )
             case .structureChat:
                 VStack(spacing: 0) {
@@ -170,6 +172,7 @@ struct NodeDetailsInspectorContent: View {
     let isReadOnly: Bool
     let onDelete: () -> Void
     let onSaveAsTemplate: (OrgNode) -> Void
+    let onEditNodeTemplates: () -> Void
 
     @State private var pushedApp: ConnectedAppPushRequest?
 
@@ -203,12 +206,15 @@ struct NodeDetailsInspectorContent: View {
                             node: inspectorNodeBinding,
                             onDelete: onDelete,
                             onSaveAsTemplate: { onSaveAsTemplate(inspectorNodeBinding.wrappedValue) },
-                            headerTitle: "Node Details",
+                            onEditNodeTemplates: onEditNodeTemplates,
+                            headerTitle: "",
                             onPushConnectedApp: { request in
                                 pushedApp = request
                             }
                         )
-                            .padding(20)
+                            .padding(.horizontal, 12)
+                            .padding(.top, 8)
+                            .padding(.bottom, 20)
                     }
                 } else {
                     ContentUnavailableView(

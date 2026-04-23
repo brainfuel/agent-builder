@@ -678,6 +678,7 @@ struct ContentView: View {
             isReadOnly: execution.isViewingHistoricalRun,
             onPersistStructureChatState: { persistStructureChatState() },
             onSaveNodeAsTemplate: { node in saveNodeAsTemplate(node) },
+            onEditNodeTemplates: { navigation.isShowingNodeTemplateLibrary = true },
             onDeleteSelectedNode: { canvas.deleteSelectedNode() },
             onApplyTemplateFromStructureChat: { template, label in
                 applyTemplateFromStructureChat(template, label: label)

@@ -34,9 +34,12 @@ struct NodeInspector: View {
 
     @Binding var node: OrgNode
     @Query private var savedServers: [MCPServerConnection]
+    @Query(sort: \UserNodeTemplate.updatedAt, order: .reverse)
+    private var userNodeTemplates: [UserNodeTemplate]
     @EnvironmentObject private var mcpManager: MCPServerManager
     let onDelete: () -> Void
     var onSaveAsTemplate: (() -> Void)?
+    var onEditNodeTemplates: (() -> Void)?
     var headerTitle: String = "Node Details"
     /// Invoked when the user taps a Connected Apps row. The parent swaps
     /// in the per-tool detail view as a state-driven "push" so it stays
@@ -195,6 +198,43 @@ struct NodeInspector: View {
         }
     }
 
+    /// Overwrites the current node's editable fields with values from a saved
+    /// user template. Leaves identity (id), position, and input schema intact
+    /// so existing links and layout aren't disturbed.
+    private func applyUserNodeTemplate(_ template: UserNodeTemplate) {
+        if let type = NodeType(rawValue: template.nodeTypeRaw) {
+            node.type = type
+        }
+        if let provider = LLMProvider(rawValue: template.providerRaw) {
+            node.provider = provider
+        }
+        node.name = template.name
+        node.title = template.title
+        node.department = template.department
+        node.roleDescription = template.roleDescription
+        let trimmedOutput = template.outputSchema.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedOutput.isEmpty {
+            node.outputSchema = template.outputSchema
+        }
+        node.outputSchemaDescription = template.outputSchemaDescription
+        node.securityAccess = Set(template.securityAccessRaw.compactMap { SecurityAccess(rawValue: $0) })
+        node.assignedTools = Set(template.assignedToolsRaw)
+    }
+
+    /// Overwrites the current node's editable fields with values from a
+    /// built-in `NodeTemplate`. Preserves id, position, and input schema so
+    /// existing links / layout aren't disturbed.
+    private func applyBuiltInNodeTemplate(_ template: NodeTemplate) {
+        node.type = template.nodeType
+        node.name = template.name
+        node.title = template.title
+        node.department = template.department
+        node.roleDescription = template.roleDescription
+        node.outputSchemaDescription = template.outputSchemaDescription
+        node.securityAccess = template.securityAccess
+        node.assignedTools = template.defaultTools
+    }
+
     private func subtitleText(for entry: ConnectedAppEntry, anyAssigned: Bool, allAssigned: Bool) -> String {
         guard entry.hasTools else { return entry.statusText }
         if allAssigned {
@@ -216,27 +256,68 @@ struct NodeInspector: View {
             } else {
                 VStack(alignment: .leading, spacing: 18) {
                     HStack(spacing: 10) {
-                        Text(headerTitle)
-                            .font(.title2.bold())
-                        Spacer()
-                        if let onSaveAsTemplate {
-                            Button {
-                                onSaveAsTemplate()
+                        if !headerTitle.isEmpty {
+                            Text(headerTitle)
+                                .font(.title2.bold())
+                        }
+                        if onSaveAsTemplate != nil || onEditNodeTemplates != nil {
+                            Menu {
+                                if !userNodeTemplates.isEmpty {
+                                    Section("My Node Templates") {
+                                        ForEach(userNodeTemplates) { template in
+                                            Button {
+                                                applyUserNodeTemplate(template)
+                                            } label: {
+                                                Label(template.label, systemImage: template.icon)
+                                            }
+                                        }
+                                    }
+                                }
+
+                                Section("Built-in") {
+                                    ForEach(NodeTemplate.allCases) { template in
+                                        Button {
+                                            applyBuiltInNodeTemplate(template)
+                                        } label: {
+                                            Label(template.label, systemImage: template.icon)
+                                        }
+                                    }
+                                }
+
+                                Section {
+                                    if let onSaveAsTemplate {
+                                        Button {
+                                            onSaveAsTemplate()
+                                        } label: {
+                                            Label("Save current as template…", systemImage: "square.and.arrow.down")
+                                        }
+                                    }
+                                    if let onEditNodeTemplates {
+                                        Button {
+                                            onEditNodeTemplates()
+                                        } label: {
+                                            Label("Edit Node Templates…", systemImage: "pencil")
+                                        }
+                                        .disabled(userNodeTemplates.isEmpty)
+                                    }
+                                }
                             } label: {
-                                Image(systemName: "square.and.arrow.down")
-                                    .font(.body.weight(.semibold))
+                                Label("Templates", systemImage: "square.grid.2x2")
+                                    .font(.caption)
+                                    .lineLimit(1)
                             }
                             .buttonStyle(.bordered)
-                            .accessibilityLabel("Save as Node Template")
-                            .help("Save this node as a reusable template")
+                            .controlSize(.small)
+                            .help("Apply, save, or edit node templates")
                         }
                         Button(role: .destructive) {
                             isShowingDeleteNodeConfirmation = true
                         } label: {
                             Image(systemName: "trash")
-                                .font(.body.weight(.semibold))
+                                .font(.caption.weight(.semibold))
                         }
                         .buttonStyle(.bordered)
+                        .controlSize(.small)
                         .accessibilityLabel("Delete")
                         .help("Delete this node")
                         .confirmationDialog(
@@ -250,6 +331,7 @@ struct NodeInspector: View {
                         } message: {
                             Text("This will permanently delete \(node.name.isEmpty ? "this node" : "\u{201C}\(node.name)\u{201D}") and any links attached to it.")
                         }
+                        Spacer()
                     }
 
                     GroupBox {
@@ -1072,6 +1154,7 @@ struct NodeTemplateEditorForm: View {
     @Environment(\.dismiss) private var dismiss
     @State private var node: OrgNode
     @State private var isShowingDeleteConfirmation = false
+    @State private var pushedApp: ConnectedAppPushRequest?
 
     private static let iconChoices = [
         "star", "bolt", "shield.checkered", "magnifyingglass",
@@ -1102,6 +1185,66 @@ struct NodeTemplateEditorForm: View {
     }
 
     var body: some View {
+        ZStack {
+            rootContent
+                .opacity(pushedApp == nil ? 1 : 0)
+            if let pushedApp {
+                pushedAppView(pushedApp)
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
+            }
+        }
+        .animation(.easeInOut(duration: 0.22), value: pushedApp?.id)
+    }
+
+    @ViewBuilder
+    private func pushedAppView(_ request: ConnectedAppPushRequest) -> some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Button {
+                    pushedApp = nil
+                } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 28, height: 28)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(Color(uiColor: .tertiarySystemFill))
+                        )
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Back")
+                .help("Back to Node Template Details")
+
+                Text(request.connectionName)
+                    .font(.headline)
+                    .lineLimit(1)
+
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+
+            Divider()
+
+            ConnectedAppToolsDetail(
+                connectionName: request.connectionName,
+                tools: request.tools,
+                assignedTools: Binding(
+                    get: { node.assignedTools },
+                    set: { node.assignedTools = $0 }
+                ),
+                onGrantWorkspaceAccess: {
+                    node.securityAccess.insert(.workspaceRead)
+                    node.securityAccess.insert(.workspaceWrite)
+                }
+            )
+        }
+        .background(AppTheme.surfaceSecondary)
+    }
+
+    @ViewBuilder
+    private var rootContent: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 // Template-specific fields: icon picker and label
@@ -1150,7 +1293,10 @@ struct NodeTemplateEditorForm: View {
                 NodeInspector(
                     node: $node,
                     onDelete: { isShowingDeleteConfirmation = true },
-                    headerTitle: "Node Template Details"
+                    headerTitle: "Node Template Details",
+                    onPushConnectedApp: { request in
+                        pushedApp = request
+                    }
                 )
             }
             .padding(20)
