@@ -17,7 +17,7 @@
 			<string>com.moosia.Agentic.oauth</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
-				<string>agentic</string>
+				<string>com.moosia.agentic</string>
 			</array>
 		</dict>
 	</array>

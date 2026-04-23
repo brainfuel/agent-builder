@@ -16,8 +16,8 @@ final class MCPOAuthHandler: NSObject, ASWebAuthenticationPresentationContextPro
     private var clientCache: [String: (clientID: String, clientSecret: String?)] = [:]
     private var activeWebAuthSession: ASWebAuthenticationSession?
 
-    private static let callbackScheme = "agentic"
-    private static let redirectURI = "agentic://oauth/callback"
+    private static let callbackScheme = "com.moosia.agentic"
+    private static let redirectURI = "com.moosia.agentic://oauth/callback"
     private static let authTimeoutNanoseconds: UInt64 = 60_000_000_000
 
     func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
