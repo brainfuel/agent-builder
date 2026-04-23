@@ -39,6 +39,8 @@ struct NodeInspector: View {
     var onSaveAsTemplate: (() -> Void)?
     var headerTitle: String = "Node Details"
 
+    @State private var isShowingDeleteNodeConfirmation = false
+
     private let editableTypes: [NodeType] = [.human, .agent]
 
     private var connectedServerTools: [ConnectedAppEntry] {
@@ -110,7 +112,7 @@ struct NodeInspector: View {
                             .help("Save this node as a reusable template")
                         }
                         Button(role: .destructive) {
-                            onDelete()
+                            isShowingDeleteNodeConfirmation = true
                         } label: {
                             Image(systemName: "trash")
                                 .font(.body.weight(.semibold))
@@ -118,6 +120,17 @@ struct NodeInspector: View {
                         .buttonStyle(.bordered)
                         .accessibilityLabel("Delete")
                         .help("Delete this node")
+                        .confirmationDialog(
+                            "Delete Node?",
+                            isPresented: $isShowingDeleteNodeConfirmation
+                        ) {
+                            Button("Delete Node", role: .destructive) {
+                                onDelete()
+                            }
+                            Button("Cancel", role: .cancel) {}
+                        } message: {
+                            Text("This will permanently delete \(node.name.isEmpty ? "this node" : "\u{201C}\(node.name)\u{201D}") and any links attached to it.")
+                        }
                     }
 
                     GroupBox {

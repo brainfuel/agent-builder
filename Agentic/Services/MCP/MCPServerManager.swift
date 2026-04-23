@@ -44,6 +44,12 @@ final class MCPServerManager: ObservableObject {
     func connect(to connection: MCPServerConnection) async {
         activeConnections[connection.id] = connection
 
+        // Stdio (local) transport — macOS only, completely separate code path.
+        if connection.isStdio {
+            await connectStdio(connection)
+            return
+        }
+
         guard let url = normalizedURL(for: connection) else {
             connectionStatus[connection.id] = .failed("Invalid URL")
             return
@@ -118,6 +124,63 @@ final class MCPServerManager: ObservableObject {
             connectionStatus[connection.id] = .failed(error.localizedDescription)
             discoveredTools[connection.id] = nil
         }
+    }
+
+    /// Connects to a local stdio MCP server by spawning the configured binary.
+    /// Available only on macOS; on other platforms this records a failure.
+    private func connectStdio(_ connection: MCPServerConnection) async {
+        #if os(macOS) || targetEnvironment(macCatalyst)
+        connectionStatus[connection.id] = .connecting
+        let args = splitArguments(connection.arguments)
+        let client = MCPStdioClient(
+            command: connection.command,
+            arguments: args,
+            serverConnectionID: connection.id
+        )
+        do {
+            let discovery = try await client.discover()
+            discoveredTools[connection.id] = discovery.tools
+            cacheDiscoveredTools(discovery.tools, on: connection)
+            // Persist the server's self-reported description / name so the
+            // inspector row can display them instead of just the binary path.
+            if let instructions = discovery.instructions {
+                let current = connection.serverDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+                // Overwrite when empty or when it still holds the auto-seeded
+                // binary path from the create-sheet (pre-discovery placeholder).
+                if current.isEmpty || current == connection.command {
+                    connection.serverDescription = instructions
+                }
+            }
+            connectionStatus[connection.id] = .connected(toolCount: discovery.tools.count)
+        } catch {
+            connectionStatus[connection.id] = .failed(error.localizedDescription)
+            discoveredTools[connection.id] = nil
+        }
+        #else
+        connectionStatus[connection.id] = .failed("Local (stdio) MCP servers are only supported on macOS.")
+        discoveredTools[connection.id] = nil
+        #endif
+    }
+
+    /// Splits a CLI arguments string on whitespace, honoring simple quoting.
+    private func splitArguments(_ raw: String) -> [String] {
+        let trimmed = raw.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return [] }
+        var args: [String] = []
+        var current = ""
+        var inSingle = false
+        var inDouble = false
+        for ch in trimmed {
+            if ch == "'" && !inDouble { inSingle.toggle(); continue }
+            if ch == "\"" && !inSingle { inDouble.toggle(); continue }
+            if ch == " " && !inSingle && !inDouble {
+                if !current.isEmpty { args.append(current); current = "" }
+                continue
+            }
+            current.append(ch)
+        }
+        if !current.isEmpty { args.append(current) }
+        return args
     }
 
     /// Disconnects from a server and clears its tools.
@@ -208,6 +271,19 @@ final class MCPServerManager: ObservableObject {
 
     /// Calls a tool on the appropriate MCP server.
     func callTool(name: String, arguments: [String: AnyCodableValue], on connection: MCPServerConnection) async throws -> MCPToolCallResult {
+        if connection.isStdio {
+            #if os(macOS) || targetEnvironment(macCatalyst)
+            let client = MCPStdioClient(
+                command: connection.command,
+                arguments: splitArguments(connection.arguments),
+                serverConnectionID: connection.id
+            )
+            return try await client.callTool(name: name, arguments: arguments)
+            #else
+            throw MCPClientError.connectionFailed("Local (stdio) MCP servers are only supported on macOS.")
+            #endif
+        }
+
         guard let url = normalizedURL(for: connection) else {
             throw MCPClientError.connectionFailed("Invalid URL")
         }

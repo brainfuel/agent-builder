@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import UniformTypeIdentifiers
 
 struct ToolCatalogSheet: View {
     private struct ServerToolListSelection: Identifiable, Hashable {
@@ -20,6 +21,12 @@ struct ToolCatalogSheet: View {
     @State private var customName = ""
     @State private var customURL = ""
     @State private var customAPIKey = ""
+    #if os(macOS) || targetEnvironment(macCatalyst)
+    @State private var addingLocalServer = false
+    @State private var localName = ""
+    @State private var localCommand = ""
+    @State private var localArguments = ""
+    #endif
     @State private var selectedServerTools: ServerToolListSelection?
     @State private var navigationPath = NavigationPath()
 
@@ -222,7 +229,7 @@ struct ToolCatalogSheet: View {
                         }
                     }
 
-                    // MARK: Custom Server
+                    // MARK: Custom Server (remote HTTP)
                     VStack(alignment: .leading, spacing: 4) {
                         Text("CUSTOM SERVER")
                             .font(.caption.weight(.bold))
@@ -254,59 +261,73 @@ struct ToolCatalogSheet: View {
                         .padding(.horizontal, 16)
                         .help("Add a custom MCP server")
 
-                        // Show custom servers
+                        // Show remote (HTTP) custom servers only.
                         let customServers = savedServers.filter { conn in
+                            !conn.isStdio &&
                             !CuratedMCPCatalog.servers.contains(where: { $0.name == conn.name })
                         }
                         if !customServers.isEmpty {
                             VStack(spacing: 1) {
                                 ForEach(customServers) { server in
-                                    HStack(spacing: 14) {
-                                        Image(systemName: "server.rack")
-                                            .font(.title3)
-                                            .foregroundStyle(server.isEnabled ? Color.accentColor : .secondary)
-                                            .frame(width: 32, height: 32)
-
-                                        VStack(alignment: .leading, spacing: 3) {
-                                            HStack(spacing: 8) {
-                                                Text(server.name)
-                                                    .font(.body.weight(.medium))
-                                                if server.isEnabled {
-                                                    Text("Connected")
-                                                        .font(.caption2.weight(.semibold))
-                                                        .foregroundStyle(.white)
-                                                        .padding(.horizontal, 6)
-                                                        .padding(.vertical, 2)
-                                                        .background(Color.green, in: Capsule())
-                                                }
-                                            }
-                                            Text(server.url)
-                                                .font(.caption)
-                                                .foregroundStyle(.secondary)
-                                                .lineLimit(1)
-                                        }
-
-                                        Spacer()
-
-                                        Button {
-                                            modelContext.delete(server)
-                                        } label: {
-                                            Text("Remove")
-                                                .font(.caption.weight(.medium))
-                                                .foregroundStyle(.red)
-                                        }
-                                        .buttonStyle(.plain)
-                                        .help("Remove this server")
-                                    }
-                                    .padding(.horizontal, 20)
-                                    .padding(.vertical, 10)
-                                    .background(Color(.secondarySystemGroupedBackground))
+                                    customServerRow(server)
                                 }
                             }
-                            .clipShape(RoundedRectangle(cornerRadius: 10))
                             .padding(.horizontal, 16)
+                            .padding(.top, 6)
                         }
                     }
+
+                    #if os(macOS) || targetEnvironment(macCatalyst)
+                    // MARK: Local (stdio)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("LOCAL")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 20)
+
+                        Button {
+                            localName = ""
+                            localCommand = ""
+                            localArguments = ""
+                            addingLocalServer = true
+                        } label: {
+                            HStack(spacing: 10) {
+                                Image(systemName: "terminal.fill")
+                                    .font(.title3)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Add Local MCP Server")
+                                        .font(.body.weight(.medium))
+                                    Text("Spawn a local binary and talk JSON-RPC over stdin/stdout")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                                    .font(.caption)
+                                    .foregroundStyle(.tertiary)
+                            }
+                            .padding(.horizontal, 20)
+                            .padding(.vertical, 12)
+                            .background(Color(.secondarySystemGroupedBackground))
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.horizontal, 16)
+                        .help("Add a local MCP server executable (macOS only)")
+
+                        let localServers = savedServers.filter { $0.isStdio }
+                        if !localServers.isEmpty {
+                            VStack(spacing: 1) {
+                                ForEach(localServers) { server in
+                                    customServerRow(server)
+                                }
+                            }
+                            .padding(.horizontal, 16)
+                            .padding(.top, 6)
+                        }
+                    }
+                    #endif
+
                 }
                 .padding(.vertical, 16)
             }
@@ -345,6 +366,20 @@ struct ToolCatalogSheet: View {
             } message: {
                 Text("Enter the MCP server endpoint URL (e.g. https://mcp.example.com/sse).")
             }
+            #if os(macOS) || targetEnvironment(macCatalyst)
+            .sheet(isPresented: $addingLocalServer) {
+                LocalMCPServerSheet(
+                    name: $localName,
+                    command: $localCommand,
+                    arguments: $localArguments,
+                    onAdd: {
+                        addLocalServer()
+                        addingLocalServer = false
+                    },
+                    onCancel: { addingLocalServer = false }
+                )
+            }
+            #endif
     }
 
     private func connectServer(_ server: CuratedMCPServer, apiKey: String) {
@@ -423,11 +458,37 @@ struct ToolCatalogSheet: View {
             icon: "server.rack",
             category: "Custom",
             serverDescription: trimmedURL,
-            isEnabled: true
+            isEnabled: true,
+            transport: "http"
         )
         modelContext.insert(connection)
         Task { await mcpManager.connect(to: connection) }
     }
+
+    #if os(macOS) || targetEnvironment(macCatalyst)
+    private func addLocalServer() {
+        let name = localName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cmd = localCommand.trimmingCharacters(in: .whitespacesAndNewlines)
+        let args = localArguments.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, !cmd.isEmpty else { return }
+
+        let connection = MCPServerConnection(
+            name: name,
+            url: "",
+            apiKey: "",
+            icon: "terminal.fill",
+            category: "Local",
+            serverDescription: "",
+            isEnabled: true,
+            transport: "stdio",
+            command: cmd,
+            arguments: args
+        )
+        modelContext.insert(connection)
+        Task { await mcpManager.connect(to: connection) }
+    }
+
+    #endif
 
     private func handleServerRowTap(connection: MCPServerConnection?, status: MCPServerManager.ConnectionStatus?) {
         guard let connection else { return }
@@ -528,6 +589,130 @@ struct ToolCatalogSheet: View {
                 .padding(.vertical, 2)
                 .background(Color(.tertiarySystemFill), in: Capsule())
         }
+    }
+
+    /// Renders a single custom-server row. Shared by the CUSTOM SERVER (HTTP)
+    /// and LOCAL (stdio) sections — the section header supplies the context
+    /// so no "LOCAL" badge is rendered inline.
+    @ViewBuilder
+    private func customServerRow(_ server: MCPServerConnection) -> some View {
+        let status = mcpManager.connectionStatus[server.id]
+        let toolCount = toolCountForDisplay(connection: server, status: status)
+        let hasToolDetails = toolCount > 0
+        let isConnected = server.isEnabled
+        // Prefer a stored description; fall back to the URL/path so the row
+        // still conveys identity (what Exa/Cloudinary show is their description).
+        let descriptionText: String = {
+            let trimmed = server.serverDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { return trimmed }
+            return server.isStdio ? server.command : server.url
+        }()
+
+        HStack(alignment: .top, spacing: 14) {
+            Image(systemName: server.isStdio ? "terminal.fill" : "server.rack")
+                .font(.title3)
+                .foregroundStyle(isConnected ? Color.accentColor : .secondary)
+                .frame(width: 32, height: 32)
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 8) {
+                    Text(server.name)
+                        .font(.body.weight(.medium))
+                        .lineLimit(1)
+                    serverStatusBadge(
+                        isConnected: isConnected,
+                        status: status,
+                        cachedToolCount: toolCount
+                    )
+
+                    Spacer(minLength: 8)
+
+                    if case .connecting = status {
+                        ProgressView().controlSize(.small)
+                    } else if case .awaitingOAuth = status {
+                        ProgressView().controlSize(.small)
+                    } else if isConnected {
+                        Button {
+                            Task { await mcpManager.connect(to: server) }
+                        } label: {
+                            Image(systemName: "arrow.clockwise")
+                                .font(.callout.weight(.semibold))
+                                .foregroundStyle(Color.accentColor)
+                                .frame(width: 20, height: 20)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Refresh")
+                        .help("Reconnect and refresh tools")
+
+                        Button {
+                            mcpManager.disconnect(id: server.id)
+                            modelContext.delete(server)
+                        } label: {
+                            Image(systemName: "xmark.circle")
+                                .font(.callout.weight(.semibold))
+                                .foregroundStyle(.red)
+                                .frame(width: 20, height: 20)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Remove")
+                        .help("Remove this server")
+                    } else {
+                        Button {
+                            server.isEnabled = true
+                            Task { await mcpManager.connect(to: server) }
+                        } label: {
+                            Text("Connect")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.white)
+                                .lineLimit(1)
+                                .fixedSize(horizontal: true, vertical: false)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 3)
+                                .background(Color.accentColor, in: Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .help("Connect \(server.name)")
+                    }
+                }
+
+                HStack(alignment: .center, spacing: 8) {
+                    Text(descriptionText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                    if hasToolDetails {
+                        Spacer(minLength: 0)
+                        Image(systemName: "chevron.right")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+
+                if case .connected(let count) = status {
+                    Text("\(count) tool\(count == 1 ? "" : "s") available")
+                        .font(.caption2)
+                        .foregroundStyle(.green)
+                } else if case .failed(let msg) = status {
+                    Text(msg)
+                        .font(.caption2)
+                        .foregroundStyle(.red)
+                        .lineLimit(3)
+                } else if toolCount > 0 {
+                    Text("\(toolCount) tool\(toolCount == 1 ? "" : "s") available (tap to view)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .layoutPriority(1)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                handleServerRowTap(connection: server, status: status)
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 10)
+        .background(Color(.secondarySystemGroupedBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 
 }
@@ -703,3 +888,100 @@ struct ServerToolCard: View {
         }
     }
 }
+
+#if os(macOS) || targetEnvironment(macCatalyst)
+
+// MARK: - Local (stdio) MCP Server sheet
+
+private struct LocalMCPServerSheet: View {
+    @Binding var name: String
+    @Binding var command: String
+    @Binding var arguments: String
+    let onAdd: () -> Void
+    let onCancel: () -> Void
+
+    @State private var pickingExecutable = false
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Server") {
+                    TextField("Name", text: $name)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                }
+                Section("Executable") {
+                    HStack {
+                        TextField("/path/to/mcp-binary", text: $command)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .font(.system(.body, design: .monospaced))
+                        Button("Choose…") { pickingExecutable = true }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                    }
+                    TextField("Arguments (optional)", text: $arguments)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .font(.system(.body, design: .monospaced))
+                }
+                Section {
+                    Text("Agentic will launch this binary and exchange JSON-RPC over stdin/stdout. Example: /Applications/Publisher.app/Contents/MacOS/publisher-mcp")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .navigationTitle("Add Local MCP Server")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { onCancel() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Add") { onAdd() }
+                        .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty ||
+                                  command.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
+            .fileImporter(
+                isPresented: $pickingExecutable,
+                allowedContentTypes: [.application, .executable, .unixExecutable, .item],
+                allowsMultipleSelection: false
+            ) { result in
+                guard case .success(let urls) = result, let url = urls.first else { return }
+                _ = url.startAccessingSecurityScopedResource()
+
+                let fm = FileManager.default
+                var chosen = url
+                var isDir: ObjCBool = false
+
+                // If the user picked an .app bundle, hunt for the MCP binary inside.
+                if url.pathExtension.lowercased() == "app",
+                   fm.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue {
+                    let macos = url.appendingPathComponent("Contents/MacOS")
+                    if let entries = try? fm.contentsOfDirectory(atPath: macos.path) {
+                        // Prefer a binary whose name contains "mcp", otherwise
+                        // fall back to anything not named like the app itself.
+                        let appBase = url.deletingPathExtension().lastPathComponent.lowercased()
+                        let mcpHit = entries.first { $0.lowercased().contains("mcp") }
+                        let nonMain = entries.first { $0.lowercased() != appBase }
+                        if let pick = mcpHit ?? nonMain ?? entries.first {
+                            chosen = macos.appendingPathComponent(pick)
+                        }
+                    }
+                }
+
+                command = chosen.path
+                if name.isEmpty {
+                    // Prefer the app bundle's name if we drilled in, else the file name.
+                    name = (url.pathExtension.lowercased() == "app")
+                        ? url.deletingPathExtension().lastPathComponent
+                        : chosen.deletingPathExtension().lastPathComponent
+                }
+            }
+        }
+        .frame(minWidth: 520, minHeight: 320)
+    }
+}
+
+#endif

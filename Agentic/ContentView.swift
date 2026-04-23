@@ -1153,27 +1153,32 @@ struct ContentView: View {
         let strategy = rawStrategy.isEmpty ? execution.orchestrationStrategy : rawStrategy
         let goal = rawGoal.isEmpty ? execution.orchestrationGoal : rawGoal
 
-        let synthesisContextValue: String
-        if strategy.isEmpty {
-            synthesisContextValue = context
-        } else if context.isEmpty {
-            synthesisContextValue = "Structure strategy: \(strategy)"
-        } else {
-            synthesisContextValue = "\(context)\n\nStructure strategy: \(strategy)"
-        }
-
-        let synthesizer = TeamStructureSynthesizer()
-        let snapshot = synthesizer.synthesize(
-            goal: goal.isEmpty ? "Execute coordinator objective" : goal,
-            context: synthesisContextValue,
-            answers: [:]
-        )
+        // Seed the canvas with a minimal starter shape so the user sees
+        // something on the canvas immediately; structure chat will reshape it
+        // below based on the strategy text, with full visibility in the chat.
         createTaskDocument(
             title: title.isEmpty ? "Generated Task" : title,
             goal: goal,
             structureStrategy: strategy,
-            snapshot: snapshot
+            snapshot: canvas.simpleTaskSnapshot()
         )
+
+        // Auto-submit the strategy (plus any draft context) as a structure
+        // chat turn so the LLM generates the structure in the visible chat
+        // panel — much clearer than the old silent synthesizer path.
+        if !strategy.isEmpty {
+            let composedPrompt: String
+            if context.isEmpty {
+                composedPrompt = strategy
+            } else {
+                composedPrompt = "\(strategy)\n\nAdditional context:\n\(context)"
+            }
+            inspectorPanelTab = .structureChat
+            isInspectorPanelVisible = true
+            structure.structureChatInput = composedPrompt
+            submitStructureChatTurn()
+        }
+
         resetTaskDraft()
     }
 
