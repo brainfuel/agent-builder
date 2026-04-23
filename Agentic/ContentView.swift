@@ -1014,7 +1014,9 @@ struct ContentView: View {
     }
 
     private func reportNonFatalWorkflowError(_ error: WorkflowError) {
+        #if DEBUG
         print("[WorkflowError] \(error.debugMessage)")
+        #endif
     }
 
     @discardableResult

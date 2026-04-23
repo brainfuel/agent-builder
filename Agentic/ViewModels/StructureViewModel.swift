@@ -140,10 +140,12 @@ final class StructureViewModel {
             context: contextText
         )
 
+        #if DEBUG
         print("[GenerateStructure] Provider: \(provider.label)")
         print("[GenerateStructure] Model: \(preferredModelID ?? "auto")")
         print("[GenerateStructure] System prompt length: \(systemPrompt.count) chars")
         print("[GenerateStructure] User prompt length: \(userPrompt.count) chars")
+        #endif
 
         do {
             let llmService = LLMResponseService(liveProviderExecutor: deps.liveProviderExecutor)
@@ -154,23 +156,31 @@ final class StructureViewModel {
                 systemPrompt: systemPrompt,
                 messages: [ChatMessage(role: .user, text: userPrompt, attachments: [])]
             )
+            #if DEBUG
             print("[GenerateStructure] Resolved model: \(llmResponse.modelID)")
+            #endif
 
             let raw = llmResponse.rawText
+            #if DEBUG
             print("[GenerateStructure] Raw response length: \(raw.count) chars")
+            #endif
 
             var snapshot = try StructureResponseParserService.parseGeneratedStructure(
                 from: raw,
                 serverToolExpansion: serverToolExpansion
             )
+            #if DEBUG
             print("[GenerateStructure] Parsed \(snapshot.nodes.count) nodes, \(snapshot.links.count) links")
+            #endif
 
             let validProviders = Set(availableProviders.compactMap { LLMProvider(rawValue: $0) })
             let fallbackProvider = LLMProvider(rawValue: provider.rawValue) ?? .chatGPT
             snapshot.nodes = snapshot.nodes.map { node in
                 var fixed = node
                 if !validProviders.contains(node.provider) {
+                    #if DEBUG
                     print("[GenerateStructure] Fixing provider for \(node.name): \(node.provider.rawValue) → \(fallbackProvider.rawValue)")
+                    #endif
                     fixed.provider = fallbackProvider
                 }
                 return fixed
@@ -179,9 +189,13 @@ final class StructureViewModel {
             onApplySnapshot?(snapshot, false)
             let nodeNames = snapshot.nodes.map { $0.name }.joined(separator: ", ")
             synthesisStatusMessage = "Applied \(snapshot.nodes.count) nodes from \(provider.label): \(nodeNames). Use Undo to revert."
+            #if DEBUG
             print("[GenerateStructure] Applied to canvas: \(nodeNames)")
+            #endif
         } catch {
+            #if DEBUG
             print("[GenerateStructure] ERROR: \(error)")
+            #endif
             generateStructureError = "Generation failed: \(Self.userFacingErrorMessage(error))"
             synthesisStatusMessage = nil
         }
