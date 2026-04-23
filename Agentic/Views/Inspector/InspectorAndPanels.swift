@@ -38,6 +38,10 @@ struct NodeInspector: View {
     let onDelete: () -> Void
     var onSaveAsTemplate: (() -> Void)?
     var headerTitle: String = "Node Details"
+    /// Invoked when the user taps a Connected Apps row. The parent swaps
+    /// in the per-tool detail view as a state-driven "push" so it stays
+    /// scoped to the inspector pane.
+    var onPushConnectedApp: ((ConnectedAppPushRequest) -> Void)? = nil
 
     @State private var isShowingDeleteNodeConfirmation = false
 
@@ -66,12 +70,54 @@ struct NodeInspector: View {
         }
     }
 
-    private func hasAllAssigned(_ tools: [MCPRemoteTool]) -> Bool {
-        !tools.isEmpty && tools.allSatisfy { node.assignedTools.contains($0.name) }
+    /// Tool names that appear on more than one enabled MCP server. `assignedTools`
+    /// stores bare tool names with no server qualifier, so an ambiguous name like
+    /// `get_project` would otherwise appear "assigned" on every server that has
+    /// a tool of that name — misleading the UI. We use this set to filter those.
+    private var ambiguousToolNames: Set<String> {
+        var counts: [String: Int] = [:]
+        for connection in savedServers where connection.isEnabled {
+            let names = Set(toolsForServer(connection.id).map(\.name))
+            for name in names {
+                counts[name, default: 0] += 1
+            }
+        }
+        return Set(counts.filter { $0.value > 1 }.map(\.key))
     }
 
-    private func hasAnyAssigned(_ tools: [MCPRemoteTool]) -> Bool {
-        tools.contains { node.assignedTools.contains($0.name) }
+    /// Whether the node has any unambiguous assignment on the given server —
+    /// i.e. at least one assigned tool name that is unique to this server. If
+    /// so, ambiguous names assigned to the node are attributed to this server;
+    /// otherwise ambiguous names don't count for this server's "assigned"
+    /// state (they likely belong to whichever server does have a unique match).
+    private func hasUniqueOwnership(for serverID: UUID) -> Bool {
+        let ambiguous = ambiguousToolNames
+        let myNames = Set(toolsForServer(serverID).map(\.name))
+        for assigned in node.assignedTools {
+            if myNames.contains(assigned) && !ambiguous.contains(assigned) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private func isAssignedOnServer(_ toolName: String, serverID: UUID, serverOwnsUniquely: Bool? = nil) -> Bool {
+        guard node.assignedTools.contains(toolName) else { return false }
+        if !ambiguousToolNames.contains(toolName) { return true }
+        // Ambiguous name — only count it as assigned for this server if the
+        // server has some other unambiguously-assigned tool, i.e. the Copilot
+        // was clearly targeting this server.
+        return serverOwnsUniquely ?? hasUniqueOwnership(for: serverID)
+    }
+
+    private func hasAllAssigned(_ tools: [MCPRemoteTool], serverID: UUID) -> Bool {
+        let owns = hasUniqueOwnership(for: serverID)
+        return !tools.isEmpty && tools.allSatisfy { isAssignedOnServer($0.name, serverID: serverID, serverOwnsUniquely: owns) }
+    }
+
+    private func hasAnyAssigned(_ tools: [MCPRemoteTool], serverID: UUID) -> Bool {
+        let owns = hasUniqueOwnership(for: serverID)
+        return tools.contains { isAssignedOnServer($0.name, serverID: serverID, serverOwnsUniquely: owns) }
     }
 
     private func setAssignment(for tools: [MCPRemoteTool], enabled: Bool) {
@@ -87,6 +133,79 @@ struct NodeInspector: View {
                 node.assignedTools.remove(tool.name)
             }
         }
+    }
+
+    /// One row in the Connected Apps list: a server-level toggle plus a
+    /// push-navigation chevron. Tapping the chevron area pushes the
+    /// per-tool detail view onto the inspector's navigation stack so
+    /// the user can narrow the selection down.
+    @ViewBuilder
+    private func connectedAppRow(entry: ConnectedAppEntry) -> some View {
+        let anyAssigned = hasAnyAssigned(entry.tools, serverID: entry.connection.id)
+        let allAssigned = hasAllAssigned(entry.tools, serverID: entry.connection.id)
+
+        HStack(spacing: 8) {
+            Toggle(
+                isOn: Binding(
+                    get: { anyAssigned },
+                    set: { enabled in setAssignment(for: entry.tools, enabled: enabled) }
+                )
+            ) {
+                EmptyView()
+            }
+            .labelsHidden()
+            .disabled(!entry.hasTools)
+            .help("Assign \(entry.connection.name) tools to this node")
+
+            if entry.hasTools {
+                Button {
+                    onPushConnectedApp?(ConnectedAppPushRequest(
+                        connectionName: entry.connection.name,
+                        tools: entry.tools
+                    ))
+                } label: {
+                    HStack(spacing: 8) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(entry.connection.name)
+                                .font(.callout)
+                            Text(subtitleText(for: entry, anyAssigned: anyAssigned, allAssigned: allAssigned))
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        }
+                        Spacer(minLength: 0)
+                        Image(systemName: "chevron.right")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Customize which \(entry.connection.name) tools this node can call")
+            } else {
+                // No tools discovered — show the same label but non-interactive.
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(entry.connection.name)
+                        .font(.callout)
+                    Text(subtitleText(for: entry, anyAssigned: false, allAssigned: false))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+            }
+        }
+    }
+
+    private func subtitleText(for entry: ConnectedAppEntry, anyAssigned: Bool, allAssigned: Bool) -> String {
+        guard entry.hasTools else { return entry.statusText }
+        if allAssigned {
+            return "\(entry.tools.count) tool\(entry.tools.count == 1 ? "" : "s") · all assigned"
+        }
+        if anyAssigned {
+            let owns = hasUniqueOwnership(for: entry.connection.id)
+            let count = entry.tools.filter { isAssignedOnServer($0.name, serverID: entry.connection.id, serverOwnsUniquely: owns) }.count
+            return "\(count) of \(entry.tools.count) tools assigned"
+        }
+        return entry.statusText
     }
 
     var body: some View {
@@ -303,24 +422,7 @@ struct NodeInspector: View {
                                             .foregroundStyle(.tertiary)
                                     } else {
                                         ForEach(connectedServerTools) { entry in
-                                            Toggle(
-                                                isOn: Binding(
-                                                    get: { hasAllAssigned(entry.tools) },
-                                                    set: { enabled in
-                                                        setAssignment(for: entry.tools, enabled: enabled)
-                                                    }
-                                                )
-                                            ) {
-                                                VStack(alignment: .leading, spacing: 2) {
-                                                    Text(entry.connection.name)
-                                                        .font(.callout)
-                                                    Text("\(entry.statusText)\(entry.hasTools && hasAnyAssigned(entry.tools) && !hasAllAssigned(entry.tools) ? " (partially assigned)" : "")")
-                                                        .font(.caption2)
-                                                        .foregroundStyle(entry.hasTools ? .tertiary : .secondary)
-                                                }
-                                            }
-                                            .disabled(!entry.hasTools)
-                                            .help("Assign \(entry.connection.name) tools to this node")
+                                            connectedAppRow(entry: entry)
                                         }
                                     }
                                 }
@@ -339,6 +441,90 @@ struct NodeInspector: View {
                 }
             }
         }
+    }
+}
+
+/// Pushed onto the node inspector's NavigationStack from the Connected
+/// Apps row. Shows the server's full tool list with per-tool toggles and
+/// Select All / Deselect All controls at the top.
+struct ConnectedAppToolsDetail: View {
+    let connectionName: String
+    let tools: [MCPRemoteTool]
+    @Binding var assignedTools: Set<String>
+    let onGrantWorkspaceAccess: () -> Void
+
+    private var assignedCount: Int {
+        tools.filter { assignedTools.contains($0.name) }.count
+    }
+
+    private var allAssigned: Bool {
+        !tools.isEmpty && assignedCount == tools.count
+    }
+
+    private var noneAssigned: Bool {
+        assignedCount == 0
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                // Summary + bulk actions
+                HStack(spacing: 8) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("\(assignedCount) of \(tools.count) assigned")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("Select All") {
+                        for tool in tools { assignedTools.insert(tool.name) }
+                        onGrantWorkspaceAccess()
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(allAssigned)
+
+                    Button("Deselect All") {
+                        for tool in tools { assignedTools.remove(tool.name) }
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(noneAssigned)
+                }
+
+                Divider()
+
+                // Per-tool toggles
+                VStack(alignment: .leading, spacing: 10) {
+                    ForEach(tools, id: \.name) { tool in
+                        Toggle(isOn: Binding(
+                            get: { assignedTools.contains(tool.name) },
+                            set: { on in
+                                if on {
+                                    assignedTools.insert(tool.name)
+                                    onGrantWorkspaceAccess()
+                                } else {
+                                    assignedTools.remove(tool.name)
+                                }
+                            }
+                        )) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(tool.title ?? tool.name)
+                                    .font(.callout)
+                                if let desc = tool.description, !desc.isEmpty {
+                                    Text(desc)
+                                        .font(.caption2)
+                                        .foregroundStyle(.tertiary)
+                                }
+                            }
+                        }
+                        .toggleStyle(.switch)
+                    }
+                }
+            }
+            .padding(20)
+        }
+        .navigationTitle(connectionName)
     }
 }
 

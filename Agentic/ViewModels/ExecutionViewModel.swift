@@ -563,6 +563,15 @@ final class ExecutionViewModel {
         isExecutingCoordinator = false
         liveStatusMessage = ""
         onPersistNeeded?()
+
+        let total = completedRun.results.count
+        let succeeded = completedRun.succeededCount
+        RunCompletionNotificationService.postRunCompleted(
+            goal: pending.plan.goal,
+            succeededCount: succeeded,
+            totalCount: total,
+            overallCompleted: total > 0 && succeeded == total
+        )
     }
 
     // MARK: - Human Task Resolution

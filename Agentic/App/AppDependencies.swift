@@ -101,12 +101,45 @@ struct AppDependencies {
         }
     }
 
+    /// Produces a lookup used by the structure parser to expand tool references
+    /// written by the Copilot into the full set of tools for a server.
+    ///
+    /// Picking the right specific tool has proven unreliable in practice —
+    /// the Copilot sometimes picks a sibling tool on the same server, or
+    /// fails to pick anything. To make the UX robust we auto-expand: if the
+    /// Copilot names EITHER a server or any tool whose name is uniquely owned
+    /// by one server, the node ends up with every tool on that server
+    /// assigned. Users can then narrow the selection in the inspector.
+    ///
+    /// Ambiguous tool names (the same name on ≥2 servers — e.g. `get_project`
+    /// is on Publisher, Vercel, Supabase) are intentionally omitted from the
+    /// map so they don't cross-contaminate across servers. They pass through
+    /// unchanged and the inspector's disambiguation heuristic handles them.
     func makeServerToolExpansionMap(connections: [MCPServerConnection]) -> [String: [String]] {
-        var result: [String: [String]] = [:]
+        var toolOwners: [String: [UUID]] = [:]
+        var namesByConnection: [UUID: [String]] = [:]
+
         for connection in connections where connection.isEnabled {
             let tools = mcpManager.discoveredTools[connection.id] ?? mcpManager.cachedTools(for: connection.id)
-            if !tools.isEmpty {
-                result[connection.name.lowercased()] = tools.map(\.name)
+            guard !tools.isEmpty else { continue }
+            let names = tools.map(\.name)
+            namesByConnection[connection.id] = names
+            for name in names {
+                toolOwners[name.lowercased(), default: []].append(connection.id)
+            }
+        }
+
+        var result: [String: [String]] = [:]
+        for connection in connections where connection.isEnabled {
+            guard let names = namesByConnection[connection.id] else { continue }
+            result[connection.name.lowercased()] = names
+            for name in names {
+                let key = name.lowercased()
+                // Only map tool name → server tools when exactly one server
+                // owns that tool name — otherwise expansion is ambiguous.
+                if toolOwners[key]?.count == 1, result[key] == nil {
+                    result[key] = names
+                }
             }
         }
         return result

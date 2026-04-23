@@ -151,13 +151,20 @@ struct CoordinatorPacketExecutionService {
             for tool in allRemote where !effectiveTools.contains(tool.name) {
                 effectiveTools.append(tool.name)
             }
-            if !allRemote.isEmpty {
-                if !effectivePermissions.contains("workspaceRead") {
-                    effectivePermissions.append("workspaceRead")
-                }
-                if !effectivePermissions.contains("workspaceWrite") {
-                    effectivePermissions.append("workspaceWrite")
-                }
+        }
+        // Auto-grant workspace permissions whenever any remote MCP tool is
+        // assigned (global OR per-tool mode). Without this, per-tool nodes
+        // show "Allowed permissions: (none)" in their user prompt, which
+        // pressures the model into inventing auth/team parameters or
+        // declaring BLOCKED because "authorization is missing".
+        let remoteToolNames = Set(mcpManager.allRemoteTools.map(\.name))
+        let hasAssignedRemoteTool = effectiveTools.contains(where: { remoteToolNames.contains($0) })
+        if hasAssignedRemoteTool {
+            if !effectivePermissions.contains("workspaceRead") {
+                effectivePermissions.append("workspaceRead")
+            }
+            if !effectivePermissions.contains("workspaceWrite") {
+                effectivePermissions.append("workspaceWrite")
             }
         }
 

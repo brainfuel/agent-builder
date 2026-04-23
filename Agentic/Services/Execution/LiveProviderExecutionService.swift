@@ -278,20 +278,36 @@ enum LiveProviderExecutionService {
     static func makeSystemPrompt(for request: LiveProviderTaskRequest) -> String {
         var lines = [
             "You are \(request.roleContext) operating inside a coordinator-managed multi-agent workflow.",
-            "Write actionable output, concise and decision-oriented.",
-            "Required output schema: \(request.requiredOutputSchema)."
+            "Write actionable output, concise and decision-oriented."
         ]
         let enforceJSON = request.assignedTools.contains("structured_output")
+        let hasExecutableRemoteTools = request.assignedTools.contains { $0 != "web_search" && $0 != "structured_output" && $0 != "human_review" }
         let desc = request.outputSchemaDescription.trimmingCharacters(in: .whitespacesAndNewlines)
         if enforceJSON {
+            lines.append("Required output schema: \(request.requiredOutputSchema).")
             if !desc.isEmpty {
                 lines.append("Your output MUST be ONLY valid JSON conforming to this format: \(desc)")
             } else {
                 lines.append("Your output MUST be ONLY valid JSON matching the schema: \(request.requiredOutputSchema).")
             }
             lines.append("CRITICAL: Respond with ONLY the JSON object. No prose, no markdown, no code fences, no explanation before or after. Just the raw JSON.")
-        } else if !desc.isEmpty {
-            lines.append("Your output MUST conform to this format: \(desc)")
+        } else if hasExecutableRemoteTools {
+            // Tools are assigned — the node's purpose is to CALL a tool, not
+            // to synthesize text matching an output schema. Mention the schema
+            // only as a downstream hint so the tool result can be framed
+            // appropriately, without pressuring the model toward prose.
+            if !request.requiredOutputSchema.isEmpty {
+                lines.append("Downstream output schema (for context only): \(request.requiredOutputSchema).")
+            }
+            if !desc.isEmpty {
+                lines.append("Output format hint (for context): \(desc)")
+            }
+            lines.append("Your primary job is to call the appropriate tool from the list below. Do NOT fabricate output — call the tool and return its result.")
+        } else {
+            lines.append("Required output schema: \(request.requiredOutputSchema).")
+            if !desc.isEmpty {
+                lines.append("Your output MUST conform to this format: \(desc)")
+            }
         }
         let executableTools = request.assignedTools.filter { $0 != "web_search" }
         if !executableTools.isEmpty {
@@ -321,6 +337,7 @@ enum LiveProviderExecutionService {
                 [TOOL_CALL: tool_name({"param1": "value1", "param2": "value2"})]
                 Arguments MUST be a valid JSON object inside the parentheses.
                 Use tool names exactly as listed above (the machine-readable ID, not the display name).
+                ONLY use the parameters listed in each tool's schema above. Do NOT invent parameters (e.g. teamId, workspaceId, authToken) that aren't shown — tools that list no parameters take none; call them with {}.
                 Tool results will be provided if you use a tool call. You may continue your response after receiving results.
                 """)
 

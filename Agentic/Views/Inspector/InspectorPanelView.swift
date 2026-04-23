@@ -153,47 +153,125 @@ struct InspectorToggleRail: View {
     }
 }
 
+/// "Push request" payload handed up from NodeInspector when the user taps
+/// a Connected Apps row. We use a state-driven view swap (rather than a real
+/// NavigationLink) so the detail view is guaranteed to stay inside the
+/// inspector pane — a nested NavigationStack inside NavigationSplitView's
+/// detail column tends to get hijacked by the split view's implicit
+/// navigation on Catalyst, pushing the detail onto the entire right pane.
+struct ConnectedAppPushRequest: Identifiable {
+    let id = UUID()
+    let connectionName: String
+    let tools: [MCPRemoteTool]
+}
+
 struct NodeDetailsInspectorContent: View {
     let inspectorNodeBinding: Binding<OrgNode>?
     let isReadOnly: Bool
     let onDelete: () -> Void
     let onSaveAsTemplate: (OrgNode) -> Void
 
+    @State private var pushedApp: ConnectedAppPushRequest?
+
     var body: some View {
         VStack(spacing: 0) {
             if isReadOnly {
                 readOnlyBanner
             }
-            ScrollView {
-                Group {
-                    if let inspectorNodeBinding {
-                        if inspectorNodeBinding.wrappedValue.type == .input || inspectorNodeBinding.wrappedValue.type == .output {
-                            FixedNodeInspector(node: inspectorNodeBinding)
-                                .padding(20)
-                        } else {
-                            NodeInspector(
-                                node: inspectorNodeBinding,
-                                onDelete: onDelete,
-                                onSaveAsTemplate: { onSaveAsTemplate(inspectorNodeBinding.wrappedValue) },
-                                headerTitle: "Node Details"
-                            )
-                                .padding(20)
-                        }
+            ZStack {
+                rootContent
+                    .opacity(pushedApp == nil ? 1 : 0)
+                if let pushedApp, let inspectorNodeBinding {
+                    pushedAppView(pushedApp, node: inspectorNodeBinding)
+                        .transition(.move(edge: .trailing).combined(with: .opacity))
+                }
+            }
+            .animation(.easeInOut(duration: 0.22), value: pushedApp?.id)
+        }
+    }
+
+    @ViewBuilder
+    private var rootContent: some View {
+        ScrollView {
+            Group {
+                if let inspectorNodeBinding {
+                    if inspectorNodeBinding.wrappedValue.type == .input || inspectorNodeBinding.wrappedValue.type == .output {
+                        FixedNodeInspector(node: inspectorNodeBinding)
+                            .padding(20)
                     } else {
-                        ContentUnavailableView(
-                            "No Node Selected",
-                            systemImage: "cursorarrow.click",
-                            description: Text(isReadOnly
-                                ? "Select a node to view its historical details."
-                                : "Select a node to edit schema and details."
-                            )
+                        NodeInspector(
+                            node: inspectorNodeBinding,
+                            onDelete: onDelete,
+                            onSaveAsTemplate: { onSaveAsTemplate(inspectorNodeBinding.wrappedValue) },
+                            headerTitle: "Node Details",
+                            onPushConnectedApp: { request in
+                                pushedApp = request
+                            }
                         )
                             .padding(20)
                     }
+                } else {
+                    ContentUnavailableView(
+                        "No Node Selected",
+                        systemImage: "cursorarrow.click",
+                        description: Text(isReadOnly
+                            ? "Select a node to view its historical details."
+                            : "Select a node to edit schema and details."
+                        )
+                    )
+                        .padding(20)
                 }
-                .disabled(isReadOnly)
             }
+            .disabled(isReadOnly)
         }
+    }
+
+    @ViewBuilder
+    private func pushedAppView(_ request: ConnectedAppPushRequest, node: Binding<OrgNode>) -> some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Button {
+                    pushedApp = nil
+                } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 28, height: 28)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(Color(uiColor: .tertiarySystemFill))
+                        )
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Back")
+                .help("Back to Node Details")
+
+                Text(request.connectionName)
+                    .font(.headline)
+                    .lineLimit(1)
+
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+
+            Divider()
+
+            ConnectedAppToolsDetail(
+                connectionName: request.connectionName,
+                tools: request.tools,
+                assignedTools: Binding(
+                    get: { node.wrappedValue.assignedTools },
+                    set: { node.wrappedValue.assignedTools = $0 }
+                ),
+                onGrantWorkspaceAccess: {
+                    node.wrappedValue.securityAccess.insert(.workspaceRead)
+                    node.wrappedValue.securityAccess.insert(.workspaceWrite)
+                }
+            )
+            .disabled(isReadOnly)
+        }
+        .background(AppTheme.surfaceSecondary)
     }
 
     private var readOnlyBanner: some View {

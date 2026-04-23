@@ -158,9 +158,9 @@ struct TaskListView: View {
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
 
-                draftTextField("Task title", text: $newTaskTitle, field: .title, infoTopic: .title)
+                draftTextField("Task title (optional)", text: $newTaskTitle, field: .title, infoTopic: .title)
                 draftTextField("Question", text: $newTaskGoal, field: .goal, infoTopic: .question)
-                draftTextField("Context", text: $newTaskContext, field: .context, infoTopic: .context)
+                draftTextField("Context (optional)", text: $newTaskContext, field: .context, infoTopic: .context)
                 if newTaskCreationOption.usesStructureStrategyField && newTaskCustomTemplateID == nil {
                     draftTextField(
                         "Structure strategy",
@@ -412,15 +412,6 @@ struct TaskRow: View {
                     .accessibilityLabel("Human Inbox")
                     .catalystTooltip("Open Human Inbox")
                 }
-
-                Button {
-                    onOpenEditor()
-                } label: {
-                    Image(systemName: "pencil")
-                }
-                .buttonStyle(.borderedProminent)
-                .accessibilityLabel("Edit Task")
-                .catalystTooltip("Edit Task")
 
                 Button {
                     onRunOrContinue()

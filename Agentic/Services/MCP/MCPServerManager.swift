@@ -212,11 +212,14 @@ final class MCPServerManager: ObservableObject {
         cachedTools(for: connectionID).count
     }
 
-    /// Resolves which connected server should handle a remote tool.
     /// Returns a prompt-friendly description of a remote tool including its parameter schema.
+    /// Falls back to cached tools when the server isn't actively connected — without this,
+    /// both the Structure Copilot and the runtime executor would see "no schema available"
+    /// for tools that are perfectly well-known from the last discovery.
     func toolSchemaDescription(forToolName toolName: String) -> String? {
         let tool: MCPRemoteTool? = allRemoteTools.first(where: { $0.name == toolName })
             ?? discoveredTools.values.flatMap({ $0 }).first(where: { $0.name == toolName })
+            ?? cachedToolsAcrossConnections().first(where: { $0.name == toolName })
 
         guard let tool else { return nil }
 
@@ -224,9 +227,11 @@ final class MCPServerManager: ObservableObject {
         if let title = tool.title, !title.isEmpty { desc += " (\(title))" }
         desc += ": "
         if let d = tool.description, !d.isEmpty {
-            // Truncate to first 120 chars to keep prompt compact
+            // Keep a generous slice so the Copilot has enough context to
+            // distinguish similarly-named tools (e.g. list_projects vs
+            // deploy_website). Full multi-line detail is preserved.
             let cleaned = d.replacingOccurrences(of: "\n", with: " ")
-            desc += String(cleaned.prefix(120))
+            desc += String(cleaned.prefix(300))
         }
 
         if let schema = tool.inputSchema, let props = schema.properties, !props.isEmpty {
@@ -234,13 +239,38 @@ final class MCPServerManager: ObservableObject {
             let paramDescs = props.sorted(by: { $0.key < $1.key }).map { key, prop in
                 let typeStr = prop.type ?? "any"
                 let reqStr = required.contains(key) ? ", required" : ""
-                let propDesc = prop.description.map { " — \(String($0.prefix(60)))" } ?? ""
+                let propDesc = prop.description.map { " — \(String($0.prefix(80)))" } ?? ""
                 return "    \(key) (\(typeStr)\(reqStr))\(propDesc)"
             }
             desc += "\n  Parameters:\n" + paramDescs.joined(separator: "\n")
+        } else {
+            // Make absence explicit — otherwise the model tends to invent
+            // required params (e.g. hallucinating `teamId` on a no-arg call).
+            desc += "\n  Parameters: (none — call with {})"
         }
 
         return desc
+    }
+
+    /// Aggregates cached tools from every known connection. Used as a last-resort
+    /// lookup when neither `allRemoteTools` nor `discoveredTools` have the tool
+    /// (e.g. the MCP server isn't currently connected).
+    private func cachedToolsAcrossConnections() -> [MCPRemoteTool] {
+        var seen = Set<String>()
+        var result: [MCPRemoteTool] = []
+        let defaults = UserDefaults.standard
+        // Scan every bookmarked connection cache: we don't have the connection
+        // list at this layer, so just walk UserDefaults keys that match the
+        // cache prefix.
+        for key in defaults.dictionaryRepresentation().keys where key.hasPrefix(cacheKeyPrefix) {
+            guard let data = defaults.data(forKey: key),
+                  let decoded = try? JSONDecoder().decode([MCPRemoteTool].self, from: data)
+            else { continue }
+            for tool in decoded where seen.insert(tool.name).inserted {
+                result.append(tool)
+            }
+        }
+        return result
     }
 
     func serverConnectionID(forToolName toolName: String) -> UUID? {

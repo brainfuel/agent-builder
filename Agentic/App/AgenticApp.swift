@@ -15,6 +15,10 @@ struct AgenticApp: App {
     private let providerModelStore: any ProviderModelPreferencesStoring = UserDefaultsProviderModelStore()
     private let liveProviderExecutor: any LiveProviderExecuting = DefaultLiveProviderExecutor()
 
+    init() {
+        RunCompletionNotificationService.requestAuthorizationIfNeeded()
+    }
+
     var sharedModelContainer: ModelContainer = {
         let schema = Schema([
             GraphDocument.self,

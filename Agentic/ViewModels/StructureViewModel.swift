@@ -540,26 +540,54 @@ final class StructureViewModel {
             providerRule = "- Configured providers are: \(providerList). Use only these."
         }
 
-        var toolDescriptions: [String] = []
-        for tool in MCPToolRegistry.allTools {
-            toolDescriptions.append("  - \"\(tool.id)\": \(tool.description)")
+        var sections: [String] = []
+
+        // Built-in tools
+        if !MCPToolRegistry.allTools.isEmpty {
+            var builtIn: [String] = []
+            for tool in MCPToolRegistry.allTools {
+                builtIn.append("  - \"\(tool.id)\": \(tool.description)")
+            }
+            sections.append("Built-in tools:\n" + builtIn.joined(separator: "\n"))
         }
+
+        // MCP server tools — emit full name + description + parameter summary
+        // so the Copilot knows what each tool actually does and can pick it.
         for connection in mcpServerConnections where connection.isEnabled {
             let tools = mcpManager.discoveredTools[connection.id] ?? mcpManager.cachedTools(for: connection.id)
-            if !tools.isEmpty {
-                let toolNames = tools.prefix(10).map(\.name).joined(separator: ", ")
-                toolDescriptions.append("  - \"\(connection.name.lowercased())\": Connected app with tools: \(toolNames)")
+            guard !tools.isEmpty else { continue }
+            var lines: [String] = []
+            // Cap at 20 per server to keep prompts bounded.
+            for tool in tools.prefix(20) {
+                if let detail = mcpManager.toolSchemaDescription(forToolName: tool.name) {
+                    // Indent the multi-line detail block by two spaces.
+                    let indented = detail
+                        .split(separator: "\n", omittingEmptySubsequences: false)
+                        .map { "  " + $0 }
+                        .joined(separator: "\n")
+                    lines.append(indented)
+                } else {
+                    let d = (tool.description ?? "").replacingOccurrences(of: "\n", with: " ")
+                    lines.append("  - \(tool.name): \(String(d.prefix(120)))")
+                }
             }
+            sections.append("Tools on MCP server \"\(connection.name)\" (use these tool names in assignedTools):\n" + lines.joined(separator: "\n"))
         }
+
         let toolsSection: String
-        if toolDescriptions.isEmpty {
+        if sections.isEmpty {
             toolsSection = ""
         } else {
             toolsSection = """
 
             Available tools that can be assigned to nodes:
-            \(toolDescriptions.joined(separator: "\n"))
-            When the user mentions using a connected app or tool, include the relevant tool IDs in the node's assignedTools array.
+            \(sections.joined(separator: "\n\n"))
+
+            Tool-selection guidance:
+            - When the user describes an ACTION (e.g. "send to…", "display in…", "post to…", "save as…", "upload to…", "render in…", "open in…", "screenshot…", "list…", "fetch…", "get…"), put an entry into the node's assignedTools array rather than writing an outputSchema.
+            - SIMPLEST WAY TO GRANT ACCESS: if the user names a server (e.g. "Publisher MCP tool", "MCP Browser"), put that SERVER'S NAME as a single entry in assignedTools — it will be expanded to every tool on that server, and the runtime will pick the right one. This is the most reliable option.
+            - You may also list a specific tool name if you are confident it's the exact one. The node will still be granted the whole server's toolset by default (a tool name uniquely identifies its server). Don't pick a destructive / write tool (deploy, delete, publish) for a read-only request.
+            - Only reference servers/tools that actually exist in the list above. Never invent names.
             """
         }
 

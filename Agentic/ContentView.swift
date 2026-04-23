@@ -1135,9 +1135,11 @@ struct ContentView: View {
             ? "Task \(Date().formatted(.dateTime.month().day().hour().minute()))"
             : draftTitle
         let goal = draftGoal.isEmpty ? execution.orchestrationGoal : draftGoal
+        let context = newTaskContext.trimmingCharacters(in: .whitespacesAndNewlines)
         createTaskDocument(
             title: title,
             goal: goal,
+            context: context,
             structureStrategy: execution.orchestrationStrategy,
             snapshot: canvas.simpleTaskSnapshot()
         )
@@ -1159,6 +1161,7 @@ struct ContentView: View {
         createTaskDocument(
             title: title.isEmpty ? "Generated Task" : title,
             goal: goal,
+            context: context,
             structureStrategy: strategy,
             snapshot: canvas.simpleTaskSnapshot()
         )
@@ -1185,9 +1188,11 @@ struct ContentView: View {
     private func createTaskFromTemplate(_ template: PresetHierarchyTemplate) {
         let title = newTaskTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         let goal = newTaskGoal.trimmingCharacters(in: .whitespacesAndNewlines)
+        let context = newTaskContext.trimmingCharacters(in: .whitespacesAndNewlines)
         createTaskDocument(
             title: title.isEmpty ? template.title : title,
             goal: goal.isEmpty ? execution.orchestrationGoal : goal,
+            context: context,
             structureStrategy: execution.orchestrationStrategy,
             snapshot: template.snapshot()
         )
@@ -1227,6 +1232,7 @@ struct ContentView: View {
     private func createTaskDocument(
         title: String,
         goal: String,
+        context: String = "",
         structureStrategy: String? = nil,
         snapshot: HierarchySnapshot
     ) {
@@ -1259,6 +1265,7 @@ struct ContentView: View {
         let document = GraphDocument(
             title: title,
             goal: goal,
+            context: context.trimmingCharacters(in: .whitespacesAndNewlines),
             structureStrategy: (structureStrategy ?? goal).trimmingCharacters(in: .whitespacesAndNewlines),
             snapshotData: data,
             executionStateData: nil,

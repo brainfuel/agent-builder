@@ -132,13 +132,23 @@ enum PromptTemplateConfig {
       "department": "string (e.g. Analysis, Automation, Synthesis, Research)",
       "type": "agent",
       "provider": "string (one of the configured providers)",
-      "roleDescription": "string (what this agent does)",
-      "outputSchema": "string (optional, e.g. Task Result, LLM Analysis)",
-      "outputSchemaDescription": "string (optional, describes the output)",
+      "roleDescription": "string (what this agent does — if the node should use tools, say so explicitly here, e.g. 'Calls render_html with the generated HTML.')",
+      "outputSchema": "string (optional — LEAVE BLANK unless the user explicitly asks for structured text output)",
+      "outputSchemaDescription": "string (optional — LEAVE BLANK unless outputSchema is set)",
       "securityAccess": ["string"] (optional),
-      "assignedTools": ["string"] (optional, tool IDs to enable on this node)
+      "assignedTools": ["string"] (optional — list tool names the node is allowed to call)
     }
     Do NOT emit positionX/positionY — layout is computed from the link graph.
+
+    outputSchema vs assignedTools — when to use which:
+    - If the user wants the node to PERFORM AN ACTION (send, display, render, save, post, upload, screenshot, navigate, etc.) and a matching tool exists, put the tool name in assignedTools and leave outputSchema / outputSchemaDescription BLANK. The node will call the tool directly.
+    - Only set outputSchema when the user explicitly asks for a specific structured text output (e.g. "return JSON matching this schema", "produce a markdown report"). Setting outputSchema forces the model to emit text instead of calling tools, which breaks tool-driven nodes.
+    - When in doubt, prefer assignedTools with a clear roleDescription over outputSchema.
+
+    assignedTools — how to reference tools:
+    - PREFERRED: use the SERVER NAME as a single entry (e.g. "Publisher", "MCP Browser"). It expands to every tool on that server. This is the most reliable option and should be your default when the user names a tool/app.
+    - You may also list specific tool names; those will still grant the node the full server's tools. Only do this if you're confident the tool name is a unique match for the user's intent.
+    - Never list a tool that doesn't appear verbatim in the tools list.
     """
 
     static let structureChatLinkSchema = """

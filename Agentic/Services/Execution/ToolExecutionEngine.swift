@@ -25,38 +25,48 @@ final class ToolExecutionEngine {
         pattern: #"\[TOOL_CALL:\s*([A-Za-z0-9_.:-]+)\((.*?)\)\]"#,
         options: [.dotMatchesLineSeparators]
     )
+    /// Lenient fallback: some models drop the `TOOL_CALL:` prefix and emit just
+    /// `[tool_name({...})]`. We only parse the JSON-args form (too permissive
+    /// otherwise) and downstream `execute` enforces that the name is in the
+    /// node's assigned tools, so stray bracketed text can't be hijacked.
+    private static let bareToolCallJSONPattern = try! NSRegularExpression(
+        pattern: #"\[([A-Za-z0-9_.:-]+)\((\{.*\})\)\]"#,
+        options: [.dotMatchesLineSeparators]
+    )
 
     /// Parses all tool calls from an LLM response.
     /// Tries JSON argument format first `({...})`, then falls back to key=value format.
+    /// If neither finds anything, tries the bare (missing `TOOL_CALL:` prefix) variants —
+    /// some models drop the prefix and write `[tool_name({...})]` directly.
     func parseToolCalls(from text: String) -> [ToolCall] {
         let range = NSRange(text.startIndex..., in: text)
 
-        // Try JSON-style arguments first (greedy brace matching)
-        let jsonMatches = Self.toolCallJSONPattern.matches(in: text, range: range).compactMap { match -> ToolCall? in
-            guard match.numberOfRanges == 3,
-                  let nameRange = Range(match.range(at: 1), in: text),
-                  let argsRange = Range(match.range(at: 2), in: text),
-                  let fullRange = Range(match.range, in: text) else { return nil }
-            return ToolCall(
-                name: String(text[nameRange]),
-                arguments: String(text[argsRange]),
-                fullMatch: String(text[fullRange])
-            )
+        func apply(_ pattern: NSRegularExpression) -> [ToolCall] {
+            pattern.matches(in: text, range: range).compactMap { match -> ToolCall? in
+                guard match.numberOfRanges == 3,
+                      let nameRange = Range(match.range(at: 1), in: text),
+                      let argsRange = Range(match.range(at: 2), in: text),
+                      let fullRange = Range(match.range, in: text) else { return nil }
+                return ToolCall(
+                    name: String(text[nameRange]),
+                    arguments: String(text[argsRange]),
+                    fullMatch: String(text[fullRange])
+                )
+            }
         }
+
+        // Preferred: [TOOL_CALL: …] with JSON args
+        let jsonMatches = apply(Self.toolCallJSONPattern)
         if !jsonMatches.isEmpty { return jsonMatches }
 
-        // Fallback to key=value style
-        return Self.toolCallKVPattern.matches(in: text, range: range).compactMap { match in
-            guard match.numberOfRanges == 3,
-                  let nameRange = Range(match.range(at: 1), in: text),
-                  let argsRange = Range(match.range(at: 2), in: text),
-                  let fullRange = Range(match.range, in: text) else { return nil }
-            return ToolCall(
-                name: String(text[nameRange]),
-                arguments: String(text[argsRange]),
-                fullMatch: String(text[fullRange])
-            )
-        }
+        // Key=value variant of [TOOL_CALL: …]
+        let kvMatches = apply(Self.toolCallKVPattern)
+        if !kvMatches.isEmpty { return kvMatches }
+
+        // Bare `[tool_name({...})]` with no TOOL_CALL prefix — some models
+        // drop it. Downstream `execute` rejects names not in assignedTools,
+        // so stray bracketed text won't execute.
+        return apply(Self.bareToolCallJSONPattern)
     }
 
     /// Executes a single tool call and returns the result string.
