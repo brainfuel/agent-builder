@@ -2,6 +2,14 @@
 
 A SwiftUI agent-workflow canvas for designing, running, and inspecting multi-agent pipelines across ChatGPT, Claude, Gemini, and Grok — with a node-graph editor, live execution traces, MCP tool support, and local run notifications.
 
+## Download
+
+[![Latest release](https://img.shields.io/github/v/release/brainfuel/agent-builder?label=latest%20release&style=for-the-badge)](https://github.com/brainfuel/agent-builder/releases/latest)
+
+**[⬇ Download the latest macOS build](https://github.com/brainfuel/agent-builder/releases/latest)** — signed, notarised `.dmg` for Apple Silicon.
+
+After downloading, open the DMG and drag **Agent Builder** to your Applications folder. The app is Gatekeeper-trusted, so it launches with a double-click — no "unidentified developer" prompt.
+
 ## Overview
 
 Agent Builder lets you:
