@@ -26,7 +26,16 @@ struct AgenticApp: App {
             UserStructureTemplate.self,
             MCPServerConnection.self,
         ])
-        let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
+        // Opt into CloudKit sync explicitly against the registered container.
+        // Requires the `iCloud.com.moosia.agentic` container to exist in the
+        // Apple Developer portal AND the matching entitlement in
+        // Agentic.entitlements. If the container is unreachable at runtime
+        // (e.g. signed-out iCloud account) SwiftData degrades to local-only.
+        let modelConfiguration = ModelConfiguration(
+            schema: schema,
+            isStoredInMemoryOnly: false,
+            cloudKitDatabase: .private("iCloud.com.moosia.agentic")
+        )
 
         do {
             return try ModelContainer(for: schema, configurations: [modelConfiguration])
