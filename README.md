@@ -2,8 +2,6 @@
 
 A SwiftUI agent-workflow canvas for designing, running, and inspecting multi-agent pipelines across ChatGPT, Claude, Gemini, and Grok — with a node-graph editor, live execution traces, MCP tool support, and local run notifications.
 
-> The Xcode project, scheme, and bundle are still named `Agentic` for historical reasons; the shipped app title is **Agent Builder**.
-
 ## Overview
 
 Agent Builder lets you:
