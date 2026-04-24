@@ -48,6 +48,11 @@ struct AgenticApp: App {
         WindowGroup {
             ContentView()
                 .frame(minWidth: 1600)
+                .task {
+                    #if DEBUG
+                    DemoTaskSeeder.seedIfRequested(into: sharedModelContainer.mainContext)
+                    #endif
+                }
                 .tint(AppTheme.brandTint)
                 .environment(\.apiKeyStore, apiKeyStore)
                 .environment(\.providerModelStore, providerModelStore)

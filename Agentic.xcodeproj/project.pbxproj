@@ -24,7 +24,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
-		6551FFA72F67167D00DC2C66 /* Agentic.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Agentic.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		6551FFA72F67167D00DC2C66 /* Agent Builder.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Agent Builder.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		6551FFB82F67167F00DC2C66 /* AgenticTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AgenticTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		6551FFC22F67167F00DC2C66 /* AgenticUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AgenticUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -98,7 +98,7 @@
 		6551FFA82F67167D00DC2C66 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				6551FFA72F67167D00DC2C66 /* Agentic.app */,
+				6551FFA72F67167D00DC2C66 /* Agent Builder.app */,
 				6551FFB82F67167F00DC2C66 /* AgenticTests.xctest */,
 				6551FFC22F67167F00DC2C66 /* AgenticUITests.xctest */,
 			);
@@ -127,7 +127,7 @@
 			packageProductDependencies = (
 			);
 			productName = Agentic;
-			productReference = 6551FFA72F67167D00DC2C66 /* Agentic.app */;
+			productReference = 6551FFA72F67167D00DC2C66 /* Agent Builder.app */;
 			productType = "com.apple.product-type.application";
 		};
 		6551FFB72F67167E00DC2C66 /* AgenticTests */ = {
