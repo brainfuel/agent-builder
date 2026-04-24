@@ -180,7 +180,6 @@ xcodebuild -project Agentic.xcodeproj -scheme Agentic \
 - UI streaming of assistant responses is not yet wired end-to-end for every provider.
 - Attachment uploads to agent nodes are not yet supported; nodes exchange structured text payloads.
 - MCP tool calling is wired for ChatGPT and Claude; Gemini and Grok tool calling is partial.
-- No in-app run-trace explorer yet — trace data is available in the Results drawer but a richer per-step inspector is planned.
 
 ## Contributing
 
