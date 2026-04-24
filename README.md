@@ -4,10 +4,6 @@ A SwiftUI agent-workflow canvas for designing, running, and inspecting multi-age
 
 > The Xcode project, scheme, and bundle are still named `Agentic` for historical reasons; the shipped app title is **Agent Builder**.
 
-## Screenshots
-
-![Agent Builder app screenshot 1](docs/images/screenshot1.png)
-
 ## Overview
 
 Agent Builder lets you:
@@ -128,7 +124,7 @@ xcodebuild -project Agentic.xcodeproj -scheme Agentic \
 ## Project Structure
 
 **Entry point**
-- [Agentic/AgenticApp.swift](Agentic/AgenticApp.swift): App entry point, `ModelContainer` setup, notification authorisation, view-model wiring
+- [Agentic/App/AgenticApp.swift](Agentic/App/AgenticApp.swift): App entry point, `ModelContainer` setup, notification authorisation, view-model wiring
 - [Agentic/ContentView.swift](Agentic/ContentView.swift): Root layout — header, task list, canvas, inspector, results drawer
 
 **App-wide configuration**

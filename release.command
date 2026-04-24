@@ -15,9 +15,17 @@ PROJECT="Agentic.xcodeproj"
 APP_NAME="Agent Builder"             # CFBundleName — what the .app is called inside the archive
 BUILD_DIR="build"
 DIST_DIR="dist"
-DEVELOPER_ID="Developer ID Application: Moosia LLC (NC83U5R385)"
-NOTARY_PROFILE="notary-agent-builder"
 ENTITLEMENTS_SRC="Agentic/Agentic.entitlements"
+
+# Signing identity and notarisation profile.
+# Forks: override via environment variables, e.g.
+#   DEVELOPER_ID="Developer ID Application: Your Org (ABCDE12345)" \
+#   NOTARY_PROFILE="notary-your-app" \
+#   TEAM_ID="ABCDE12345" \
+#   bash release.command
+DEVELOPER_ID="${DEVELOPER_ID:-Developer ID Application: Moosia LLC (NC83U5R385)}"
+NOTARY_PROFILE="${NOTARY_PROFILE:-notary-agent-builder}"
+TEAM_ID="${TEAM_ID:-NC83U5R385}"
 
 # ── Colours ───────────────────────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
@@ -38,7 +46,7 @@ security find-identity -v -p codesigning | grep -q "$DEVELOPER_ID" \
     || die "Developer ID cert not in keychain: '${DEVELOPER_ID}'"
 
 xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" >/dev/null 2>&1 \
-    || die "Notary profile '${NOTARY_PROFILE}' not set up. Run: xcrun notarytool store-credentials '${NOTARY_PROFILE}' --apple-id <you@example.com> --team-id NC83U5R385"
+    || die "Notary profile '${NOTARY_PROFILE}' not set up. Run: xcrun notarytool store-credentials '${NOTARY_PROFILE}' --apple-id <you@example.com> --team-id ${TEAM_ID}"
 
 git diff --quiet || warn "You have uncommitted changes — they won't be included in the archive."
 ok "Tools & signing identity found"
