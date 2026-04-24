@@ -3,15 +3,16 @@ import SwiftData
 
 @Model
 final class MCPServerConnection {
-    @Attribute(.unique) var id: UUID
-    var name: String
-    var url: String
-    var apiKey: String
-    var icon: String
-    var category: String
-    var serverDescription: String
-    var isEnabled: Bool
-    var addedAt: Date
+    // Dropped `@Attribute(.unique)` — CloudKit rejects unique constraints.
+    var id: UUID = UUID()
+    var name: String = ""
+    var url: String = ""
+    var apiKey: String = ""
+    var icon: String = "server.rack"
+    var category: String = "General"
+    var serverDescription: String = ""
+    var isEnabled: Bool = false
+    var addedAt: Date = Date()
 
     /// Transport kind. "http" (default, existing behaviour) or "stdio" (macOS only).
     /// Stored as a string so SwiftData lightweight migration keeps old records loading.

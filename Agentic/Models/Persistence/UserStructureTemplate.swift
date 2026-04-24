@@ -4,11 +4,12 @@ import SwiftData
 /// Persisted user-created structure template — a named snapshot of the whole team hierarchy.
 @Model
 final class UserStructureTemplate {
-    @Attribute(.unique) var id: UUID
-    var name: String
-    var snapshotData: Data
-    var createdAt: Date
-    var updatedAt: Date
+    // Dropped `@Attribute(.unique)` — CloudKit rejects unique constraints.
+    var id: UUID = UUID()
+    var name: String = ""
+    var snapshotData: Data = Data()
+    var createdAt: Date = Date()
+    var updatedAt: Date = Date()
 
     init(
         id: UUID = UUID(),

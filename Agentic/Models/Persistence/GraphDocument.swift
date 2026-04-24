@@ -3,16 +3,18 @@ import SwiftData
 
 @Model
 final class GraphDocument {
-    @Attribute(.unique) var key: String
+    // Dropped `@Attribute(.unique)` — CloudKit does not allow unique constraints.
+    // Uniqueness is enforced at the application level (see ContentView lookups by key).
+    var key: String = ""
     var title: String?
     var goal: String?
     var context: String?
     var structureStrategy: String?
-    var snapshotData: Data
+    var snapshotData: Data = Data()
     var executionStateData: Data?
     var structureChatData: Data?
     var createdAt: Date?
-    var updatedAt: Date
+    var updatedAt: Date = Date()
     var scrollOffsetX: Double?
     var scrollOffsetY: Double?
     var zoom: Double?
