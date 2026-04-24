@@ -26,32 +26,49 @@ struct AgenticApp: App {
             UserStructureTemplate.self,
             MCPServerConnection.self,
         ])
-        // Try CloudKit-backed sync first against our registered private
-        // container. This requires the `iCloud.com.moosia.agentic` container
-        // to exist in the Apple Developer portal AND the matching entitlement
-        // to be in the signed binary. If either is missing — or the user is
-        // signed out of iCloud — fall back to a local-only store so the app
-        // still launches.
-        let cloudConfiguration = ModelConfiguration(
-            schema: schema,
-            isStoredInMemoryOnly: false,
-            cloudKitDatabase: .private("iCloud.com.moosia.agentic")
-        )
 
-        if let container = try? ModelContainer(for: schema, configurations: [cloudConfiguration]) {
-            return container
+        // Only opt into CloudKit sync when the iCloud container is actually
+        // reachable — i.e. the `iCloud.com.moosia.agentic` entitlement is
+        // present in the signed binary AND the user is signed in to iCloud.
+        //
+        // `url(forUbiquityContainerIdentifier:)` returns nil if either is
+        // missing; asking SwiftData to open a CloudKit-backed store when the
+        // entitlement isn't there traps asynchronously on
+        // `com.apple.coredata.cloudkit.queue` and kills the app.
+        let iCloudContainerID = "iCloud.com.moosia.agentic"
+        let iCloudReachable = FileManager.default
+            .url(forUbiquityContainerIdentifier: iCloudContainerID) != nil
+
+        let configuration: ModelConfiguration
+        if iCloudReachable {
+            configuration = ModelConfiguration(
+                schema: schema,
+                isStoredInMemoryOnly: false,
+                cloudKitDatabase: .private(iCloudContainerID)
+            )
+        } else {
+            configuration = ModelConfiguration(
+                schema: schema,
+                isStoredInMemoryOnly: false,
+                cloudKitDatabase: .none
+            )
         }
 
-        // CloudKit unavailable — retry with local-only storage.
-        let localConfiguration = ModelConfiguration(
-            schema: schema,
-            isStoredInMemoryOnly: false,
-            cloudKitDatabase: .none
-        )
-
         do {
-            return try ModelContainer(for: schema, configurations: [localConfiguration])
+            return try ModelContainer(for: schema, configurations: [configuration])
         } catch {
+            // As a last-ditch fallback, if CloudKit config fails for any
+            // reason, retry with a pure local store so the app still launches.
+            if iCloudReachable {
+                let localConfiguration = ModelConfiguration(
+                    schema: schema,
+                    isStoredInMemoryOnly: false,
+                    cloudKitDatabase: .none
+                )
+                if let container = try? ModelContainer(for: schema, configurations: [localConfiguration]) {
+                    return container
+                }
+            }
             fatalError("Could not create ModelContainer: \(error)")
         }
     }()
