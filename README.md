@@ -10,6 +10,12 @@ A SwiftUI agent-workflow canvas for designing, running, and inspecting multi-age
 
 After downloading, open the DMG and drag **Agent Builder** to your Applications folder.
 
+## Screenshots
+
+![Agent Builder canvas](docs/images/screenshot1.png)
+
+![Agent Builder trace view](docs/images/screenshot2.png)
+
 ## Overview
 
 Agent Builder lets you:
