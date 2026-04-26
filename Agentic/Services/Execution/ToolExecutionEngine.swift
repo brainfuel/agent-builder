@@ -14,59 +14,126 @@ final class ToolExecutionEngine {
     /// Maximum number of tool-call -> re-prompt iterations per packet.
     static let maxIterations = 5
 
-    /// Regex matching `[TOOL_CALL: tool-name({...})]` (JSON args) or `[TOOL_CALL: tool-name(key="val")]`.
-    /// The JSON variant uses a greedy match up to `})]` to handle nested braces.
-    private static let toolCallJSONPattern = try! NSRegularExpression(
-        pattern: #"\[TOOL_CALL:\s*([A-Za-z0-9_.:-]+)\((\{.*\})\)\]"#,
-        options: [.dotMatchesLineSeparators]
-    )
-    /// Fallback for key=value style args.
+    /// Fallback for key=value style args (no JSON object). Lazy `.*?` is
+    /// safe here because `)]` won't appear inside a key=value pair.
     private static let toolCallKVPattern = try! NSRegularExpression(
-        pattern: #"\[TOOL_CALL:\s*([A-Za-z0-9_.:-]+)\((.*?)\)\]"#,
-        options: [.dotMatchesLineSeparators]
-    )
-    /// Lenient fallback: some models drop the `TOOL_CALL:` prefix and emit just
-    /// `[tool_name({...})]`. We only parse the JSON-args form (too permissive
-    /// otherwise) and downstream `execute` enforces that the name is in the
-    /// node's assigned tools, so stray bracketed text can't be hijacked.
-    private static let bareToolCallJSONPattern = try! NSRegularExpression(
-        pattern: #"\[([A-Za-z0-9_.:-]+)\((\{.*\})\)\]"#,
+        pattern: #"\[TOOL_CALL:\s*([A-Za-z0-9_.:-]+)\(([^{].*?)\)\]"#,
         options: [.dotMatchesLineSeparators]
     )
 
     /// Parses all tool calls from an LLM response.
-    /// Tries JSON argument format first `({...})`, then falls back to key=value format.
-    /// If neither finds anything, tries the bare (missing `TOOL_CALL:` prefix) variants —
-    /// some models drop the prefix and write `[tool_name({...})]` directly.
+    ///
+    /// JSON-args calls (`[TOOL_CALL: name({...})]`) are extracted with a
+    /// brace-counting scanner — a regex can't simultaneously handle nested
+    /// braces AND multiple sequential calls in one response. The scanner
+    /// finds each `[TOOL_CALL: name(` (or bare `[name(`) header, then walks
+    /// the JSON literal counting `{`/`}` (string/escape aware) to find the
+    /// matching `})]` for that call only.
+    ///
+    /// Key=value calls fall back to a lazy regex.
     func parseToolCalls(from text: String) -> [ToolCall] {
-        let range = NSRange(text.startIndex..., in: text)
+        var out: [ToolCall] = []
+        out.append(contentsOf: scanJSONCalls(in: text, requirePrefix: true))
 
-        func apply(_ pattern: NSRegularExpression) -> [ToolCall] {
-            pattern.matches(in: text, range: range).compactMap { match -> ToolCall? in
-                guard match.numberOfRanges == 3,
-                      let nameRange = Range(match.range(at: 1), in: text),
-                      let argsRange = Range(match.range(at: 2), in: text),
-                      let fullRange = Range(match.range, in: text) else { return nil }
-                return ToolCall(
-                    name: String(text[nameRange]),
-                    arguments: String(text[argsRange]),
-                    fullMatch: String(text[fullRange])
-                )
-            }
+        // Key=value variant of [TOOL_CALL: …]. Only emit these for spans the
+        // JSON scanner didn't already cover, so we don't double-extract.
+        let kvNS = NSRange(text.startIndex..., in: text)
+        for match in Self.toolCallKVPattern.matches(in: text, range: kvNS) {
+            guard match.numberOfRanges == 3,
+                  let nameRange = Range(match.range(at: 1), in: text),
+                  let argsRange = Range(match.range(at: 2), in: text),
+                  let fullRange = Range(match.range, in: text) else { continue }
+            // Skip if we already extracted a JSON-args call covering this span.
+            if out.contains(where: { $0.fullMatch.range(of: String(text[fullRange])) != nil }) { continue }
+            out.append(ToolCall(
+                name: String(text[nameRange]),
+                arguments: String(text[argsRange]),
+                fullMatch: String(text[fullRange])
+            ))
         }
 
-        // Preferred: [TOOL_CALL: …] with JSON args
-        let jsonMatches = apply(Self.toolCallJSONPattern)
-        if !jsonMatches.isEmpty { return jsonMatches }
+        if !out.isEmpty { return out }
 
-        // Key=value variant of [TOOL_CALL: …]
-        let kvMatches = apply(Self.toolCallKVPattern)
-        if !kvMatches.isEmpty { return kvMatches }
+        // Lenient: bare `[tool_name({...})]` — some models drop the
+        // TOOL_CALL: prefix. Downstream `execute` rejects names not in
+        // assignedTools, so stray bracketed text won't execute.
+        return scanJSONCalls(in: text, requirePrefix: false)
+    }
 
-        // Bare `[tool_name({...})]` with no TOOL_CALL prefix — some models
-        // drop it. Downstream `execute` rejects names not in assignedTools,
-        // so stray bracketed text won't execute.
-        return apply(Self.bareToolCallJSONPattern)
+    /// Walk the response left-to-right pulling out `[TOOL_CALL: name({…})]`
+    /// (or bare `[name({…})]` when `requirePrefix` is false). Brace counting
+    /// is string/escape aware so JSON containing `}` inside a quoted value
+    /// doesn't terminate the call early.
+    private func scanJSONCalls(in text: String, requirePrefix: Bool) -> [ToolCall] {
+        var out: [ToolCall] = []
+        let chars = Array(text)
+        let n = chars.count
+        var i = 0
+        let prefix = Array("[TOOL_CALL:")
+        let identifierChars: Set<Character> = Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.:-")
+
+        outer: while i < n {
+            let headerStart = i
+            if requirePrefix {
+                // Match literal "[TOOL_CALL:" followed by optional whitespace.
+                guard i + prefix.count <= n, Array(chars[i..<i + prefix.count]) == prefix else {
+                    i += 1; continue
+                }
+                i += prefix.count
+                while i < n, chars[i].isWhitespace { i += 1 }
+            } else {
+                guard chars[i] == "[" else { i += 1; continue }
+                i += 1
+            }
+
+            // Read tool name.
+            let nameStart = i
+            while i < n, identifierChars.contains(chars[i]) { i += 1 }
+            let nameEnd = i
+            guard nameEnd > nameStart, i < n, chars[i] == "(" else {
+                i = headerStart + 1; continue
+            }
+            let name = String(chars[nameStart..<nameEnd])
+            i += 1 // past '('
+            guard i < n, chars[i] == "{" else {
+                i = headerStart + 1; continue
+            }
+
+            // Brace-count to the matching '}'.
+            let argsStart = i
+            var depth = 0
+            var inString = false
+            var escape = false
+            while i < n {
+                let c = chars[i]
+                if inString {
+                    if escape { escape = false }
+                    else if c == "\\" { escape = true }
+                    else if c == "\"" { inString = false }
+                } else {
+                    if c == "\"" { inString = true }
+                    else if c == "{" { depth += 1 }
+                    else if c == "}" {
+                        depth -= 1
+                        if depth == 0 { break }
+                    }
+                }
+                i += 1
+            }
+            guard i < n, depth == 0 else { i = headerStart + 1; continue outer }
+            let argsEnd = i + 1 // include closing '}'
+
+            // Expect `)]` to follow.
+            guard argsEnd + 1 < n, chars[argsEnd] == ")", chars[argsEnd + 1] == "]" else {
+                i = headerStart + 1; continue
+            }
+            let args = String(chars[argsStart..<argsEnd])
+            let fullEnd = argsEnd + 2
+            let full = String(chars[headerStart..<fullEnd])
+            out.append(ToolCall(name: name, arguments: args, fullMatch: full))
+            i = fullEnd
+        }
+        return out
     }
 
     /// Executes a single tool call and returns the result string.

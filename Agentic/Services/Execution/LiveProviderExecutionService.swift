@@ -338,7 +338,12 @@ enum LiveProviderExecutionService {
                 Arguments MUST be a valid JSON object inside the parentheses.
                 Use tool names exactly as listed above (the machine-readable ID, not the display name).
                 ONLY use the parameters listed in each tool's schema above. Do NOT invent parameters (e.g. teamId, workspaceId, authToken) that aren't shown — tools that list no parameters take none; call them with {}.
-                Tool results will be provided if you use a tool call. You may continue your response after receiving results.
+
+                Response discipline (critical):
+                - When you decide to call tools, your response must contain ONLY tool-call lines plus minimal one-line connective notes between them. No prose paragraphs, no markdown tables, no completion summaries, no checklists, no "Status: ✅" claims, no narration of what the tools returned.
+                - You have NOT seen the tool results yet — do not describe outcomes, confirmations, or next steps in the same turn as the tool calls. The system will replay results to you on the next turn; that is when you summarise.
+                - It is fine to emit multiple tool calls in a single response. Do NOT wrap them in markdown code fences.
+                - Only write a final natural-language answer once tool results have actually been returned to you and you have nothing further to call.
                 """)
 
             if !builtInTools.isEmpty {
